@@ -26,6 +26,7 @@ Both subsystems share data infrastructure, dashboards, cloud sync, and the daily
 | Deep Learning | PyTorch 2.1 | CNN exit controller for ES strategy |
 | LLM | Ollama + DeepSeek R1 70B | News sentiment analysis, report generation, what-if narratives |
 | Dashboard | Streamlit 1.30 + Plotly 5.18 | Unified web UI on port 8501 |
+| AI API | FastAPI + Uvicorn + Pydantic | Real-time confidence API on port 8100 |
 | Data Sources | Polygon.io, yfinance, Finnhub, FRED, RSS | Market data, news, macro indicators |
 | Cloud Relay | FastAPI + Uvicorn | Stateless relay on AWS EC2 |
 | Containers | Docker + Docker Compose | Cloud deployment packaging |
@@ -144,6 +145,8 @@ Computes: ATR(14), Keltner Channel (EMA20 ± 1.5×ATR), EMA(9), VWAP, RSI(14), R
 
 Includes `RegimeDetector`: classifies volatility as Low/Med/High based on ATR percentile over 10,080 bars with 3-bar hysteresis to prevent rapid regime switching.
 
+Includes `CuMLRegimeClassifier`: cuML LogisticRegression-based regime classifier (falls back to sklearn if cuML unavailable). Trained on ATR percentile features, outputs Low/Mid/High classification.
+
 #### `position.py` — 3-Lot Position Manager
 Manages a tiered position with 3 lots:
 - Lot 0: TP1 target, tightest trailing stop
@@ -176,6 +179,30 @@ Execution modes:
 - `--mode backtest --data file.csv` — historical CSV replay
 - `--mode paper` — live data, signals logged only (no execution)
 - `--ai` flag enables AI entry gate + CNN exit controller
+
+#### `rl_trail.py` — Q-Learning Trailing Stop Agent
+Tabular Q-learning agent that adaptively adjusts the runner lot's trailing stop:
+- State: [regime, ATR percentile, unrealized P&L, bars held, RSI, ROC] — discretized into 9,375 states
+- Actions: tighten (-0.1×ATR), hold, widen (+0.1×ATR)
+- Reward: ΔEquity − λ×Drawdown (λ=0.5 default)
+- Integrated into `engine.py` — adjusts runner trail each bar, updates Q-table, saves/loads from `models/rl_trail_qtable.json`
+
+#### `labeling.py` — Triple-Barrier Entry and Exit Labels
+Generates training labels per consolidated requirements:
+- Entry: triple-barrier method — TP1 hit before emergency stop within 60 bars → 1, else → 0
+- Exit: future adverse move ≥ 0.25×ATR within 5 bars → 1 (reversal), else → 0
+- Integrated into `trainer.py` via `train_es_entry()` and `train_es_exit()` methods
+
+### 3.5b AI Confidence API (`src/api/`)
+
+#### `confidence_server.py` — FastAPI Real-Time Inference (port 8100)
+Three endpoints for MT5/FxDreema integration:
+- `POST /confidence` — entry gate inference returning `entry_conf`, `vol_regime`, `advice` (allow/block)
+- `POST /exit` — exit controller returning `exit_conf_reversal`, `tp2_trail_atr`, `runner_trail_atr`
+- `POST /spread` — dynamic spread update (strike_K, credit_C) from broker or manual entry
+- `GET /health` — model load status and uptime
+
+Features: fail-closed logic (blocks trades if AI unavailable), configurable entry threshold (default 0.70), JSONL audit logging to `./logs/trade_audit.jsonl`, latency measurement, feature vector hashing for auditability.
 
 ---
 

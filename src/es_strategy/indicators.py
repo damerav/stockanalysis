@@ -122,3 +122,57 @@ def compute_bar_indicators(df: pd.DataFrame, config: dict = None) -> pd.DataFram
     df["rsi_14"] = rsi(df["close"], 14)
     df["roc_3"] = roc(df["close"], 3)
     return df
+
+
+class CuMLRegimeClassifier:
+    """GAP 10: cuML LogisticRegression volatility regime classifier.
+
+    Classes: Low / Mid / High based on ATR percentile.
+    Falls back to sklearn if cuML is not available.
+    """
+
+    def __init__(self):
+        self.model = None
+        self._use_cuml = False
+
+    def train(self, atr_percentiles: np.ndarray, labels: np.ndarray) -> dict:
+        """Train regime classifier on ATR percentile features.
+
+        Args:
+            atr_percentiles: Array of ATR percentile values (0-1).
+            labels: Array of regime labels (0=Low, 1=Med, 2=High).
+
+        Returns:
+            Training metrics dict.
+        """
+        X = atr_percentiles.reshape(-1, 1) if atr_percentiles.ndim == 1 else atr_percentiles
+
+        try:
+            from cuml.linear_model import LogisticRegression as cuLR
+            self.model = cuLR(max_iter=1000)
+            self._use_cuml = True
+            logger.info("Using cuML LogisticRegression for regime classifier")
+        except ImportError:
+            from sklearn.linear_model import LogisticRegression
+            self.model = LogisticRegression(max_iter=1000)
+            self._use_cuml = False
+            logger.info("cuML not available, using sklearn LogisticRegression")
+
+        self.model.fit(X, labels)
+        accuracy = float((self.model.predict(X) == labels).mean())
+        logger.info(f"Regime classifier accuracy: {accuracy:.3f}")
+        return {"accuracy": accuracy, "use_cuml": self._use_cuml, "samples": len(labels)}
+
+    def predict(self, atr_percentile: float) -> str:
+        """Predict regime from ATR percentile."""
+        if self.model is None:
+            # Fallback to simple thresholds
+            if atr_percentile < 0.33:
+                return "Low"
+            elif atr_percentile > 0.66:
+                return "High"
+            return "Med"
+
+        X = np.array([[atr_percentile]])
+        pred = int(self.model.predict(X)[0])
+        return {0: "Low", 1: "Med", 2: "High"}.get(pred, "Med")

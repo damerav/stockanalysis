@@ -8,6 +8,8 @@ import pandas as pd
 from datetime import datetime
 from typing import Optional
 
+from src.es_strategy.labeling import label_entries_triple_barrier, label_exits_reversal
+
 logger = logging.getLogger(__name__)
 
 # Direction labels
@@ -67,7 +69,7 @@ class SPYPredictor:
 
         # Drop rows with NaN target (last row has no next-day return)
         valid_mask = target.notna()
-        X = features_df[valid_mask].values
+        X = features_df[valid_mask].apply(pd.to_numeric, errors="coerce").values
         y = target[valid_mask].values
 
         # Replace NaN features with 0 (XGBoost handles missing values natively)
@@ -80,10 +82,27 @@ class SPYPredictor:
             logger.warning(f"Only {len(X)} valid samples, need at least 50")
             return {"error": "insufficient data"}
 
-        # Walk-forward split: 80% train, 20% validation (no shuffle)
-        split_idx = int(len(X) * 0.8)
-        X_train, X_val = X[:split_idx], X[split_idx:]
-        y_train, y_val = y_class[:split_idx], y_class[split_idx:]
+        # Walk-forward split: 70/20/10 with 5-day embargo (GAP 12)
+        train_end = int(len(X) * 0.70)
+        val_end = int(len(X) * 0.90)
+        embargo = 5  # 5-day gap to prevent look-ahead bias
+
+        X_train = X[:train_end]
+        y_train = y_class[:train_end]
+        X_val = X[train_end + embargo:val_end]
+        y_val = y_class[train_end + embargo:val_end]
+        X_test = X[val_end + embargo:]
+        y_test = y_class[val_end + embargo:]
+
+        # Clip features at ±5σ (GAP 12)
+        train_mean = np.nanmean(X_train, axis=0)
+        train_std = np.nanstd(X_train, axis=0)
+        train_std[train_std == 0] = 1.0
+        clip_lo = train_mean - 5 * train_std
+        clip_hi = train_mean + 5 * train_std
+        X_train = np.clip(X_train, clip_lo, clip_hi)
+        X_val = np.clip(X_val, clip_lo, clip_hi)
+        X_test = np.clip(X_test, clip_lo, clip_hi)
 
         logger.info(f"Training: {len(X_train)} samples, Validation: {len(X_val)} samples")
 
@@ -131,10 +150,27 @@ class SPYPredictor:
             self.model.feature_importances_
         ))
 
+        # Log feature importance and flag low-gain features (GAP 12)
+        total_imp = sum(self.model.feature_importances_)
+        low_gain_features = []
+        for idx, imp in enumerate(self.model.feature_importances_):
+            pct = (imp / total_imp * 100) if total_imp > 0 else 0
+            if pct < 1.0:
+                low_gain_features.append(idx)
+        if low_gain_features:
+            logger.info(f"Low-gain features (<1%): {len(low_gain_features)} of {X.shape[1]}")
+
         # Validation metrics
         val_pred = self.model.predict(X_val)
         accuracy = np.mean(val_pred == y_val)
         logger.info(f"Validation accuracy: {accuracy:.3f}")
+
+        # Test set metrics (GAP 12: 10% holdout)
+        test_accuracy = None
+        if len(X_test) > 0:
+            test_pred = self.model.predict(X_test)
+            test_accuracy = float(np.mean(test_pred == y_test))
+            logger.info(f"Test accuracy: {test_accuracy:.3f}")
 
         # Save model
         date_str = datetime.now().strftime("%Y%m%d")
@@ -144,8 +180,12 @@ class SPYPredictor:
 
         return {
             "accuracy": float(accuracy),
+            "test_accuracy": test_accuracy,
             "train_size": len(X_train),
             "val_size": len(X_val),
+            "test_size": len(X_test),
+            "embargo_days": embargo,
+            "low_gain_features": len(low_gain_features),
             "model_path": model_path,
             "best_iteration": self.model.best_iteration if hasattr(self.model, "best_iteration") else None,
         }
@@ -239,6 +279,51 @@ class SPYPredictor:
                     "importance": round(float(importance), 4),
                 })
         return report
+
+    def train_es_entry(self, df: pd.DataFrame, feature_cols: list[str],
+                       credit_C: float = 10.0, use_gpu: bool = True) -> dict:
+        """GAP 11: Train ES entry classifier using triple-barrier labels.
+
+        Args:
+            df: DataFrame with OHLCV + indicators + feature columns.
+            feature_cols: List of feature column names.
+            credit_C: Credit width for stop calculation.
+            use_gpu: Use GPU if available.
+
+        Returns:
+            Training metrics dict.
+        """
+        entry_labels = label_entries_triple_barrier(df, credit_C=credit_C)
+        X = df[feature_cols].values
+        X = np.nan_to_num(X, nan=0.0)
+        y = entry_labels.values
+
+        logger.info(f"ES entry training: {y.sum()} positive / {len(y)} total "
+                    f"({y.mean():.1%} hit rate)")
+        return self.train(pd.DataFrame(X, columns=feature_cols),
+                          pd.Series(y), use_gpu=use_gpu)
+
+    def train_es_exit(self, df: pd.DataFrame, feature_cols: list[str],
+                      use_gpu: bool = True) -> dict:
+        """GAP 11: Train ES exit classifier using reversal labels.
+
+        Args:
+            df: DataFrame with OHLCV + indicators + feature columns.
+            feature_cols: List of feature column names.
+            use_gpu: Use GPU if available.
+
+        Returns:
+            Training metrics dict.
+        """
+        exit_labels = label_exits_reversal(df)
+        X = df[feature_cols].values
+        X = np.nan_to_num(X, nan=0.0)
+        y = exit_labels.values
+
+        logger.info(f"ES exit training: {y.sum()} reversals / {len(y)} total "
+                    f"({y.mean():.1%} reversal rate)")
+        return self.train(pd.DataFrame(X, columns=feature_cols),
+                          pd.Series(y), use_gpu=use_gpu)
 
 
 def evaluate_past_prediction(conn, date: str) -> Optional[dict]:

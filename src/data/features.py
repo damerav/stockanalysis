@@ -185,6 +185,24 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
                       "positive_ratio", "negative_ratio"]
     df[sentiment_cols] = df[sentiment_cols].fillna(0)
 
+    # --- GAP 8: Context features ---
+    # VIX percentile (90-day rolling)
+    df["vix_percentile"] = df["vix"].rolling(90, min_periods=20).rank(pct=True)
+
+    # SPY-ES z-score (placeholder — uses SPY close deviation from 20-day mean)
+    spy_mean = df["close"].rolling(20).mean()
+    spy_std = df["close"].rolling(20).std().replace(0, np.nan)
+    df["spy_es_zscore"] = (df["close"] - spy_mean) / spy_std
+
+    # RTH flag (always 1 for daily bars — intraday would check 9:30-16:00)
+    df["rth_flag"] = 1
+
+    # Minutes to close (0 for daily bars — populated in realtime)
+    df["minutes_to_close"] = 0
+
+    # Economic event proximity flag (placeholder — 0 = no event, 1 = event day)
+    df["event_proximity"] = 0
+
     return df
 
 
@@ -206,6 +224,9 @@ def get_feature_columns() -> list[str]:
         # Derived
         "price_vs_sma20_pct", "price_vs_sma50_pct", "rsi_divergence",
         "volume_trend", "atr_percentile", "momentum_5d", "momentum_10d",
+        # Context (GAP 8)
+        "vix_percentile", "spy_es_zscore", "rth_flag",
+        "minutes_to_close", "event_proximity",
     ]
 
 

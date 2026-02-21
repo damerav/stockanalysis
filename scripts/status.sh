@@ -47,6 +47,8 @@ check_process() {
 
 check_process "dashboard"
 check_process "es_strategy"
+check_process "confidence_api"
+check_process "metrics_exporter"
 check_process "scheduler"
 
 # Ollama
@@ -73,6 +75,8 @@ check_port() {
 }
 
 check_port 8501 "Dashboard"
+check_port 8100 "Confidence API"
+check_port 9190 "Metrics Exporter"
 check_port 11434 "Ollama"
 
 echo ""
@@ -127,7 +131,7 @@ echo ""
 
 # --- Recent Logs ---
 echo -e "${CYAN}Recent Log Activity:${NC}"
-for LOGFILE in dashboard scheduler es_strategy; do
+for LOGFILE in dashboard scheduler es_strategy confidence_api metrics_exporter; do
     LOGPATH="$LOG_DIR/${LOGFILE}.log"
     if [ -f "$LOGPATH" ]; then
         LAST_LINE=$(tail -1 "$LOGPATH" 2>/dev/null)

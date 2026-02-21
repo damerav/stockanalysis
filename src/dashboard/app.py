@@ -9,6 +9,7 @@ import sys
 import json
 import time
 import logging
+import urllib.parse
 import requests
 import numpy as np
 import yaml
@@ -20,6 +21,16 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from src.auth.google_oauth import (
+    is_authenticated,
+    get_user,
+    get_session_token,
+    handle_oauth_callback,
+    render_login_page,
+    logout,
+)
+from src.dashboard.monitoring import page_monitoring
+
 logger = logging.getLogger(__name__)
 
 # --- Mode Detection ---
@@ -29,16 +40,87 @@ DATA_DIR = "./data"
 
 st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 
+# --- Global dark mode CSS (supplements .streamlit/config.toml dark theme) ---
+st.markdown(
+    """<style>
+    /* Sidebar accent */
+    .stSidebar { background-color: #111317 !important; }
+    .stDivider { border-color: #2c3035 !important; }
+
+    /* Dropdown menus */
+    [data-baseweb="popover"] { background-color: #1f2329 !important; }
+    [data-baseweb="popover"] li:hover { background-color: #2c3035 !important; }
+    [role="listbox"] { background-color: #1f2329 !important; }
+    [role="option"]:hover { background-color: #2c3035 !important; }
+
+    /* Form containers */
+    [data-testid="stForm"] {
+        background-color: #1f2329 !important;
+        border: 1px solid #3a3f47 !important;
+        border-radius: 10px;
+        padding: 24px !important;
+    }
+
+    /* Text inputs — visible borders */
+    [data-testid="stForm"] input {
+        background-color: #272b33 !important;
+        border: 1px solid #3a3f47 !important;
+        border-radius: 6px !important;
+        color: #e8e9ea !important;
+        padding: 10px 12px !important;
+    }
+    [data-testid="stForm"] input:focus {
+        border-color: #5794F2 !important;
+        box-shadow: 0 0 0 1px #5794F2 !important;
+    }
+
+    /* Sign In button */
+    [data-testid="stForm"] button[kind="secondaryFormSubmit"],
+    [data-testid="stForm"] button {
+        background-color: #5794F2 !important;
+        color: #fff !important;
+        border: none !important;
+        border-radius: 6px !important;
+        padding: 10px 0 !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stForm"] button:hover {
+        background-color: #4080e0 !important;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
+# --- OAuth Callback Handling ---
+if "code" in st.query_params and not is_authenticated():
+    handle_oauth_callback()
+    st.rerun()
+
+# --- Auth Gate ---
+if not is_authenticated():
+    if not render_login_page():
+        st.stop()
+
+# --- User Info in Sidebar ---
+user = get_user()
+
 # --- Sidebar Navigation ---
 st.sidebar.title("📊 Stock Analysis")
+if user:
+    st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
 page = st.sidebar.radio(
     "Navigate",
-    ["📈 SPY Predictor", "📊 ES Strategy", "🔬 What-If Analysis", "⚙️ Admin"],
+    ["📈 SPY Predictor", "📊 ES Strategy", "🔬 What-If Analysis",
+     "📉 Monitoring", "📉 Grafana (compare)", "⚙️ Admin"],
     label_visibility="collapsed",
 )
 st.sidebar.divider()
 mode_label = "☁️ Cloud" if IS_CLOUD else "🖥️ Local"
 st.sidebar.caption(f"{mode_label} mode")
+if user and user.get("email") != "anonymous":
+    if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+        logout()
+        st.rerun()
 
 
 # ======================================================================
@@ -103,6 +185,9 @@ def page_spy():
     updated_at = state.get("updated_at", "")
 
     st.title("📈 SPY/SPX Predictor")
+    if st.button("📉 View in Grafana", key="spy_to_grafana"):
+        st.session_state["_nav_target"] = "📉 Grafana Monitoring"
+        st.rerun()
 
     direction = prediction.get("direction", "NEUTRAL")
     scale_label = prediction.get("scale_label", "NEUTRAL")
@@ -185,15 +270,18 @@ def page_spy():
             legs = alert.get("legs", "")
             legs_str = f" ({legs}×)" if legs else ""
             st.markdown(
-                f"{direction_emoji} **{alert.get('timestamp', '')[:19]}** "
-                f"{alert.get('direction', '')} {alert.get('type', '')} "
-                f"{alert.get('symbol', '')} ${notional:,.0f}{legs_str}"
+                f'<span style="color:#d8d9da;">{direction_emoji} '
+                f'<b>{alert.get("timestamp", "")[:19]}</b> '
+                f'{alert.get("direction", "")} {alert.get("type", "")} '
+                f'{alert.get("symbol", "")} ${notional:,.0f}{legs_str}</span>',
+                unsafe_allow_html=True,
             )
     else:
         st.caption("No options flow alerts yet")
 
     st.divider()
-    st.caption(f"Last updated: {updated_at or 'N/A'}")
+    st.markdown(f'<span style="color:#888;">Last updated: {updated_at or "N/A"}</span>',
+                unsafe_allow_html=True)
 
 
 # ======================================================================
@@ -227,6 +315,9 @@ def page_es():
     updated_at = state.get("updated_at", "")
 
     st.title("📊 ES Futures Strategy")
+    if st.button("📉 View in Grafana", key="es_to_grafana"):
+        st.session_state["_nav_target"] = "📉 Grafana Monitoring"
+        st.rerun()
 
     pos_status = position.get("status", "FLAT")
     pos_lots = position.get("lots", 0)
@@ -333,7 +424,12 @@ def page_es():
             }
             for sig in reversed(signals[-20:]):
                 emoji = type_emojis.get(sig.get("type", ""), "📌")
-                st.text(f"{emoji} {sig.get('timestamp', '')[:8]} {sig.get('type', '')} {sig.get('detail', '')}")
+                st.markdown(
+                    f'<span style="color:#d8d9da; font-family:monospace; font-size:0.85em;">'
+                    f'{emoji} {sig.get("timestamp", "")[:8]} {sig.get("type", "")} '
+                    f'{sig.get("detail", "")}</span>',
+                    unsafe_allow_html=True,
+                )
         else:
             st.caption("No signals yet")
 
@@ -349,7 +445,12 @@ def page_es():
         if lots_detail:
             st.subheader("Lot Status")
             for lot in lots_detail:
-                st.text(f"  Lot {lot.get('id', '?')}: {lot.get('status', '?')} (${lot.get('pnl', 0):+,.0f})")
+                st.markdown(
+                    f'<span style="color:#d8d9da; font-family:monospace;">'
+                    f'  Lot {lot.get("id", "?")}: {lot.get("status", "?")} '
+                    f'(${lot.get("pnl", 0):+,.0f})</span>',
+                    unsafe_allow_html=True,
+                )
 
     st.divider()
     st.caption(f"Last updated: {updated_at or 'N/A'}")
@@ -1278,8 +1379,150 @@ def _admin_logs_tab():
 
 
 # ======================================================================
+# GRAFANA MONITORING PAGE
+# ======================================================================
+
+
+def _grafana_summary_cards():
+    """Show quick-glance summary cards above Grafana for seamless context."""
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+
+    # SPY data
+    spy_state = load_spy_state()
+    pred = spy_state.get("prediction", {})
+    indicators = spy_state.get("indicators", {})
+
+    with col1:
+        close = indicators.get("last_close", 0)
+        st.metric("SPY", f"${close:.2f}" if close else "—")
+    with col2:
+        direction = pred.get("direction", "—")
+        conf = pred.get("confidence", 0)
+        st.metric("Signal", direction, f"{conf:.0f}%")
+    with col3:
+        vix = indicators.get("vix", 0)
+        st.metric("VIX", f"{vix:.1f}" if vix else "—")
+
+    # ES data
+    es_state = load_es_state()
+    with col4:
+        pnl = es_state.get("daily_pnl", 0)
+        st.metric("ES Daily P&L", f"${pnl:+,.0f}" if pnl else "$0")
+    with col5:
+        total = es_state.get("total_pnl", 0)
+        st.metric("ES Total P&L", f"${total:+,.0f}" if total else "$0")
+    with col6:
+        wr = es_state.get("win_rate", 0)
+        st.metric("Win Rate", f"{wr*100:.0f}%" if wr else "—")
+
+
+def page_grafana():
+    """Embed Grafana dashboards with seamless Streamlit integration."""
+
+    # --- Quick-glance summary cards ---
+    _grafana_summary_cards()
+    st.divider()
+
+    # --- Cross-navigation buttons ---
+    nav_cols = st.columns([1, 1, 1, 1, 3])
+    with nav_cols[0]:
+        if st.button("📈 SPY Details", use_container_width=True):
+            st.session_state["_nav_target"] = "📈 SPY Predictor"
+            st.rerun()
+    with nav_cols[1]:
+        if st.button("📊 ES Details", use_container_width=True):
+            st.session_state["_nav_target"] = "📊 ES Strategy"
+            st.rerun()
+    with nav_cols[2]:
+        if st.button("🔬 What-If", use_container_width=True):
+            st.session_state["_nav_target"] = "🔬 What-If Analysis"
+            st.rerun()
+    with nav_cols[3]:
+        if st.button("⚙️ Admin", use_container_width=True):
+            st.session_state["_nav_target"] = "⚙️ Admin"
+            st.rerun()
+
+    # --- Grafana dashboard selector ---
+    # Use the DGX LAN IP so the browser (on the user's machine) can reach Grafana
+    _dgx_ip = os.environ.get("DGX_IP", "192.168.1.211")
+    proxy_host = os.environ.get("GRAFANA_PROXY_HOST", f"http://{_dgx_ip}:9190")
+    grafana_host = os.environ.get("GRAFANA_HOST", f"http://{_dgx_ip}:3001")
+
+    grafana_tab = st.radio(
+        "Grafana Dashboard",
+        ["SPY Predictor", "ES Strategy", "System Health", "Confidence API", "Pipeline Status"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    dashboard_map = {
+        "SPY Predictor": "spy-predictor",
+        "ES Strategy": "es-strategy",
+        "System Health": "system-health",
+        "Confidence API": "confidence-api",
+        "Pipeline Status": "pipeline-status",
+    }
+
+    uid = dashboard_map.get(grafana_tab, "spy-predictor")
+
+    # Build embed URL — go directly to Grafana (anonymous access is enabled).
+    # Only route through the auth proxy when Google OAuth is active.
+    user_info = get_user()
+    use_proxy = (
+        user_info
+        and user_info.get("email", "").endswith("@local") is False
+        and "@local" not in user_info.get("email", "")
+    )
+    token = get_session_token()
+    if token and use_proxy:
+        embed_url = (
+            f"{proxy_host}/grafana-proxy/d/{uid}"
+            f"?orgId=1&kiosk&auth_token={urllib.parse.quote(token)}"
+        )
+    else:
+        embed_url = f"{grafana_host}/d/{uid}?orgId=1&kiosk"
+
+    # Sidebar controls
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Grafana Settings**")
+    height = st.sidebar.slider("Panel Height", 400, 1200, 800, 50)
+    st.sidebar.caption(f"[Open full Grafana ↗]({grafana_host}/d/{uid})")
+
+    user_info = get_user()
+    if user_info and user_info.get("email") != "anonymous":
+        st.sidebar.caption(f"Grafana user: {user_info['email']}")
+
+    # Embed Grafana with JS bridge for intercepting navigation
+    st.components.v1.html(
+        f"""
+        <style>
+            iframe#grafana-embed {{
+                width: 100%; height: {height}px; border: none;
+                border-radius: 8px; background: #181b1f;
+            }}
+        </style>
+        <iframe id="grafana-embed" src="{embed_url}"></iframe>
+        <script>
+            // Intercept clicks inside Grafana that try to navigate away
+            window.addEventListener('message', function(e) {{
+                if (e.data && e.data.type === 'navigate') {{
+                    // Could be used to trigger Streamlit navigation in the future
+                    console.log('Grafana navigation:', e.data.url);
+                }}
+            }});
+        </script>
+        """,
+        height=height + 10,
+    )
+
+
+# ======================================================================
 # ROUTER
 # ======================================================================
+
+# Handle cross-page navigation from Grafana page buttons
+if "_nav_target" in st.session_state:
+    page = st.session_state.pop("_nav_target")
 
 if page == "📈 SPY Predictor":
     page_spy()
@@ -1291,5 +1534,9 @@ elif page == "📊 ES Strategy":
     st.rerun()
 elif page == "🔬 What-If Analysis":
     page_whatif()
+elif page == "📉 Monitoring":
+    page_monitoring()
+elif page == "📉 Grafana (compare)":
+    page_grafana()
 elif page == "⚙️ Admin":
     page_admin()

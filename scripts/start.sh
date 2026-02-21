@@ -92,7 +92,24 @@ nohup python -m src.es_strategy.runner \
 echo $! > "$PID_DIR/es_strategy.pid"
 log "ES strategy runner started (PID $(cat $PID_DIR/es_strategy.pid))"
 
-# --- Step 5: Start Pipeline Scheduler ---
+# --- Step 4b: Start AI Confidence API (optional) ---
+if [ "${START_API:-true}" = "true" ]; then
+    log "Starting AI Confidence API on port 8100..."
+    nohup python -m uvicorn src.api.confidence_server:app \
+        --host 0.0.0.0 --port 8100 \
+        > "$LOG_DIR/confidence_api.log" 2>&1 &
+    echo $! > "$PID_DIR/confidence_api.pid"
+    log "Confidence API started (PID $(cat $PID_DIR/confidence_api.pid))"
+fi
+
+# --- Step 5: Start Prometheus Metrics Exporter ---
+log "Starting Prometheus metrics exporter on port 9190..."
+nohup python -m src.api.metrics_exporter \
+    > "$LOG_DIR/metrics_exporter.log" 2>&1 &
+echo $! > "$PID_DIR/metrics_exporter.pid"
+log "Metrics exporter started (PID $(cat $PID_DIR/metrics_exporter.pid))"
+
+# --- Step 6: Start Pipeline Scheduler ---
 log "Starting pipeline scheduler..."
 nohup python -c "
 import time, yaml, logging, sys
@@ -132,6 +149,9 @@ log "Stock Analysis Platform is running"
 echo "============================================================"
 echo ""
 echo "  Dashboard:  http://$(hostname -I | awk '{print $1}'):8501"
+echo "  Grafana:    http://$(hostname -I | awk '{print $1}'):3000  (if Docker stack running)"
+echo "  API:        http://$(hostname -I | awk '{print $1}'):8100/health"
+echo "  Metrics:    http://$(hostname -I | awk '{print $1}'):9190/metrics"
 echo "  ES Runner:  paper mode (PID $(cat $PID_DIR/es_strategy.pid))"
 echo "  Scheduler:  daily pipeline at 4:30 PM ET"
 echo ""
@@ -140,4 +160,7 @@ echo "  PIDs:       $PID_DIR/"
 echo ""
 echo "  Stop:       ./scripts/stop.sh"
 echo "  Status:     ./scripts/status.sh"
+echo ""
+echo "  To start Grafana + Prometheus:"
+echo "    cd cloud && docker compose up -d grafana prometheus"
 echo "============================================================"

@@ -6,6 +6,7 @@ from typing import Optional
 
 from src.es_strategy.position import Position, Direction, LotStatus
 from src.es_strategy.indicators import RegimeDetector
+from src.es_strategy.rl_trail import RLTrailingAgent
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,15 @@ class ESStrategyEngine:
             "Med":  {"tp1": 1.2, "tp2": 1.8, "runner_trail": 2.5},
             "High": {"tp1": 1.5, "tp2": 2.2, "runner_trail": 3.0},
         }
+
+        # GAP 9: RL trailing stop agent
+        self.rl_trail = RLTrailingAgent(
+            alpha=cfg.get("rl_alpha", 0.1),
+            gamma=cfg.get("rl_gamma", 0.95),
+            epsilon=cfg.get("rl_epsilon", 0.1),
+            lambda_dd=cfg.get("rl_lambda_dd", 0.5),
+        )
+        self.rl_trail.load()  # load saved Q-table if exists
 
     @property
     def regime(self) -> str:
@@ -219,15 +229,37 @@ class ESStrategyEngine:
                         self.position.update_stop(tp1_target if self.position.direction == Direction.LONG
                                                   else self.position.entry_price - (tp1_target - self.position.entry_price))
 
-        # Runner: trailing stop
+        # Runner: trailing stop (GAP 9: RL-adjusted)
         runner_trail = mults["runner_trail"] * atr_val
         for lot in self.position.lots:
             if lot.id == 2 and lot.status == LotStatus.ACTIVE:
+                # RL agent adjusts the base trail
+                rl_adj = self.rl_trail.get_trail_adjustment(
+                    regime=regime,
+                    atr_pct=indicators.get("atr_regime_pct", 0.5) if isinstance(indicators, dict) else 0.5,
+                    unrealized_pnl=self.position.unrealized_pnl,
+                    bars_held=self._bars_since_entry,
+                    rsi=indicators.get("rsi_14", 50) if isinstance(indicators, dict) else 50,
+                    roc=indicators.get("roc_3", 0) if isinstance(indicators, dict) else 0,
+                    atr_val=atr_val,
+                )
+                adjusted_trail = max(runner_trail + rl_adj, 0.5 * atr_val)  # floor at 0.5×ATR
                 if self.position.direction == Direction.LONG:
-                    new_stop = price - runner_trail
+                    new_stop = price - adjusted_trail
                 else:
-                    new_stop = price + runner_trail
+                    new_stop = price + adjusted_trail
                 self.position.update_stop(new_stop)
+
+                # Update RL agent with current equity
+                equity = self.position.daily_pnl + self.position.unrealized_pnl
+                self.rl_trail.update(
+                    new_equity=equity, regime=regime,
+                    atr_pct=indicators.get("atr_regime_pct", 0.5) if isinstance(indicators, dict) else 0.5,
+                    unrealized_pnl=self.position.unrealized_pnl,
+                    bars_held=self._bars_since_entry,
+                    rsi=indicators.get("rsi_14", 50) if isinstance(indicators, dict) else 50,
+                    roc=indicators.get("roc_3", 0) if isinstance(indicators, dict) else 0,
+                )
 
         return signals
 
@@ -352,6 +384,7 @@ class ESStrategyEngine:
         return {
             "position": self.position.to_dict(),
             "regime": self.regime,
+            "spread": {"strike_K": self.K, "credit_C": self.C},
             "pnl": {
                 "daily": round(self.position.daily_pnl, 2),
                 "unrealized": round(self.position.unrealized_pnl, 2),
@@ -360,3 +393,20 @@ class ESStrategyEngine:
             "trade_count": self.position.trade_count,
             "signals": [s.to_dict() for s in self.signals[-50:]],
         }
+
+    def update_spread(self, strike_K: float, credit_C: float):
+        """GAP 19: Update spread inputs dynamically (from broker or manual entry).
+
+        Only updates if position is flat to avoid mid-trade parameter changes.
+        """
+        if not self.position.is_flat:
+            logger.warning("Cannot update spread while position is open")
+            return False
+        self.K = strike_K
+        self.C = credit_C
+        logger.info(f"Spread updated: K={strike_K}, C={credit_C}")
+        return True
+
+    def save_rl_agent(self):
+        """Save RL trailing agent Q-table."""
+        self.rl_trail.save()

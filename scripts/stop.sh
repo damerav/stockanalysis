@@ -55,6 +55,8 @@ echo ""
 
 # Stop in reverse order
 stop_process "scheduler"
+stop_process "metrics_exporter"
+stop_process "confidence_api"
 stop_process "es_strategy"
 stop_process "dashboard"
 
@@ -77,6 +79,20 @@ STREAMLIT_PID=$(fuser 8501/tcp 2>/dev/null)
 if [ -n "$STREAMLIT_PID" ]; then
     kill $STREAMLIT_PID 2>/dev/null
     log "Killed orphaned process on port 8501 (PID $STREAMLIT_PID)"
+fi
+
+# Kill orphaned API processes on port 8100
+API_PID=$(fuser 8100/tcp 2>/dev/null)
+if [ -n "$API_PID" ]; then
+    kill $API_PID 2>/dev/null
+    log "Killed orphaned process on port 8100 (PID $API_PID)"
+fi
+
+# Kill orphaned metrics exporter on port 9190
+METRICS_PID=$(fuser 9190/tcp 2>/dev/null)
+if [ -n "$METRICS_PID" ]; then
+    kill $METRICS_PID 2>/dev/null
+    log "Killed orphaned process on port 9190 (PID $METRICS_PID)"
 fi
 
 echo ""

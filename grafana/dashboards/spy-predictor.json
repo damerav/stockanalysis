@@ -1,0 +1,348 @@
+{
+  "uid": "spy-predictor",
+  "title": "SPY Predictor",
+  "tags": ["spy", "prediction"],
+  "timezone": "browser",
+  "refresh": "1m",
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "SPY Last Close",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "spy_last_close",
+        "legendFormat": "SPY Close",
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 2,
+      "title": "Prediction Direction",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "targets": [{
+        "expr": "spy_prediction_direction",
+        "legendFormat": "Direction",
+        "instant": true,
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [{
+            "type": "value",
+            "options": {
+              "1": { "text": "BULLISH", "color": "green" },
+              "-1": { "text": "BEARISH", "color": "red" },
+              "0": { "text": "NEUTRAL", "color": "yellow" }
+            }
+          }]
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 3,
+      "title": "Prediction Confidence",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "targets": [{
+        "expr": "spy_prediction_confidence",
+        "legendFormat": "Confidence",
+        "instant": true,
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 50 },
+            { "color": "green", "value": 70 }
+          ]}
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 4,
+      "title": "VIX",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "spy_vix",
+        "legendFormat": "VIX",
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 20 },
+            { "color": "red", "value": 30 }
+          ]}
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 5,
+      "title": "RSI (14)",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "targets": [{
+        "expr": "spy_rsi",
+        "legendFormat": "RSI",
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "yellow", "value": 30 },
+            { "color": "green", "value": 40 },
+            { "color": "yellow", "value": 60 },
+            { "color": "red", "value": 70 }
+          ]}
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 6,
+      "title": "ATR",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "targets": [{
+        "expr": "spy_atr",
+        "legendFormat": "ATR",
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 7,
+      "title": "SPY Price vs Moving Averages",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=spy_close&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "SPY Close", "type": "number" }
+          ]
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=sma_20&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "SMA 20", "type": "number" }
+          ]
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=sma_50&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "SMA 50", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "SPY Close" }, "properties": [{ "id": "color", "value": { "fixedColor": "white", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "SMA 20" }, "properties": [{ "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "SMA 50" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+        ]
+      },
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" }
+    },
+    {
+      "id": 8,
+      "title": "Bollinger Bands",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=spy_close&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "SPY Close", "type": "number" }
+          ]
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=bb_upper&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "BB Upper", "type": "number" }
+          ]
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=bb_lower&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "BB Lower", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "SPY Close" }, "properties": [{ "id": "color", "value": { "fixedColor": "white", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "BB Upper" }, "properties": [
+            { "id": "color", "value": { "fixedColor": "rgba(255,100,100,0.6)", "mode": "fixed" } },
+            { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+          ]},
+          { "matcher": { "id": "byName", "options": "BB Lower" }, "properties": [
+            { "id": "color", "value": { "fixedColor": "rgba(100,100,255,0.6)", "mode": "fixed" } },
+            { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } }
+          ]}
+        ]
+      },
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" }
+    },
+    {
+      "id": 9,
+      "title": "MACD",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=macd&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "MACD", "type": "number" }
+          ]
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=macd_signal&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "Signal", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "MACD" }, "properties": [{ "id": "color", "value": { "fixedColor": "cyan", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "Signal" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }
+        ]
+      },
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" }
+    },
+    {
+      "id": 11,
+      "title": "RSI History",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=rsi_14&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "RSI", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 30 },
+            { "color": "green", "value": 40 },
+            { "color": "red", "value": 70 }
+          ]}
+        }
+      },
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" }
+    },
+    {
+      "id": 12,
+      "title": "VIX History",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" },
+          "method": "GET",
+          "urlPath": "/api/history?series=vix&days=365",
+          "fields": [
+            { "jsonPath": "$[*].time", "name": "Time", "type": "time" },
+            { "jsonPath": "$[*].value", "name": "VIX", "type": "number" }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 20 },
+            { "color": "red", "value": 30 }
+          ]},
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "datasource": { "type": "marcusolsson-json-datasource", "uid": "sqlite-history" }
+    },
+    {
+      "id": 10,
+      "title": "Data Inventory (Row Counts)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [{
+        "expr": "spy_table_rows",
+        "legendFormat": "{{table}}",
+        "format": "table",
+        "instant": true,
+        "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+      }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true } } }],
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    }
+  ],
+  "schemaVersion": 39
+}

@@ -1,0 +1,812 @@
+"""Native Plotly monitoring dashboards — Grafana-quality, zero dependencies.
+
+Replicates all 5 Grafana dashboards:
+  1. SPY Predictor  — price, MAs, Bollinger, MACD, RSI, VIX
+  2. ES Strategy    — P&L, positions, Keltner, RSI
+  3. System Health  — service status, DB size, model info
+  4. Confidence API — latency, allow/block, audit log
+  5. Pipeline       — process status, data inventory
+"""
+
+import os
+import json
+import sqlite3
+import logging
+from datetime import datetime, timedelta
+
+import pandas as pd
+import numpy as np
+import streamlit as st
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+
+logger = logging.getLogger(__name__)
+
+DATA_DIR = "./data"
+LOGS_DIR = "./logs"
+MODELS_DIR = "./models"
+PIDS_DIR = "./.pids"
+
+# ── Grafana-inspired dark theme for Plotly ────────────────────────────
+DARK_LAYOUT = dict(
+    template="plotly_dark",
+    paper_bgcolor="#181b1f",
+    plot_bgcolor="#181b1f",
+    font=dict(color="#d8d9da", size=12),
+    margin=dict(l=40, r=10, t=36, b=30),
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    xaxis=dict(gridcolor="#2c3035", showgrid=True),
+    yaxis=dict(gridcolor="#2c3035", showgrid=True),
+)
+
+# Title style applied separately to avoid duplicate kwarg conflicts
+TITLE_FONT = dict(color="#FFFFFF", size=14)
+
+COLORS = {
+    "green": "#73BF69",
+    "red": "#F2495C",
+    "yellow": "#FF9830",
+    "blue": "#5794F2",
+    "cyan": "#8AB8FF",
+    "orange": "#FF9830",
+    "purple": "#B877D9",
+    "white": "#FFFFFF",
+    "bg": "#181b1f",
+    "card_bg": "#1f2329",
+    "border": "#2c3035",
+}
+
+
+# ── Helper: status badge HTML ─────────────────────────────────────────
+def _badge(label: str, online: bool) -> str:
+    color = COLORS["green"] if online else COLORS["red"]
+    text = "ONLINE" if online else "OFFLINE"
+    return (
+        f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
+        f'border-radius:8px; padding:16px; text-align:center;">'
+        f'<div style="color:#999; font-size:0.8em; margin-bottom:4px;">{label}</div>'
+        f'<div style="color:{color}; font-size:1.4em; font-weight:bold;">{text}</div>'
+        f'</div>'
+    )
+
+
+def _metric_card(label: str, value: str, color: str = "white", sub: str = "") -> str:
+    c = COLORS.get(color, color)
+    sub_html = f'<div style="color:#999; font-size:0.75em;">{sub}</div>' if sub else ""
+    return (
+        f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
+        f'border-radius:8px; padding:16px; text-align:center;">'
+        f'<div style="color:#999; font-size:0.8em; margin-bottom:4px;">{label}</div>'
+        f'<div style="color:{c}; font-size:1.5em; font-weight:bold;">{value}</div>'
+        f'{sub_html}</div>'
+    )
+
+
+def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
+                 thresholds=None, suffix="%", height=170):
+    """Create a Plotly gauge chart mimicking Grafana gauges."""
+    if thresholds is None:
+        thresholds = [(0, "red"), (40, "yellow"), (60, "green")]
+
+    steps = []
+    for i, (thresh, color) in enumerate(thresholds):
+        upper = thresholds[i + 1][0] if i + 1 < len(thresholds) else max_val
+        steps.append(dict(range=[thresh, upper], color=COLORS.get(color, color)))
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=value,
+        title=dict(text=title, font=dict(size=14, color="#d8d9da")),
+        number=dict(suffix=suffix, font=dict(size=24)),
+        gauge=dict(
+            axis=dict(range=[min_val, max_val], tickcolor="#666"),
+            bar=dict(color=COLORS["blue"]),
+            bgcolor=COLORS["card_bg"],
+            bordercolor=COLORS["border"],
+            steps=steps,
+        ),
+    ))
+    fig.update_layout(
+        paper_bgcolor=COLORS["bg"], font=dict(color="#d8d9da"),
+        height=height, margin=dict(l=20, r=20, t=50, b=20),
+    )
+    return fig
+
+
+# ── DB query helpers ──────────────────────────────────────────────────
+def _get_db():
+    db_path = os.path.join(DATA_DIR, "spy.db")
+    if not os.path.exists(db_path):
+        return None
+    conn = sqlite3.connect(db_path, timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _query_df(sql: str, params=()) -> pd.DataFrame:
+    conn = _get_db()
+    if conn is None:
+        return pd.DataFrame()
+    try:
+        df = pd.read_sql_query(sql, conn, params=params)
+        conn.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _load_es_state() -> dict:
+    try:
+        with open(os.path.join(DATA_DIR, "es_state.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _check_service(url: str, timeout: int = 3) -> bool:
+    try:
+        r = requests.get(url, timeout=timeout)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _check_pid(name: str) -> bool:
+    pid_file = os.path.join(PIDS_DIR, f"{name}.pid")
+    if not os.path.exists(pid_file):
+        return False
+    try:
+        pid = int(open(pid_file).read().strip())
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, ValueError, PermissionError, OSError):
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 1: SPY PREDICTOR
+# ══════════════════════════════════════════════════════════════════════
+
+def tab_spy_predictor(days: int = 90):
+    """SPY Predictor monitoring — mirrors Grafana spy-predictor dashboard."""
+
+    # ── Row 1: Stat cards ──
+    conn = _get_db()
+    close_val = rsi_val = atr_val = vix_val = 0.0
+    direction_str = "—"
+    confidence_val = 0.0
+
+    if conn:
+        row = conn.execute("SELECT close FROM prices ORDER BY date DESC LIMIT 1").fetchone()
+        if row:
+            close_val = float(row[0] or 0)
+
+        row = conn.execute("SELECT rsi_14, atr_14 FROM technicals ORDER BY date DESC LIMIT 1").fetchone()
+        if row:
+            rsi_val = float(row[0] or 0)
+            atr_val = float(row[1] or 0)
+
+        row = conn.execute("SELECT vix FROM macro ORDER BY date DESC LIMIT 1").fetchone()
+        if row:
+            vix_val = float(row[0] or 0)
+
+        row = conn.execute("SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1").fetchone()
+        if row:
+            direction_str = str(row[0] or "—")
+            confidence_val = float(row[1] or 0)
+        conn.close()
+
+    dir_color = "green" if "BULL" in direction_str.upper() else "red" if "BEAR" in direction_str.upper() else "yellow"
+    vix_color = "green" if vix_val < 20 else "yellow" if vix_val < 30 else "red"
+
+    cols = st.columns(6)
+    cards = [
+        ("SPY Last Close", f"${close_val:,.2f}", "white"),
+        ("Prediction", direction_str, dir_color),
+        ("Confidence", f"{confidence_val:.1f}%", dir_color),
+        ("VIX", f"{vix_val:.1f}", vix_color),
+        ("RSI (14)", f"{rsi_val:.1f}", "blue"),
+        ("ATR", f"{atr_val:.2f}", "cyan"),
+    ]
+    for col, (label, val, color) in zip(cols, cards):
+        col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 2: Price vs Moving Averages | Bollinger Bands ──
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    prices = _query_df("SELECT date, close FROM prices WHERE date >= ? ORDER BY date", (cutoff,))
+    techs = _query_df(
+        "SELECT date, sma_20, sma_50, bb_upper, bb_lower, macd, macd_signal, rsi_14 "
+        "FROM technicals WHERE date >= ? ORDER BY date", (cutoff,)
+    )
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        fig = go.Figure()
+        if not prices.empty:
+            fig.add_trace(go.Scatter(x=prices["date"], y=prices["close"],
+                                     name="SPY Close", line=dict(color=COLORS["white"], width=2)))
+        if not techs.empty:
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["sma_20"],
+                                     name="SMA 20", line=dict(color=COLORS["yellow"], width=1.5)))
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["sma_50"],
+                                     name="SMA 50", line=dict(color=COLORS["orange"], width=1.5)))
+        fig.update_layout(**DARK_LAYOUT, title=dict(text="SPY Price vs Moving Averages", font=TITLE_FONT),
+                          yaxis_title="USD", height=250)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        fig = go.Figure()
+        if not prices.empty:
+            fig.add_trace(go.Scatter(x=prices["date"], y=prices["close"],
+                                     name="SPY Close", line=dict(color=COLORS["white"], width=2)))
+        if not techs.empty:
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["bb_upper"],
+                                     name="BB Upper", line=dict(color=COLORS["red"], width=1, dash="dash")))
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["bb_lower"],
+                                     name="BB Lower", line=dict(color=COLORS["blue"], width=1, dash="dash"),
+                                     fill="tonexty", fillcolor="rgba(87,148,242,0.08)"))
+        fig.update_layout(**DARK_LAYOUT, title=dict(text="Bollinger Bands", font=TITLE_FONT),
+                          yaxis_title="USD", height=250)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Row 3: MACD | RSI History ──
+    c1, c2 = st.columns(2)
+
+    with c1:
+        fig = go.Figure()
+        if not techs.empty:
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["macd"],
+                                     name="MACD", line=dict(color=COLORS["cyan"], width=2)))
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["macd_signal"],
+                                     name="Signal", line=dict(color=COLORS["orange"], width=1.5)))
+            hist = techs["macd"].astype(float) - techs["macd_signal"].astype(float)
+            colors_hist = [COLORS["green"] if v >= 0 else COLORS["red"] for v in hist]
+            fig.add_trace(go.Bar(x=techs["date"], y=hist, name="Histogram",
+                                 marker_color=colors_hist, opacity=0.5))
+        fig.update_layout(**DARK_LAYOUT, title=dict(text="MACD", font=TITLE_FONT), height=220)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        fig = go.Figure()
+        if not techs.empty:
+            fig.add_trace(go.Scatter(x=techs["date"], y=techs["rsi_14"],
+                                     name="RSI", line=dict(color=COLORS["purple"], width=2)))
+            fig.add_hrect(y0=70, y1=100, fillcolor="rgba(242,73,92,0.1)", line_width=0)
+            fig.add_hrect(y0=0, y1=30, fillcolor="rgba(115,191,105,0.1)", line_width=0)
+            fig.add_hline(y=70, line_dash="dash", line_color=COLORS["red"], opacity=0.5)
+            fig.add_hline(y=30, line_dash="dash", line_color=COLORS["green"], opacity=0.5)
+        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor="#2c3035", showgrid=True)}
+        fig.update_layout(**rsi_layout, title=dict(text="RSI (14)", font=TITLE_FONT), height=220)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Row 4: VIX History | Data Inventory ──
+    c1, c2 = st.columns(2)
+
+    with c1:
+        vix_df = _query_df("SELECT date, vix FROM macro WHERE date >= ? ORDER BY date", (cutoff,))
+        fig = go.Figure()
+        if not vix_df.empty:
+            fig.add_trace(go.Scatter(x=vix_df["date"], y=vix_df["vix"],
+                                     name="VIX", line=dict(color=COLORS["yellow"], width=2),
+                                     fill="tozeroy", fillcolor="rgba(255,152,48,0.1)"))
+            fig.add_hline(y=20, line_dash="dash", line_color=COLORS["yellow"], opacity=0.4)
+            fig.add_hline(y=30, line_dash="dash", line_color=COLORS["red"], opacity=0.4)
+        fig.update_layout(**DARK_LAYOUT, title=dict(text="VIX History", font=TITLE_FONT), height=220)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        conn = _get_db()
+        if conn:
+            tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
+                       "predictions", "intraday_bars", "options_chain",
+                       "options_analytics", "intraday_features", "performance"]
+            rows = []
+            for t in tables:
+                try:
+                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    rows.append({"Table": t, "Rows": count})
+                except Exception:
+                    rows.append({"Table": t, "Rows": 0})
+            conn.close()
+            df = pd.DataFrame(rows)
+            fig = go.Figure(go.Bar(
+                x=df["Rows"], y=df["Table"], orientation="h",
+                marker=dict(color=COLORS["blue"], line=dict(width=0)),
+            ))
+            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor="#2c3035", showgrid=True)}
+            fig.update_layout(**inv_layout, title=dict(text="Data Inventory", font=TITLE_FONT), height=220,
+                              xaxis_title="Row Count")
+            st.plotly_chart(fig, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 2: ES STRATEGY
+# ══════════════════════════════════════════════════════════════════════
+
+def tab_es_strategy():
+    """ES Futures Strategy monitoring — mirrors Grafana es-strategy dashboard."""
+    state = _load_es_state()
+
+    daily_pnl = float(state.get("daily_pnl", 0))
+    total_pnl = float(state.get("total_pnl", 0))
+    open_lots = int(state.get("open_lots", 0))
+    trades_today = int(state.get("trades_today", 0))
+    win_rate = float(state.get("win_rate", 0))
+    sharpe = float(state.get("sharpe_ratio", 0))
+    max_dd = float(state.get("max_drawdown", 0))
+    regime_str = state.get("vol_regime", "Med")
+
+    # ── Row 1: Stat cards ──
+    cols = st.columns(7)
+    pnl_color = "green" if daily_pnl >= 0 else "red"
+    total_color = "green" if total_pnl >= 0 else "red"
+    regime_color = {"Low": "green", "Med": "yellow", "High": "red"}.get(regime_str, "yellow")
+    sharpe_color = "green" if sharpe >= 1.0 else "yellow" if sharpe >= 0.5 else "red"
+
+    card_data = [
+        ("Daily P&L", f"${daily_pnl:+,.0f}", pnl_color),
+        ("Total P&L", f"${total_pnl:+,.0f}", total_color),
+        ("Open Lots", str(open_lots), "blue"),
+        ("Trades Today", str(trades_today), "cyan"),
+        ("Win Rate", f"{win_rate*100:.0f}%", "green" if win_rate > 0.55 else "yellow"),
+        ("Vol Regime", regime_str.upper(), regime_color),
+        ("Sharpe", f"{sharpe:.2f}", sharpe_color),
+    ]
+    for col, (label, val, color) in zip(cols, card_data):
+        col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 2: Gauges ──
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        fig = _gauge_chart(win_rate * 100, "Win Rate", 0, 100,
+                           [(0, "red"), (40, "yellow"), (55, "green")])
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        fig = _gauge_chart(sharpe, "Sharpe Ratio", -1, 3,
+                           [(-1, "red"), (0.5, "yellow"), (1.0, "green")], suffix="")
+        st.plotly_chart(fig, use_container_width=True)
+    with c3:
+        fig = _gauge_chart(abs(max_dd), "Max Drawdown", 0, 3000,
+                           [(0, "green"), (500, "yellow"), (1000, "red")], suffix=" USD")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Row 3: Keltner Channel | P&L placeholder ──
+    c1, c2 = st.columns(2)
+
+    with c1:
+        price = float(state.get("current_price", 0))
+        kc_upper = float(state.get("kc_upper", 0))
+        kc_mid = float(state.get("kc_mid", 0))
+        kc_lower = float(state.get("kc_lower", 0))
+        vwap = float(state.get("vwap", 0))
+
+        fig = go.Figure()
+        # Show current values as horizontal reference lines
+        if kc_upper > 0:
+            fig.add_hline(y=kc_upper, line_dash="dash", line_color=COLORS["red"],
+                          annotation_text=f"KC Upper: {kc_upper:.0f}")
+            fig.add_hline(y=kc_mid, line_dash="dot", line_color=COLORS["yellow"],
+                          annotation_text=f"KC Mid: {kc_mid:.0f}")
+            fig.add_hline(y=kc_lower, line_dash="dash", line_color=COLORS["green"],
+                          annotation_text=f"KC Lower: {kc_lower:.0f}")
+        if vwap > 0:
+            fig.add_hline(y=vwap, line_dash="dashdot", line_color=COLORS["purple"],
+                          annotation_text=f"VWAP: {vwap:.0f}")
+        if price > 0:
+            fig.add_hline(y=price, line_color=COLORS["white"], line_width=2,
+                          annotation_text=f"ES: {price:.0f}")
+            y_min = min(kc_lower, price) - 10 if kc_lower > 0 else price - 30
+            y_max = max(kc_upper, price) + 10 if kc_upper > 0 else price + 30
+            fig.update_yaxes(range=[y_min, y_max])
+
+        fig.update_layout(**DARK_LAYOUT, title=dict(text="ES Price vs Keltner Channel", font=TITLE_FONT),
+                          yaxis_title="USD", height=260)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        # Position details table
+        pos = state.get("position", {})
+        if isinstance(pos, dict) and pos:
+            pos_df = pd.DataFrame([{
+                "Lots": pos.get("lots", 0),
+                "Entry Price": f"${float(pos.get('entry_price', 0)):,.2f}",
+                "Unrealized P&L": f"${float(pos.get('unrealized_pnl', 0)):+,.2f}",
+                "Status": pos.get("status", "FLAT"),
+            }])
+            st.markdown("**Position Details**")
+            st.dataframe(pos_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No open position")
+
+        # Signal history
+        signals = state.get("signals", [])
+        if signals and isinstance(signals, list):
+            st.markdown(f"**Recent Signals** ({len(signals)} total)")
+            recent = signals[-10:] if len(signals) > 10 else signals
+            for sig in reversed(recent):
+                if isinstance(sig, dict):
+                    st.caption(f"{sig.get('time', '—')} | {sig.get('action', '—')} | {sig.get('reason', '—')}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 3: SYSTEM HEALTH
+# ══════════════════════════════════════════════════════════════════════
+
+def tab_system_health():
+    """System Health monitoring — mirrors Grafana system-health dashboard."""
+
+    # ── Row 1: Service status badges ──
+    db_online = os.path.exists(os.path.join(DATA_DIR, "spy.db"))
+    ollama_online = _check_service("http://localhost:11434/api/tags")
+    dashboard_online = _check_service("http://localhost:8501")
+    api_online = _check_service("http://localhost:8100/health")
+
+    # Model check
+    model_loaded = False
+    model_count = 0
+    model_size_kb = 0
+    if os.path.exists(MODELS_DIR):
+        model_files = sorted([f for f in os.listdir(MODELS_DIR) if f.endswith(".json")], reverse=True)
+        model_count = len(model_files)
+        model_loaded = model_count > 0
+        if model_files:
+            model_size_kb = os.path.getsize(os.path.join(MODELS_DIR, model_files[0])) / 1024
+
+    # Target LLM
+    target_loaded = False
+    ollama_model_count = 0
+    if ollama_online:
+        try:
+            resp = requests.get("http://localhost:11434/api/tags", timeout=3)
+            models = resp.json().get("models", [])
+            ollama_model_count = len(models)
+            import yaml
+            with open("config.yaml") as f:
+                cfg = yaml.safe_load(f) or {}
+            target = cfg.get("llm", {}).get("model", "deepseek-r1:70b")
+            target_loaded = any(target in m.get("name", "") for m in models)
+        except Exception:
+            pass
+
+    cols = st.columns(6)
+    badges = [
+        ("Database", db_online),
+        ("Ollama LLM", ollama_online),
+        ("XGBoost Model", model_loaded),
+        ("Confidence API", api_online),
+        ("Dashboard", dashboard_online),
+        ("Target LLM", target_loaded),
+    ]
+    for col, (label, status) in zip(cols, badges):
+        col.markdown(_badge(label, status), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 2: DB size, API uptime, Model info ──
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        db_path = os.path.join(DATA_DIR, "spy.db")
+        db_size = os.path.getsize(db_path) / (1024 * 1024) if os.path.exists(db_path) else 0
+        st.markdown(_metric_card("Database Size", f"{db_size:.1f} MB", "blue"), unsafe_allow_html=True)
+
+    with c2:
+        uptime_str = "—"
+        if api_online:
+            try:
+                resp = requests.get("http://localhost:8100/health", timeout=3)
+                data = resp.json()
+                uptime_s = float(data.get("uptime_seconds", 0))
+                hours = int(uptime_s // 3600)
+                mins = int((uptime_s % 3600) // 60)
+                uptime_str = f"{hours}h {mins}m"
+            except Exception:
+                pass
+        st.markdown(_metric_card("API Uptime", uptime_str, "green"), unsafe_allow_html=True)
+
+    with c3:
+        st.markdown(
+            _metric_card("Models", f"{model_count} files", "cyan",
+                         sub=f"Latest: {model_size_kb:.0f} KB" if model_size_kb else ""),
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 3: Confidence API details ──
+    c1, c2 = st.columns(2)
+
+    with c1:
+        entry_loaded = False
+        exit_loaded = False
+        if api_online:
+            try:
+                resp = requests.get("http://localhost:8100/health", timeout=3)
+                data = resp.json()
+                entry_loaded = bool(data.get("entry_gate_loaded"))
+                exit_loaded = bool(data.get("exit_ctrl_loaded"))
+            except Exception:
+                pass
+        cols_inner = st.columns(2)
+        cols_inner[0].markdown(_badge("Entry Gate", entry_loaded), unsafe_allow_html=True)
+        cols_inner[1].markdown(_badge("Exit Controller", exit_loaded), unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(
+            _metric_card("Ollama Models", str(ollama_model_count), "purple",
+                         sub=f"Target: {'✓' if target_loaded else '✗'}"),
+            unsafe_allow_html=True,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 4: CONFIDENCE API
+# ══════════════════════════════════════════════════════════════════════
+
+def tab_confidence_api():
+    """Confidence API monitoring — mirrors Grafana confidence-api dashboard."""
+
+    api_online = _check_service("http://localhost:8100/health")
+
+    # Parse audit log
+    audit_path = os.path.join(LOGS_DIR, "trade_audit.jsonl")
+    entries = []
+    if os.path.exists(audit_path):
+        try:
+            with open(audit_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+        except Exception:
+            pass
+
+    recent = entries[-100:] if len(entries) > 100 else entries
+
+    latencies = [e.get("latency_ms", 0) for e in recent if e.get("latency_ms")]
+    avg_lat = sum(latencies) / len(latencies) if latencies else 0
+    max_lat = max(latencies) if latencies else 0
+    p99_lat = sorted(latencies)[int(len(latencies) * 0.99)] if latencies else 0
+    allows = sum(1 for e in recent if e.get("advice") == "allow")
+    blocks = sum(1 for e in recent if e.get("advice") == "block")
+
+    # ── Row 1: Stat cards ──
+    cols = st.columns(6)
+    card_data = [
+        ("API Status", "ONLINE" if api_online else "OFFLINE", "green" if api_online else "red"),
+        ("Avg Latency", f"{avg_lat:.1f} ms", "green" if avg_lat < 20 else "yellow" if avg_lat < 50 else "red"),
+        ("P99 Latency", f"{p99_lat:.1f} ms", "green" if p99_lat < 30 else "yellow" if p99_lat < 50 else "red"),
+        ("Total Requests", str(len(entries)), "blue"),
+        ("Recent Allows", str(allows), "green"),
+        ("Recent Blocks", str(blocks), "orange"),
+    ]
+    for col, (label, val, color) in zip(cols, card_data):
+        col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 2: Latency chart | Allow vs Block ──
+    c1, c2 = st.columns(2)
+
+    with c1:
+        if latencies:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(y=latencies, mode="lines",
+                                     name="Latency", line=dict(color=COLORS["cyan"], width=1.5)))
+            fig.add_hline(y=avg_lat, line_dash="dash", line_color=COLORS["yellow"],
+                          annotation_text=f"Avg: {avg_lat:.1f}ms")
+            fig.update_layout(**DARK_LAYOUT, title=dict(text="Latency (recent 100 requests)", font=TITLE_FONT),
+                              yaxis_title="ms", height=260)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No latency data yet")
+
+    with c2:
+        if allows or blocks:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=["Allow", "Block"], y=[allows, blocks],
+                                 marker_color=[COLORS["green"], COLORS["orange"]]))
+            fig.update_layout(**DARK_LAYOUT, title=dict(text="Allow vs Block (recent 100)", font=TITLE_FONT),
+                              height=260)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No audit data yet")
+
+    # ── Row 3: Audit log size ──
+    if os.path.exists(audit_path):
+        size_kb = os.path.getsize(audit_path) / 1024
+        c1, c2 = st.columns(2)
+        c1.markdown(_metric_card("Audit Log Size", f"{size_kb:.1f} KB", "blue"), unsafe_allow_html=True)
+        c2.markdown(_metric_card("Audit Log Entries", str(len(entries)), "cyan"), unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 5: PIPELINE STATUS
+# ══════════════════════════════════════════════════════════════════════
+
+def tab_pipeline_status():
+    """Pipeline Status monitoring — mirrors Grafana pipeline-status dashboard."""
+
+    # ── Row 1: Process status badges ──
+    scheduler_running = _check_pid("scheduler")
+    es_running = _check_pid("es_strategy")
+    api_online = _check_service("http://localhost:8100/health")
+    dashboard_online = _check_service("http://localhost:8501")
+
+    cols = st.columns(4)
+    badges = [
+        ("Scheduler", scheduler_running),
+        ("ES Strategy Runner", es_running),
+        ("Confidence API", api_online),
+        ("Dashboard", dashboard_online),
+    ]
+    for col, (label, status) in zip(cols, badges):
+        text = "RUNNING" if status else "STOPPED"
+        color = COLORS["green"] if status else COLORS["red"]
+        col.markdown(
+            f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
+            f'border-radius:8px; padding:20px; text-align:center;">'
+            f'<div style="color:#999; font-size:0.85em; margin-bottom:6px;">{label}</div>'
+            f'<div style="color:{color}; font-size:1.6em; font-weight:bold;">{text}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Row 2: Data inventory bar chart ──
+    conn = _get_db()
+    if conn:
+        tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
+                   "predictions", "intraday_bars", "options_chain",
+                   "options_analytics", "intraday_features", "performance"]
+        rows = []
+        for t in tables:
+            try:
+                count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                rows.append({"Table": t, "Rows": count})
+            except Exception:
+                rows.append({"Table": t, "Rows": 0})
+        conn.close()
+
+        df = pd.DataFrame(rows).sort_values("Rows", ascending=True)
+        colors_bar = [COLORS["green"] if r > 100 else COLORS["blue"] for r in df["Rows"]]
+        fig = go.Figure(go.Bar(
+            x=df["Rows"], y=df["Table"], orientation="h",
+            marker=dict(color=colors_bar),
+            text=df["Rows"].apply(lambda x: f"{x:,}"),
+            textposition="auto",
+        ))
+        fig.update_layout(**DARK_LAYOUT, title=dict(text="Data Table Row Counts", font=TITLE_FONT),
+                          height=300, xaxis_title="Rows")
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Row 3: Audit trail info ──
+    audit_path = os.path.join(LOGS_DIR, "trade_audit.jsonl")
+    c1, c2 = st.columns(2)
+    if os.path.exists(audit_path):
+        size_kb = os.path.getsize(audit_path) / 1024
+        with open(audit_path) as f:
+            line_count = sum(1 for _ in f)
+        c1.markdown(_metric_card("Audit Entries", f"{line_count:,}", "blue"), unsafe_allow_html=True)
+        c2.markdown(_metric_card("Audit Size", f"{size_kb:.1f} KB", "cyan"), unsafe_allow_html=True)
+    else:
+        c1.markdown(_metric_card("Audit Entries", "0", "yellow"), unsafe_allow_html=True)
+        c2.markdown(_metric_card("Audit Size", "—", "yellow"), unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# MAIN PAGE ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════
+
+def page_monitoring():
+    """Main monitoring page with tabbed sub-dashboards."""
+
+    # Dark theme CSS
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{ background-color: {COLORS["bg"]}; }}
+        .stTabs [data-baseweb="tab-list"] {{ gap: 8px; }}
+        .stTabs [data-baseweb="tab"] {{
+            background-color: {COLORS["card_bg"]};
+            border-radius: 6px 6px 0 0;
+            padding: 8px 20px;
+            color: #d8d9da;
+        }}
+        .stTabs [aria-selected="true"] {{
+            background-color: {COLORS["blue"]} !important;
+            color: white !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ── Top control bar (Grafana-style) ──────────────────────────────────
+    ctrl_cols = st.columns([1, 2, 1, 1, 2, 1])
+
+    with ctrl_cols[0]:
+        if st.button("⏪", key="mon_back", help="Shift time range back"):
+            if "mon_offset" not in st.session_state:
+                st.session_state["mon_offset"] = 0
+            st.session_state["mon_offset"] += 1
+            st.rerun()
+
+    with ctrl_cols[1]:
+        time_options = {
+            "Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90,
+            "Last 180 days": 180, "Last 1 year": 365,
+        }
+        time_label = st.selectbox(
+            "Time Range", list(time_options.keys()), index=2,
+            label_visibility="collapsed", key="mon_time_range",
+        )
+        days = time_options[time_label]
+
+    with ctrl_cols[2]:
+        if st.button("⏩", key="mon_fwd", help="Shift time range forward"):
+            if st.session_state.get("mon_offset", 0) > 0:
+                st.session_state["mon_offset"] -= 1
+                st.rerun()
+
+    with ctrl_cols[3]:
+        if st.button("🔍", key="mon_zoom_out", help="Zoom out (double range)"):
+            current_idx = list(time_options.values()).index(days)
+            if current_idx < len(time_options) - 1:
+                st.session_state["mon_time_range"] = list(time_options.keys())[current_idx + 1]
+                st.rerun()
+
+    with ctrl_cols[4]:
+        refresh_options = {"Off": 0, "10s": 10, "30s": 30, "1m": 60, "5m": 300}
+        refresh_label = st.selectbox(
+            "Refresh", list(refresh_options.keys()), index=2,
+            label_visibility="collapsed", key="mon_refresh_interval",
+        )
+        refresh_secs = refresh_options[refresh_label]
+
+    with ctrl_cols[5]:
+        if st.button("🔄 Refresh", key="mon_manual_refresh"):
+            st.rerun()
+
+    # Apply time offset for back/forward navigation
+    offset = st.session_state.get("mon_offset", 0)
+    if offset > 0:
+        st.caption(f"⏪ Shifted back {offset} × {days} days")
+
+    st.markdown("---")
+
+    # Tabs
+    tabs = st.tabs([
+        "📈 SPY Predictor",
+        "📊 ES Strategy",
+        "🖥️ System Health",
+        "🤖 Confidence API",
+        "⚙️ Pipeline Status",
+    ])
+
+    with tabs[0]:
+        tab_spy_predictor(days)
+    with tabs[1]:
+        tab_es_strategy()
+    with tabs[2]:
+        tab_system_health()
+    with tabs[3]:
+        tab_confidence_api()
+    with tabs[4]:
+        tab_pipeline_status()
+
+    if refresh_secs > 0:
+        import time as _time
+        _time.sleep(refresh_secs)
+        st.rerun()

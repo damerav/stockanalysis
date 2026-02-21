@@ -45,6 +45,8 @@ es_strategy:
   session_close_ct: "15:55"
   session_reset_ct: "17:00"
   ai_enabled: false
+  ai_fail_closed: true          # GAP 16: block trades if AI unavailable
+  entry_conf_threshold: 0.70    # GAP 3: entry gate threshold per spec
   regime_lookback: 10080
   regime_pct_low: 33
   regime_pct_high: 66
@@ -67,3 +69,29 @@ whatif:
 
 database:
   path: "./data/spy.db"
+
+# Authentication
+auth:
+  mode: "local"                  # "local" or "google"
+  session_secret: "change-me-to-random-secret"  # Signs session tokens
+  # Local users (mode: local)
+  users:
+    admin:
+      password: "admin123"
+      role: "admin"
+      name: "Administrator"
+    user:
+      password: "user123"
+      role: "viewer"
+      name: "Default User"
+  # Google OAuth (mode: google)
+  google_client_id: ""           # Set via GOOGLE_CLIENT_ID env var or here
+  google_client_secret: ""       # Set via GOOGLE_CLIENT_SECRET env var or here
+  allowed_domains: []            # e.g. ["gmail.com"] — empty = any Google account
+  allowed_emails: []             # e.g. ["user@gmail.com"] — empty = no whitelist
+
+# Real-time AI Confidence API (GAP 2)
+confidence_api:
+  host: "0.0.0.0"
+  port: 8100
+  audit_log: "./logs/trade_audit.jsonl"

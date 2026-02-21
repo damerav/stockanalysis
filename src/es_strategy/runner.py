@@ -97,8 +97,11 @@ def load_csv_bars(filepath: str) -> pd.DataFrame:
 class AILayer:
     """Optional AI entry gate + exit controller + drift monitor."""
 
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, config: dict = None):
         self.enabled = enabled
+        cfg = (config or {}).get("es_strategy", {})
+        self.fail_closed = cfg.get("ai_fail_closed", True)
+        self.entry_threshold = cfg.get("entry_conf_threshold", 0.70)
         self.entry_gate: Optional[ESEntryGate] = None
         self.exit_ctrl: Optional[ESExitController] = None
         self.drift_mon: Optional[DriftMonitor] = None
@@ -122,11 +125,29 @@ class AILayer:
         self.drift_mon = DriftMonitor()
 
     def should_enter(self, features: np.ndarray, regime: str) -> dict:
-        """Ask AI gate whether to enter. Returns prediction dict."""
-        if not self.enabled or self.entry_gate is None:
+        """Ask AI gate whether to enter. Returns prediction dict.
+
+        GAP 3: Uses configurable threshold (default 0.70 per spec).
+        GAP 16: Fail-closed — blocks trades if AI model unavailable.
+        """
+        if not self.enabled:
             return {"should_enter": True, "quantity": 3, "p_enter": 0.0, "ai_used": False}
+
+        if self.entry_gate is None:
+            # Fail-closed: block if AI enabled but model not loaded
+            if self.fail_closed:
+                return {"should_enter": False, "quantity": 0, "p_enter": 0.0,
+                        "ai_used": True, "reason": "fail_closed_no_model"}
+            return {"should_enter": True, "quantity": 3, "p_enter": 0.0, "ai_used": False}
+
         result = self.entry_gate.predict(features, regime)
+        # Override threshold with configurable value
+        p_enter = result.get("p_enter", 0)
+        should = p_enter >= self.entry_threshold
+        result["should_enter"] = should
+        result["quantity"] = result.get("quantity", 0) if should else 0
         result["ai_used"] = True
+        result["threshold_used"] = self.entry_threshold
         return result
 
     def get_trail_multipliers(self, regime: str) -> dict:
@@ -158,7 +179,7 @@ class ESRunner:
         self.config = config
         self.mode = mode
         self.engine = ESStrategyEngine(config)
-        self.ai = AILayer(enabled=ai_enabled)
+        self.ai = AILayer(enabled=ai_enabled, config=config)
         self.results: list[dict] = []
         self._indicator_df = pd.DataFrame()
 
