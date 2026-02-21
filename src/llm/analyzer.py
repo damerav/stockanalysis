@@ -2,6 +2,8 @@
 
 Handles Ollama lifecycle: check → start → model availability → auto-download → validate.
 Graceful degradation: pipeline NEVER aborts due to LLM unavailability.
+
+P1 enhancement: FinBERT fast-path for all articles, DeepSeek deep-path for top 5.
 """
 
 import time
@@ -31,6 +33,43 @@ class LLMAnalyzer:
         self.temperature = llm_config.get("temperature", 0.3)
         self.llm_available = False
         self.llm_degraded = False
+        # P1: FinBERT fast-path
+        self.finbert = None
+        self.finbert_available = False
+        self._init_finbert()
+
+    # --- P1: FinBERT fast-path ---
+
+    def _init_finbert(self):
+        """Load FinBERT model for fast financial sentiment scoring."""
+        try:
+            from transformers import pipeline as hf_pipeline
+            self.finbert = hf_pipeline(
+                "sentiment-analysis",
+                model="ProsusAI/finbert",
+                device=0,  # GPU
+                truncation=True,
+                max_length=512,
+            )
+            self.finbert_available = True
+            logger.info("FinBERT loaded on GPU for fast sentiment")
+        except Exception as e:
+            logger.info(f"FinBERT not available (will use LLM only): {e}")
+            self.finbert_available = False
+
+    def _finbert_score(self, text: str) -> dict:
+        """Score a single text with FinBERT. Returns {score, confidence, label}."""
+        if not self.finbert_available or not self.finbert:
+            return {"score": 0.0, "confidence": 0, "label": "neutral"}
+        try:
+            result = self.finbert(text[:512])[0]
+            label = result["label"].lower()
+            conf = int(result["score"] * 100)
+            score_map = {"positive": 1.0, "negative": -1.0, "neutral": 0.0}
+            raw_score = score_map.get(label, 0.0) * result["score"]
+            return {"score": round(raw_score, 4), "confidence": conf, "label": label}
+        except Exception:
+            return {"score": 0.0, "confidence": 0, "label": "neutral"}
 
     # --- 2A: Ollama Health Check ---
 
@@ -229,27 +268,49 @@ class LLMAnalyzer:
     # --- Sentiment Analysis (used by Phase 3/7 pipeline) ---
 
     def analyze_sentiment(self, articles: list[dict]) -> list[dict]:
-        """Analyze sentiment of news articles using the LLM.
+        """Analyze sentiment using two-tier pipeline (P1):
+        1. Fast path: FinBERT on ALL articles (seconds)
+        2. Deep path: DeepSeek on top 5 highest-impact articles (minutes)
 
-        Args:
-            articles: List of dicts with 'headline' and 'summary' keys
-
-        Returns:
-            List of dicts with 'score' (-1.0 to 1.0), 'confidence' (0-100), 'topics' []
-            Returns neutral scores if LLM is unavailable.
+        Falls back to LLM-only or FinBERT-only if either is unavailable.
         """
-        if not self.llm_available:
-            logger.info("LLM unavailable, returning neutral sentiment")
+        if not self.finbert_available and not self.llm_available:
+            logger.info("No sentiment models available, returning neutral")
             return [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
 
-        results = []
-        batch_size = 5  # process 5 at a time to avoid context overflow
-        for i in range(0, len(articles), batch_size):
-            batch = articles[i:i + batch_size]
-            batch_results = self._analyze_batch(batch)
-            results.extend(batch_results)
-            if i + batch_size < len(articles):
-                logger.info(f"Sentiment progress: {min(i + batch_size, len(articles))}/{len(articles)}")
+        # --- Fast path: FinBERT on all articles ---
+        fast_results = []
+        if self.finbert_available:
+            logger.info(f"FinBERT fast-path: scoring {len(articles)} articles...")
+            for a in articles:
+                text = f"{a.get('headline', '')} {a.get('summary', '')[:300]}"
+                fb = self._finbert_score(text)
+                fast_results.append({
+                    "score": fb["score"],
+                    "confidence": fb["confidence"],
+                    "topics": [],
+                })
+            logger.info("FinBERT fast-path complete")
+        else:
+            fast_results = [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
+
+        if not self.llm_available:
+            return fast_results
+
+        # --- Deep path: DeepSeek on top 5 by absolute FinBERT score ---
+        abs_scores = [abs(r["score"]) for r in fast_results]
+        top_indices = sorted(range(len(abs_scores)),
+                             key=lambda i: abs_scores[i], reverse=True)[:5]
+        top_articles = [articles[i] for i in top_indices]
+
+        logger.info(f"DeepSeek deep-path: analysing top {len(top_articles)} articles...")
+        deep_results = self._analyze_batch(top_articles)
+
+        # Merge: replace fast scores with deep scores for top articles
+        results = list(fast_results)
+        for rank, orig_idx in enumerate(top_indices):
+            if rank < len(deep_results):
+                results[orig_idx] = deep_results[rank]
 
         return results
 

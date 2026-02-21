@@ -16,3 +16,7 @@ uvicorn>=0.27
 pydantic>=2.5
 google-auth>=2.27
 google-auth-oauthlib>=1.2
+shap>=0.45
+transformers>=4.38
+scipy>=1.12
+prometheus_client>=0.20

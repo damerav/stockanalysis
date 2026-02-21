@@ -1,11 +1,15 @@
-"""3C/3D. XGBoost SPY Direction Predictor — Train, predict, track accuracy."""
+"""3C/3D. XGBoost SPY Direction Predictor — Train, predict, track accuracy.
+
+P1 enhancements: isotonic calibration, SHAP explanations, performance gating,
+stratified accuracy tracking.
+"""
 
 import os
 import json
 import logging
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
 from src.es_strategy.labeling import label_entries_triple_barrier, label_exits_reversal
@@ -45,8 +49,10 @@ class SPYPredictor:
         self.n_estimators = xgb_cfg.get("n_estimators", 500)
         self.neutral_threshold = xgb_cfg.get("neutral_threshold", 0.003)
         self.model = None
+        self.calibrator = None  # P1: isotonic calibration
         self.feature_importances = None
         self.model_dir = "./models"
+        self.prior_accuracy = None  # P1: performance gating
         os.makedirs(self.model_dir, exist_ok=True)
 
     def train(self, features_df: pd.DataFrame, target: pd.Series,
@@ -172,11 +178,42 @@ class SPYPredictor:
             test_accuracy = float(np.mean(test_pred == y_test))
             logger.info(f"Test accuracy: {test_accuracy:.3f}")
 
-        # Save model
-        date_str = datetime.now().strftime("%Y%m%d")
-        model_path = os.path.join(self.model_dir, f"xgb_spy_{date_str}.json")
-        self.model.save_model(model_path)
-        logger.info(f"Model saved to {model_path}")
+        # --- P1: Isotonic probability calibration ---
+        try:
+            from sklearn.calibration import CalibratedClassifierCV
+            # Fit isotonic calibrator on validation set
+            self.calibrator = CalibratedClassifierCV(
+                self.model, method="isotonic", cv="prefit"
+            )
+            self.calibrator.fit(X_val, y_val)
+            logger.info("Isotonic calibration fitted on validation set")
+        except Exception as e:
+            logger.warning(f"Isotonic calibration failed (non-fatal): {e}")
+            self.calibrator = None
+
+        # --- P1: Performance gating ---
+        # Only save model if val accuracy >= 0.52 and not degraded > 2% vs prior
+        gated = False
+        gate_reason = ""
+        if accuracy < 0.52:
+            gated = True
+            gate_reason = f"val accuracy {accuracy:.3f} < 0.52 threshold"
+        elif self.prior_accuracy is not None and accuracy < self.prior_accuracy - 0.02:
+            gated = True
+            gate_reason = (f"val accuracy {accuracy:.3f} degraded > 2% "
+                           f"vs prior {self.prior_accuracy:.3f}")
+
+        if gated:
+            logger.warning(f"MODEL GATED — not saving: {gate_reason}")
+            # Try to reload prior model
+            self.load_latest_model()
+        else:
+            # Save model
+            date_str = datetime.now().strftime("%Y%m%d")
+            model_path = os.path.join(self.model_dir, f"xgb_spy_{date_str}.json")
+            self.model.save_model(model_path)
+            self.prior_accuracy = float(accuracy)
+            logger.info(f"Model saved to {model_path}")
 
         return {
             "accuracy": float(accuracy),
@@ -186,15 +223,24 @@ class SPYPredictor:
             "test_size": len(X_test),
             "embargo_days": embargo,
             "low_gain_features": len(low_gain_features),
-            "model_path": model_path,
+            "model_path": model_path if not gated else "gated",
+            "gated": gated,
+            "gate_reason": gate_reason,
+            "calibrated": self.calibrator is not None,
             "best_iteration": self.model.best_iteration if hasattr(self.model, "best_iteration") else None,
         }
 
-    def predict(self, features: np.ndarray) -> dict:
+    def predict(self, features: np.ndarray,
+                feature_names: list[str] = None) -> dict:
         """Generate prediction for a single feature vector.
 
+        Args:
+            features: Feature array (1D or 2D)
+            feature_names: Optional list of feature names for SHAP explanations
+
         Returns:
-            Dict with direction, confidence, probabilities, scale label
+            Dict with direction, confidence, probabilities, scale label,
+            and optionally shap_drivers (top 5 feature contributions).
         """
         if self.model is None:
             logger.warning("No model loaded, returning neutral prediction")
@@ -206,7 +252,15 @@ class SPYPredictor:
         # Handle NaN features
         features = np.nan_to_num(features, nan=0.0)
 
-        probs = self.model.predict_proba(features)[0]  # [p_down, p_neutral, p_up]
+        # Use calibrated model if available (P1)
+        if self.calibrator is not None:
+            try:
+                probs = self.calibrator.predict_proba(features)[0]
+            except Exception:
+                probs = self.model.predict_proba(features)[0]
+        else:
+            probs = self.model.predict_proba(features)[0]  # [p_down, p_neutral, p_up]
+
         pred_class = int(np.argmax(probs))
         pred_label = _class_to_label(pred_class)
         confidence = float(probs[pred_class]) * 100
@@ -221,7 +275,7 @@ class SPYPredictor:
 
         scale_label = f"{strength}_{direction}".strip("_") if strength else direction
 
-        return {
+        result = {
             "direction": direction,
             "scale_label": scale_label,
             "confidence": round(confidence, 1),
@@ -232,6 +286,33 @@ class SPYPredictor:
             },
             "predicted_class": pred_label,
         }
+
+        # --- P1: SHAP explanations (top 5 feature drivers) ---
+        if feature_names is not None:
+            try:
+                import shap
+                explainer = shap.TreeExplainer(self.model)
+                shap_values = explainer.shap_values(features)
+                # shap_values is list of arrays (one per class) or 3D array
+                if isinstance(shap_values, list):
+                    sv = shap_values[pred_class][0]
+                else:
+                    sv = shap_values[0, :, pred_class] if shap_values.ndim == 3 else shap_values[0]
+                # Top 5 by absolute SHAP value
+                top_idx = np.argsort(np.abs(sv))[-5:][::-1]
+                drivers = []
+                for idx in top_idx:
+                    name = feature_names[idx] if idx < len(feature_names) else f"f{idx}"
+                    drivers.append({
+                        "feature": name,
+                        "shap_value": round(float(sv[idx]), 4),
+                        "feature_value": round(float(features[0, idx]), 4),
+                    })
+                result["shap_drivers"] = drivers
+            except Exception as e:
+                logger.debug(f"SHAP explanation skipped: {e}")
+
+        return result
 
     def load_latest_model(self) -> bool:
         """Load the most recent saved model."""
@@ -326,22 +407,23 @@ class SPYPredictor:
                           pd.Series(y), use_gpu=use_gpu)
 
 
-def evaluate_past_prediction(conn, date: str) -> Optional[dict]:
+def evaluate_past_prediction(conn, date_str: str) -> Optional[dict]:
     """Compare yesterday's prediction to actual outcome.
 
     Returns dict with evaluation results or None if no prediction exists.
     """
     row = conn.execute(
-        "SELECT direction, confidence FROM predictions WHERE date = ?", (date,)
+        "SELECT direction, confidence FROM predictions WHERE date = ?", (date_str,)
     ).fetchone()
     if not row:
         return None
 
     predicted = row[0]
+    pred_confidence = row[1] or 0
 
     # Get actual return
     prices = conn.execute(
-        "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date,)
+        "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date_str,)
     ).fetchall()
     if len(prices) < 2:
         return None
@@ -361,6 +443,42 @@ def evaluate_past_prediction(conn, date: str) -> Optional[dict]:
         (predicted == "NEUTRAL" and actual == "NEUTRAL")
     ) else 0
 
+    # P1: Stratified accuracy dimensions
+    # Confidence tier
+    if pred_confidence >= 70:
+        conf_tier = "high"
+    elif pred_confidence >= 50:
+        conf_tier = "medium"
+    else:
+        conf_tier = "low"
+
+    # VIX regime
+    macro_row = conn.execute(
+        "SELECT vix FROM macro WHERE date = ?", (date_str,)
+    ).fetchone()
+    vix_val = macro_row[0] if macro_row and macro_row[0] else 18
+    if vix_val < 15:
+        vix_regime = "low"
+    elif vix_val > 25:
+        vix_regime = "high"
+    else:
+        vix_regime = "normal"
+
+    # Day of week
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        dow = d.weekday()
+    except Exception:
+        dow = 0
+
+    # Event proximity
+    try:
+        from src.data.calendar import has_nearby_event
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        event_prox = 1 if has_nearby_event(d) else 0
+    except Exception:
+        event_prox = 0
+
     # Update cumulative accuracy
     perf_rows = conn.execute("SELECT COUNT(*), SUM(correct) FROM performance").fetchone()
     total = (perf_rows[0] or 0) + 1
@@ -368,13 +486,17 @@ def evaluate_past_prediction(conn, date: str) -> Optional[dict]:
     cum_accuracy = correct_total / total
 
     conn.execute(
-        """INSERT OR REPLACE INTO performance (date, predicted, actual, correct, cumulative_accuracy)
-           VALUES (?, ?, ?, ?, ?)""",
-        (date, predicted, actual, correct, cum_accuracy)
+        """INSERT OR REPLACE INTO performance
+           (date, predicted, actual, correct, cumulative_accuracy,
+            confidence_tier, vix_regime, day_of_week, event_proximity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (date_str, predicted, actual, correct, cum_accuracy,
+         conf_tier, vix_regime, dow, event_prox)
     )
     conn.commit()
 
     return {
-        "date": date, "predicted": predicted, "actual": actual,
+        "date": date_str, "predicted": predicted, "actual": actual,
         "correct": bool(correct), "cumulative_accuracy": round(cum_accuracy, 3),
+        "confidence_tier": conf_tier, "vix_regime": vix_regime,
     }

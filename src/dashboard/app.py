@@ -167,7 +167,8 @@ def load_performance() -> pd.DataFrame:
         import sqlite3
         conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
         df = pd.read_sql_query(
-            "SELECT date, predicted, actual, correct, cumulative_accuracy "
+            "SELECT date, predicted, actual, correct, cumulative_accuracy, "
+            "confidence_tier, vix_regime, day_of_week, event_proximity "
             "FROM performance ORDER BY date DESC LIMIT 30",
             conn,
         )
@@ -215,6 +216,27 @@ def page_spy():
     else:
         st.info("Waiting for prediction data...")
 
+    # P1: SHAP prediction drivers
+    shap_drivers = prediction.get("shap_drivers", [])
+    if shap_drivers:
+        st.subheader("🔍 Prediction Drivers (SHAP)")
+        driver_df = pd.DataFrame(shap_drivers)
+        fig_shap = go.Figure()
+        colors = ["#00C853" if v > 0 else "#FF5722" for v in driver_df["shap_value"]]
+        fig_shap.add_trace(go.Bar(
+            y=driver_df["feature"], x=driver_df["shap_value"],
+            orientation="h", marker_color=colors,
+            text=[f"{v:+.3f}" for v in driver_df["shap_value"]],
+            textposition="outside",
+            hovertemplate="Feature: %{y}<br>SHAP: %{x:.4f}<br>Value: %{customdata:.4f}",
+            customdata=driver_df["feature_value"],
+        ))
+        fig_shap.update_layout(
+            height=200, margin=dict(l=10, r=10, t=10, b=10),
+            xaxis_title="SHAP contribution", yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(fig_shap, use_container_width=True)
+
     col1, col2 = st.columns([3, 2])
 
     with col1:
@@ -244,6 +266,32 @@ def page_spy():
             st.subheader("Accuracy Tracking")
             latest_acc = perf_df.iloc[0]["cumulative_accuracy"] if len(perf_df) > 0 else 0
             st.metric("Cumulative Accuracy", f"{latest_acc:.1%}")
+
+            # P1: Stratified accuracy breakdown
+            if "confidence_tier" in perf_df.columns:
+                st.caption("Accuracy by Confidence Tier")
+                for tier in ["high", "medium", "low"]:
+                    tier_df = perf_df[perf_df["confidence_tier"] == tier]
+                    if not tier_df.empty:
+                        tier_acc = tier_df["correct"].mean()
+                        st.markdown(
+                            f'<span style="color:#d8d9da;">'
+                            f'{"🟢" if tier_acc >= 0.55 else "🟡" if tier_acc >= 0.50 else "🔴"} '
+                            f'{tier.title()}: {tier_acc:.1%} ({len(tier_df)} predictions)</span>',
+                            unsafe_allow_html=True,
+                        )
+            if "vix_regime" in perf_df.columns:
+                st.caption("Accuracy by VIX Regime")
+                for regime in ["low", "normal", "high"]:
+                    reg_df = perf_df[perf_df["vix_regime"] == regime]
+                    if not reg_df.empty:
+                        reg_acc = reg_df["correct"].mean()
+                        st.markdown(
+                            f'<span style="color:#d8d9da;">'
+                            f'VIX {regime}: {reg_acc:.1%} ({len(reg_df)})</span>',
+                            unsafe_allow_html=True,
+                        )
+
             st.dataframe(perf_df.head(10), use_container_width=True, hide_index=True)
 
     with col2:

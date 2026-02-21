@@ -43,7 +43,12 @@ CREATE TABLE IF NOT EXISTS macro (
     date TEXT PRIMARY KEY,
     vix REAL, vix_change REAL,
     us10y_yield REAL, dxy REAL, fed_funds REAL,
-    gold REAL, crude REAL
+    gold REAL, crude REAL,
+    -- VIX term structure (P1 enhancement)
+    vix9d REAL, vix3m REAL, vix6m REAL, vvix REAL, skew_index REAL,
+    -- Cross-asset signals (P1 enhancement)
+    hy_spread REAL, tlt_spy_ratio REAL, eem_spy_ratio REAL,
+    copper_gold_ratio REAL, xlk_xlf_ratio REAL, xlk_xle_ratio REAL
 );
 
 -- Model predictions
@@ -87,12 +92,16 @@ CREATE TABLE IF NOT EXISTS intraday_features (
     intraday_range REAL, volume_ratio REAL
 );
 
--- Prediction performance tracking
+-- Prediction performance tracking (extended for stratified accuracy P1)
 CREATE TABLE IF NOT EXISTS performance (
     date TEXT PRIMARY KEY,
     predicted TEXT, actual TEXT,
     correct INTEGER,
-    cumulative_accuracy REAL
+    cumulative_accuracy REAL,
+    confidence_tier TEXT,       -- 'high' (>=70), 'medium' (50-70), 'low' (<50)
+    vix_regime TEXT,            -- 'low' (<15), 'normal' (15-25), 'high' (>25)
+    day_of_week INTEGER,       -- 0=Mon..4=Fri
+    event_proximity INTEGER    -- 1 if within 2 days of FOMC/CPI/NFP
 );
 """
 
@@ -113,13 +122,50 @@ def get_db_path(config: dict = None) -> str:
 
 
 def init_db(config: dict = None) -> str:
-    """Initialize the SQLite database with all 10 tables. Returns db path."""
+    """Initialize the SQLite database with all tables. Returns db path."""
     db_path = get_db_path(config)
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
+    # P1: Migrate existing tables to add new columns
+    _migrate_schema(conn)
     conn.close()
     logger.info(f"Database initialized at {db_path}")
     return db_path
+
+
+def _migrate_schema(conn: sqlite3.Connection):
+    """Add new columns to existing tables if they don't exist yet."""
+    # Macro table: VIX term structure + cross-asset columns
+    macro_new_cols = [
+        ("vix9d", "REAL"), ("vix3m", "REAL"), ("vix6m", "REAL"),
+        ("vvix", "REAL"), ("skew_index", "REAL"),
+        ("hy_spread", "REAL"), ("tlt_spy_ratio", "REAL"),
+        ("eem_spy_ratio", "REAL"), ("copper_gold_ratio", "REAL"),
+        ("xlk_xlf_ratio", "REAL"), ("xlk_xle_ratio", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "macro", macro_new_cols)
+
+    # Performance table: stratified accuracy columns
+    perf_new_cols = [
+        ("confidence_tier", "TEXT"), ("vix_regime", "TEXT"),
+        ("day_of_week", "INTEGER"), ("event_proximity", "INTEGER"),
+    ]
+    _add_columns_if_missing(conn, "performance", perf_new_cols)
+
+
+def _add_columns_if_missing(conn: sqlite3.Connection, table: str,
+                             columns: list[tuple[str, str]]):
+    """Add columns to a table if they don't already exist."""
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in cursor.fetchall()}
+    for col_name, col_type in columns:
+        if col_name not in existing:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+                logger.info(f"Added column {col_name} to {table}")
+            except Exception as e:
+                logger.debug(f"Column {col_name} already exists or error: {e}")
+    conn.commit()
 
 
 def get_connection(config: dict = None) -> sqlite3.Connection:
@@ -131,6 +177,8 @@ def get_connection(config: dict = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    # P1: Ensure schema is up to date
+    _migrate_schema(conn)
     return conn
 
 

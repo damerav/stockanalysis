@@ -555,6 +555,20 @@ def tab_confidence_api():
 
     api_online = _check_service("http://localhost:8100/health")
 
+    # Fetch detailed health from API
+    api_health = {}
+    if api_online:
+        try:
+            r = requests.get("http://localhost:8100/health", timeout=3)
+            if r.status_code == 200:
+                api_health = r.json()
+        except Exception:
+            pass
+
+    entry_loaded = api_health.get("entry_gate_loaded", False)
+    exit_loaded = api_health.get("exit_ctrl_loaded", False)
+    uptime = api_health.get("uptime_seconds", 0)
+
     # Parse audit log
     audit_path = os.path.join(LOGS_DIR, "trade_audit.jsonl")
     entries = []
@@ -580,13 +594,21 @@ def tab_confidence_api():
     allows = sum(1 for e in recent if e.get("advice") == "allow")
     blocks = sum(1 for e in recent if e.get("advice") == "block")
 
+    # Format uptime
+    if uptime > 3600:
+        uptime_str = f"{uptime / 3600:.1f} hrs"
+    elif uptime > 60:
+        uptime_str = f"{uptime / 60:.0f} min"
+    else:
+        uptime_str = f"{uptime:.0f} sec"
+
     # ── Row 1: Stat cards ──
     cols = st.columns(6)
     card_data = [
         ("API Status", "ONLINE" if api_online else "OFFLINE", "green" if api_online else "red"),
-        ("Avg Latency", f"{avg_lat:.1f} ms", "green" if avg_lat < 20 else "yellow" if avg_lat < 50 else "red"),
-        ("P99 Latency", f"{p99_lat:.1f} ms", "green" if p99_lat < 30 else "yellow" if p99_lat < 50 else "red"),
-        ("Total Requests", str(len(entries)), "blue"),
+        ("Uptime", uptime_str if api_online else "—", "blue" if api_online else "red"),
+        ("Entry Gate", "LOADED" if entry_loaded else "NOT LOADED", "green" if entry_loaded else "yellow"),
+        ("Exit Controller", "LOADED" if exit_loaded else "NOT LOADED", "green" if exit_loaded else "yellow"),
         ("Recent Allows", str(allows), "green"),
         ("Recent Blocks", str(blocks), "orange"),
     ]
@@ -595,11 +617,26 @@ def tab_confidence_api():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Row 2: Latency chart | Allow vs Block ──
+    # ── Row 2: Model status detail + Latency ──
     c1, c2 = st.columns(2)
 
     with c1:
-        if latencies:
+        if not entry_loaded or not exit_loaded:
+            st.markdown(
+                f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
+                f'border-radius:8px; padding:20px;">'
+                f'<div style="color:{COLORS["yellow"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
+                f'⚠️ Models Not Loaded</div>'
+                f'<div style="color:#d8d9da; font-size:0.9em; line-height:1.6;">'
+                f'{"❌ Entry Gate (es_entry_gate.json)" if not entry_loaded else "✅ Entry Gate"}<br>'
+                f'{"❌ Exit Controller (es_exit_cnn.pt)" if not exit_loaded else "✅ Exit Controller"}<br><br>'
+                f'The ES strategy models need to be trained first.<br>'
+                f'Run the daily pipeline or train manually:<br>'
+                f'<code style="color:{COLORS["cyan"]};">python -m src.pipeline.daily_run</code>'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+        elif latencies:
             fig = go.Figure()
             fig.add_trace(go.Scatter(y=latencies, mode="lines",
                                      name="Latency", line=dict(color=COLORS["cyan"], width=1.5)))
@@ -609,7 +646,7 @@ def tab_confidence_api():
                               yaxis_title="ms", height=260)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No latency data yet")
+            st.info("Models loaded — waiting for trade requests from ES strategy runner")
 
     with c2:
         if allows or blocks:
@@ -620,14 +657,39 @@ def tab_confidence_api():
                               height=260)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No audit data yet")
+            # Show latency stats if we have them, otherwise endpoint info
+            st.markdown(
+                f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
+                f'border-radius:8px; padding:20px;">'
+                f'<div style="color:{COLORS["blue"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
+                f'📡 API Endpoints</div>'
+                f'<div style="color:#d8d9da; font-size:0.9em; line-height:1.8; font-family:monospace;">'
+                f'GET  /health &nbsp;&nbsp;&nbsp;→ Service health<br>'
+                f'POST /confidence → Entry gate score<br>'
+                f'POST /exit &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Exit signal<br>'
+                f'POST /spread &nbsp;&nbsp;&nbsp;→ Update spread<br>'
+                f'</div>'
+                f'<div style="color:#999; font-size:0.8em; margin-top:10px;">'
+                f'Base URL: http://localhost:8100</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-    # ── Row 3: Audit log size ──
+    # ── Row 3: Audit log stats ──
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
     if os.path.exists(audit_path):
         size_kb = os.path.getsize(audit_path) / 1024
-        c1, c2 = st.columns(2)
         c1.markdown(_metric_card("Audit Log Size", f"{size_kb:.1f} KB", "blue"), unsafe_allow_html=True)
-        c2.markdown(_metric_card("Audit Log Entries", str(len(entries)), "cyan"), unsafe_allow_html=True)
+        c2.markdown(_metric_card("Total Entries", str(len(entries)), "cyan"), unsafe_allow_html=True)
+    else:
+        c1.markdown(_metric_card("Audit Log", "No log yet", "yellow"), unsafe_allow_html=True)
+        c2.markdown(_metric_card("Total Entries", "0", "yellow"), unsafe_allow_html=True)
+    if latencies:
+        c3.markdown(_metric_card("Avg Latency", f"{avg_lat:.1f} ms",
+                                 "green" if avg_lat < 20 else "yellow"), unsafe_allow_html=True)
+    else:
+        c3.markdown(_metric_card("Avg Latency", "—", "yellow"), unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════

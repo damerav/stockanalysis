@@ -166,3 +166,103 @@ class FallbackFetcher:
             result["vix_change"] = None
 
         return result
+
+    def get_news(self) -> list[dict]:
+        """Fetch news from all available sources."""
+        articles = self.get_news_finnhub()
+        articles.extend(self.get_news_rss())
+        return articles
+
+    # --- VIX Term Structure (yfinance, free) ---
+
+    def get_vix_term_structure(self) -> dict:
+        """Fetch VIX term structure: VIX9D, VIX3M, VIX6M, VVIX, SKEW."""
+        tickers = {
+            "vix9d": "^VIX9D",
+            "vix3m": "^VIX3M",
+            "vix6m": "^VIX6M",
+            "vvix": "^VVIX",
+            "skew": "^SKEW",
+        }
+        result = {}
+        try:
+            import yfinance as yf
+            for name, ticker in tickers.items():
+                try:
+                    data = yf.download(ticker, period="5d", progress=False)
+                    if not data.empty:
+                        if isinstance(data.columns, pd.MultiIndex):
+                            data.columns = data.columns.get_level_values(0)
+                        result[name] = float(data["Close"].iloc[-1])
+                    else:
+                        result[name] = None
+                except Exception as e:
+                    logger.warning(f"VIX term {name} ({ticker}) failed: {e}")
+                    result[name] = None
+        except ImportError:
+            logger.error("yfinance not installed")
+        return result
+
+    # --- Cross-Asset Signals (yfinance, free) ---
+
+    def get_cross_asset_signals(self) -> dict:
+        """Fetch cross-asset and breadth signals: HYG, LQD, TLT, EEM, copper/gold."""
+        tickers = {
+            "hyg": "HYG",       # High-yield corporate bonds
+            "lqd": "LQD",       # Investment-grade corporate bonds
+            "tlt": "TLT",       # 20+ year Treasury bonds
+            "eem": "EEM",       # Emerging markets
+            "spy": "SPY",       # For ratio computation
+            "xlk": "XLK",       # Tech sector
+            "xlf": "XLF",       # Financial sector
+            "xle": "XLE",       # Energy sector
+            "cper": "CPER",     # Copper ETF
+            "gld": "GLD",       # Gold ETF
+        }
+        prices = {}
+        try:
+            import yfinance as yf
+            for name, ticker in tickers.items():
+                try:
+                    data = yf.download(ticker, period="10d", progress=False)
+                    if not data.empty:
+                        if isinstance(data.columns, pd.MultiIndex):
+                            data.columns = data.columns.get_level_values(0)
+                        prices[name] = float(data["Close"].iloc[-1])
+                        # Also get 5-day change for momentum
+                        if len(data) >= 5:
+                            prices[f"{name}_5d_chg"] = float(
+                                (data["Close"].iloc[-1] / data["Close"].iloc[-5] - 1) * 100
+                            )
+                    else:
+                        prices[name] = None
+                except Exception as e:
+                    logger.warning(f"Cross-asset {name} ({ticker}) failed: {e}")
+                    prices[name] = None
+        except ImportError:
+            logger.error("yfinance not installed")
+            return {}
+
+        # Compute derived ratios
+        result = {}
+        spy_p = prices.get("spy")
+        hyg_p = prices.get("hyg")
+        lqd_p = prices.get("lqd")
+        tlt_p = prices.get("tlt")
+        eem_p = prices.get("eem")
+        cper_p = prices.get("cper")
+        gld_p = prices.get("gld")
+
+        result["hy_spread"] = (hyg_p / lqd_p) if hyg_p and lqd_p else None
+        result["tlt_spy_ratio"] = (tlt_p / spy_p) if tlt_p and spy_p else None
+        result["eem_spy_ratio"] = (eem_p / spy_p) if eem_p and spy_p else None
+        result["copper_gold_ratio"] = (cper_p / gld_p) if cper_p and gld_p else None
+
+        # Sector rotation: tech vs financials relative strength
+        xlk_p = prices.get("xlk")
+        xlf_p = prices.get("xlf")
+        xle_p = prices.get("xle")
+        result["xlk_xlf_ratio"] = (xlk_p / xlf_p) if xlk_p and xlf_p else None
+        result["xlk_xle_ratio"] = (xlk_p / xle_p) if xlk_p and xle_p else None
+
+        return result

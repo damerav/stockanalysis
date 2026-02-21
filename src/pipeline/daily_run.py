@@ -247,15 +247,46 @@ class DailyPipeline:
         self.conn.commit()
 
     def _step5_macro(self) -> dict:
-        """Step 5: Fetch macro data (VIX, yields, DXY, fed funds, gold, crude)."""
+        """Step 5: Fetch macro data (VIX, yields, DXY, fed funds, gold, crude)
+        + VIX term structure + cross-asset signals (P1)."""
         macro = self.fallback.get_macro_fred()
+
+        # P1: VIX term structure
+        vix_ts = self.fallback.get_vix_term_structure()
+        macro.update({
+            "vix9d": vix_ts.get("vix9d"),
+            "vix3m": vix_ts.get("vix3m"),
+            "vix6m": vix_ts.get("vix6m"),
+            "vvix": vix_ts.get("vvix"),
+            "skew_index": vix_ts.get("skew"),
+        })
+
+        # P1: Cross-asset signals
+        cross = self.fallback.get_cross_asset_signals()
+        macro.update({
+            "hy_spread": cross.get("hy_spread"),
+            "tlt_spy_ratio": cross.get("tlt_spy_ratio"),
+            "eem_spy_ratio": cross.get("eem_spy_ratio"),
+            "copper_gold_ratio": cross.get("copper_gold_ratio"),
+            "xlk_xlf_ratio": cross.get("xlk_xlf_ratio"),
+            "xlk_xle_ratio": cross.get("xlk_xle_ratio"),
+        })
+
         self.conn.execute(
             """INSERT OR REPLACE INTO macro
-               (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
+                vix9d, vix3m, vix6m, vvix, skew_index,
+                hy_spread, tlt_spy_ratio, eem_spy_ratio,
+                copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (self.today, macro.get("vix"), macro.get("vix_change"),
              macro.get("us10y_yield"), macro.get("dxy"),
-             macro.get("fed_funds"), macro.get("gold"), macro.get("crude")),
+             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"),
+             macro.get("vix9d"), macro.get("vix3m"), macro.get("vix6m"),
+             macro.get("vvix"), macro.get("skew_index"),
+             macro.get("hy_spread"), macro.get("tlt_spy_ratio"),
+             macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
+             macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
         )
         self.conn.commit()
         return macro
@@ -395,7 +426,7 @@ class DailyPipeline:
         feature_cols = get_feature_columns()
         available = [c for c in feature_cols if c in fv.columns]
         features = fv[available].iloc[0].values
-        prediction = self.predictor.predict(features)
+        prediction = self.predictor.predict(features, feature_names=available)
 
         # Store prediction
         self.conn.execute(
