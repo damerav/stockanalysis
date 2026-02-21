@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile.relay
+    ports:
+      - "8000:8000"
+    environment:
+      - RELAY_API_KEY=${RELAY_API_KEY:-changeme}
+      - RELAY_ADMIN_KEY=${RELAY_ADMIN_KEY:-admin-changeme}
+    restart: unless-stopped
+
+  dashboards:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      - RELAY_URL=http://relay:8000
+    depends_on:
+      - relay
+    restart: unless-stopped

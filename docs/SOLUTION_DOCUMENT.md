@@ -1,0 +1,414 @@
+# Stock Analysis Platform — Solution Document
+
+## 1. System Overview
+
+The Stock Analysis Platform is a real-time market analysis and signal generation system built for an NVIDIA DGX Spark local GPU server with optional AWS cloud mirroring. It combines quantitative analysis, machine learning, and large language model inference to produce daily SPY/SPX direction predictions and intraday ES futures trading signals.
+
+The system is signal-only — all trade execution is manual.
+
+### Two Subsystems
+
+1. **SPY/SPX Predictor** — Ingests multi-source market data, engineers 37+ features, trains an XGBoost classifier daily on GPU, and predicts next-day SPY direction on a 5-level scale (STRONG BULLISH to STRONG BEARISH). Uses a local 70B LLM for news sentiment scoring.
+
+2. **ES Futures Strategy** — Generates entry/exit signals for E-mini S&P 500 futures using Keltner Channel bands, a 3-lot tiered exit system, adaptive volatility regimes, and optional AI-enhanced entry/exit models.
+
+Both subsystems share data infrastructure, dashboards, cloud sync, and the daily automated pipeline.
+
+---
+
+## 2. Technology Stack
+
+| Layer | Technology | Purpose |
+|-------|-----------|---------|
+| Runtime | Python 3.12 | Application language |
+| Database | SQLite 3.45 (WAL mode) | Local data store, 11 tables |
+| ML Framework | XGBoost 2.0 (GPU) | SPY direction classifier, ES entry gate |
+| Deep Learning | PyTorch 2.1 | CNN exit controller for ES strategy |
+| LLM | Ollama + DeepSeek R1 70B | News sentiment analysis, report generation, what-if narratives |
+| Dashboard | Streamlit 1.30 + Plotly 5.18 | Unified web UI on port 8501 |
+| Data Sources | Polygon.io, yfinance, Finnhub, FRED, RSS | Market data, news, macro indicators |
+| Cloud Relay | FastAPI + Uvicorn | Stateless relay on AWS EC2 |
+| Containers | Docker + Docker Compose | Cloud deployment packaging |
+| GPU | NVIDIA GB10 (DGX Spark) | XGBoost training, PyTorch inference, LLM hosting |
+
+### Python Dependencies
+
+```
+websockets, aiohttp, yfinance, feedparser, requests, pandas, numpy,
+pyyaml, xgboost, scikit-learn, torch, streamlit, plotly, fastapi, uvicorn
+```
+
+---
+
+## 3. Component Inventory
+
+### 3.1 Data Layer (`src/data/`)
+
+#### `init_db.py` — Database Schema Manager
+Creates and manages the SQLite database with 11 tables. Provides `get_connection()` for all database access with WAL journal mode and 5-second busy timeout. Tables cover prices, technicals, news, sentiment, macro indicators, predictions, intraday bars, options chain, options analytics, intraday features, and performance tracking.
+
+#### `polygon_fetcher.py` — Polygon.io REST Client
+Primary data source for market data. Provides:
+- `get_daily_bars()` — daily OHLCV with adjusted prices
+- `get_5s_bars()` — intraday 5-second granularity
+- `get_options_chain()` — full chain with Greeks (delta, gamma, theta, vega, IV)
+- `get_options_analytics()` — computed put/call ratio, max pain, IV skew, GEX
+
+Includes retry logic (3 attempts, exponential backoff), pagination handling, and rate limit awareness (100 req/min).
+
+#### `fetcher.py` — Fallback Data Sources
+Provides alternative data when Polygon is unavailable:
+- yfinance: price data fallback
+- Finnhub: market news headlines
+- RSS feeds: Yahoo Finance, CNBC, MarketWatch
+- FRED: macro data (VIX, 10Y yield, DXY, fed funds, gold, crude oil)
+
+#### `daily_pull.py` — Gap Detection and Backfill
+Identifies missing dates in the database and backfills from Polygon (with yfinance fallback). Fetches macro data, updates options chain, computes technicals for all new dates, and validates data completeness. Called from the launcher scheduler, daily pipeline, and realtime pre-market.
+
+#### `backfill.py` — Initial Bulk Load
+First-time setup utility that loads 252 trading days (1 year) of historical data. Run once: `python -m src.data.backfill --days 252`.
+
+#### `features.py` — Feature Engineering
+Builds a 37+ feature vector for each trading day from 5 categories:
+
+| Category | Features | Source Table |
+|----------|----------|-------------|
+| Technical | price_vs_sma20/50, rsi_14, macd, macd_signal, macd_hist, bb_upper/lower_dist, atr_14, sma slopes | technicals |
+| Macro | vix_level, vix_change, us10y_yield, dxy, fed_funds, gold, crude | macro |
+| Sentiment | llm_sentiment_score, news_count, positive/negative_ratio | daily_sentiment |
+| Intraday | vwap_spread, intraday_momentum, intraday_range, volume_ratio | intraday_features |
+| Options | put_call_ratio, max_pain_distance, iv_skew, gex_normalized | options_analytics |
+| Derived | price_vs_sma_pct, rsi_divergence, volume_trend, atr_percentile, momentum_5d/10d | computed |
+
+Also provides `get_target()` for generating classification labels and `get_feature_columns()` for listing available features.
+
+---
+
+### 3.2 LLM Layer (`src/llm/`)
+
+#### `analyzer.py` — LLM Sentiment Analyzer
+Manages the Ollama/DeepSeek R1 70B integration:
+- `check_health()` — verifies Ollama is running, model is available, inference works
+- Auto-starts Ollama if not running
+- Auto-downloads the model (~42GB) with progress logging
+- `analyze_sentiment()` — batch processes up to 50 news articles, returns structured JSON per article with score (-1.0 to 1.0), confidence (0-100), and topics
+- Aggregates daily sentiment as weighted average by recency and source credibility
+- Graceful degradation: if LLM unavailable, returns neutral sentiment (score=0.0)
+
+#### `reporter.py` — Daily Report Generator
+Generates a ~400-word market brief using the LLM. Input: day's technicals, sentiment, model prediction, key signals. Output stored in `predictions.report_text`. Falls back to a template-based summary if LLM is unavailable.
+
+---
+
+### 3.3 Model Layer (`src/model/`)
+
+#### `trainer.py` — XGBoost SPY Direction Predictor
+- Target: next-day SPY direction — UP (+1) / DOWN (-1) / NEUTRAL (0)
+- Neutral threshold: ±0.3% daily return
+- Objective: `multi:softprob` with 3 classes
+- GPU acceleration: `tree_method='gpu_hist'`
+- Training window: 252 days rolling
+- Validation: walk-forward time-series split (80/20, no shuffle, no data leakage)
+- Early stopping: 50 rounds on validation loss
+- Output: 5-level prediction scale (STRONG BULLISH to STRONG BEARISH) with 0-100% confidence
+- Model persistence: `./models/xgb_spy_{date}.json`
+- Provides `predict()` for single-row inference used by dashboards and what-if engine
+
+---
+
+### 3.4 Realtime Layer (`src/realtime/`)
+
+#### `streamer.py` — Polygon WebSocket Streamer
+Connects to Polygon Advanced WebSocket for real-time data:
+- Stocks channel: subscribes to `T.SPY` for real-time trades
+- Options channel: subscribes to `T.O:SPX*` for all SPX options trades
+- Aggregates raw ticks into 5-second OHLCV bars
+- Detects options sweeps (same option, multiple exchanges, <2 sec, >$50K) and block trades (>$100K)
+- Computes live put/call ratio
+- Auto-reconnect with exponential backoff (1s → 30s max)
+- Heartbeat monitoring: reconnects if no data for 60 seconds during market hours
+
+#### `dashboard_bridge.py` — State File Writer
+Bridges backend computation to dashboard display:
+- Writes `spy_state.json` and `es_state.json` to `./data/`
+- Atomic writes (temp file → rename) to prevent partial reads
+- Dashboards read these files on each refresh cycle
+
+---
+
+### 3.5 ES Strategy Layer (`src/es_strategy/`)
+
+#### `indicators.py` — Technical Indicators
+Computes: ATR(14), Keltner Channel (EMA20 ± 1.5×ATR), EMA(9), VWAP, RSI(14), ROC(3).
+
+Includes `RegimeDetector`: classifies volatility as Low/Med/High based on ATR percentile over 10,080 bars with 3-bar hysteresis to prevent rapid regime switching.
+
+#### `position.py` — 3-Lot Position Manager
+Manages a tiered position with 3 lots:
+- Lot 0: TP1 target, tightest trailing stop
+- Lot 1: TP2 target, medium trail
+- Lot 2: Runner, widest trail for extended moves
+
+Tracks entry price, direction, per-lot status, stop levels, and P&L. No pyramiding — must be flat to enter.
+
+#### `engine.py` — Strategy Engine
+Core signal generation logic:
+- Phase 1: pure-edge entry at K±C → TP1 → TP2 → Runner cascade
+- Phase 2: confluence reload requiring K±C plus 2 of 3 filters (ROC, ATR expansion, VWAP alignment)
+- Emergency stop: 20% × C, always active
+- Jump exit: 5 points adverse during 1-minute hold period
+- Session guards: flatten before 15:55 CT, flatten before FOMC/CPI/NFP events
+- Circuit breaker: daily P&L ≤ -$2,000 → flatten all + disable until 17:00 CT reset
+
+#### `ai_models.py` — AI Entry Gate and Exit Controller
+Optional AI enhancement (enabled via `--ai` flag):
+
+**XGBoost Entry Gate**: 17 normalized features, triple-barrier meta-labels, regime-adaptive thresholds (Low=0.58, Med=0.55, High=0.52). Outputs `p_enter` probability and position sizing (1-3 lots).
+
+**CNN Exit Controller**: 1D-CNN (Conv1d → AdaptiveAvgPool → FC → sigmoid) over last 20 bars × 19 features. Outputs `P_cont_5` (probability price continues 5 more bars), maps to trailing stop multipliers within regime bounds.
+
+**Drift Monitor**: tracks PSI (Population Stability Index). PSI > 0.2 triggers size reduction and refit. If AI underperforms rules by 1σ over 100 trades, AI is auto-disabled.
+
+#### `runner.py` — Live/Backtest/Paper Runner
+Execution modes:
+- `--mode live` — Polygon real-time feed
+- `--mode backtest --data file.csv` — historical CSV replay
+- `--mode paper` — live data, signals logged only (no execution)
+- `--ai` flag enables AI entry gate + CNN exit controller
+
+---
+
+### 3.6 Dashboard Layer (`src/dashboard/`)
+
+#### `app.py` — Unified Dashboard (port 8501)
+Single Streamlit application with sidebar navigation across four pages:
+
+1. **SPY Predictor**: prediction banner, history chart, accuracy tracking, indicators, options flow alerts. Auto-refreshes every 15 seconds.
+
+2. **ES Strategy**: position banner, candlestick chart with Keltner Channel overlay, signal feed, status panel. Auto-refreshes every 5 seconds.
+
+3. **What-If Analysis**: interactive scenario testing with ES parameter sweeps, SPY feature overrides, Monte Carlo simulations, stress tests, and feature ablation.
+
+4. **Admin Console**: browser-based system management with 5 tabs:
+   - System Status: health monitoring for database, LLM, and XGBoost model; data inventory with row counts and date ranges; latest prediction display
+   - Actions: ad-hoc execution of individual pipeline steps (data pull, news fetch, macro fetch, compute technicals, retrain XGBoost, generate prediction, LLM health check, generate report, full pipeline with skip-LLM option, send test alert)
+   - Database: table browser with configurable limits, custom SQL queries (SELECT-only), vacuum, and integrity check
+   - Configuration: key settings overview, full YAML editor with validation, save to disk
+   - Logs: dashboard log viewer, pipeline history with report text, model file inventory
+
+Auto-detects mode: if `RELAY_URL` environment variable is set, fetches data from cloud relay; otherwise reads local JSON state files.
+
+#### `realtime_app.py` — Standalone SPY Dashboard (legacy, port 8501)
+Original standalone SPY dashboard. Retained for backward compatibility.
+
+#### `es_dashboard.py` — Standalone ES Dashboard (legacy, port 8502)
+Original standalone ES dashboard. Retained for backward compatibility.
+
+#### `whatif_app.py` — Standalone What-If Dashboard (legacy, port 8503)
+Original standalone What-If dashboard. Retained for backward compatibility.
+
+---
+
+### 3.7 What-If Layer (`src/whatif/`)
+
+#### `engine.py` — What-If Compute Engine
+Core analysis module running on DGX (requires GPU + data + models):
+
+| Method | Description |
+|--------|-------------|
+| `es_parameter_sweep(params_grid)` | Backtest ES strategy across a grid of parameter combinations |
+| `es_compare_scenarios(scenario_list)` | Side-by-side backtest comparison of named scenarios |
+| `spy_scenario_inject(overrides)` | Override specific features and re-run XGBoost inference |
+| `spy_feature_ablation(drop_list)` | Zero out features and measure accuracy impact |
+| `spy_monte_carlo(n_sims, noise_pct)` | Random perturbation of features across N simulations |
+| `market_stress_test(scenario_name)` | Run pre-built stress scenarios |
+| `llm_explain(result)` | Generate LLM narrative for what-if results |
+| `list_stress_scenarios()` | List available pre-built stress scenarios |
+
+#### `presets.py` — Stress Test Scenarios
+Five pre-built market stress scenarios:
+
+| Name | Description |
+|------|-------------|
+| `vix_spike_40` | VIX jumps to 40, sentiment drops to -0.8 |
+| `gap_down_3pct` | 3% gap down with elevated VIX and negative sentiment |
+| `march_2020_crash` | March 2020 crash conditions (VIX 65, extreme fear) |
+| `fed_rate_cut` | Fed rate cut with positive sentiment and lower yields |
+| `melt_up` | Melt-up rally with low VIX and extreme bullish sentiment |
+
+#### `narrator.py` — LLM What-If Narrator
+Sends what-if results to DeepSeek R1 70B for plain-English explanation. Supports both ES strategy and SPY predictor results. Temperature 0.5, max 800 tokens. Falls back to raw numbers if LLM is unavailable.
+
+---
+
+### 3.8 Pipeline Layer (`src/pipeline/`)
+
+#### `daily_run.py` — 13-Step Pipeline Orchestrator
+Sequential pipeline running at 4:30 PM ET Monday-Friday:
+
+| Step | Name | Description |
+|------|------|-------------|
+| 0 | LLM Check | Verify Ollama + model availability |
+| 0.5 | Data Pull | Gap detection + backfill missing dates |
+| 1 | Evaluate | Compare yesterday's prediction to actual outcome |
+| 2 | Prices | Fetch today's OHLCV (Polygon → yfinance fallback) |
+| 3 | News | Fetch headlines (Finnhub + RSS) |
+| 4 | Sentiment | LLM sentiment analysis (~60-90 min for 50 articles) |
+| 5 | Macro | Fetch VIX, yields, DXY, fed funds, gold, crude |
+| 6 | Options Chain | Fetch SPX options chain snapshot |
+| 7 | Options Analytics | Compute P/C ratio, max pain, IV skew, GEX |
+| 8 | Technicals | Compute SMA, RSI, MACD, BB, ATR |
+| 9 | Intraday | Build VWAP spread, momentum, range features |
+| 10 | Retrain | Build feature vector + retrain XGBoost on GPU |
+| 11 | Predict | Generate next-day prediction |
+| 12 | Report | Generate LLM daily report |
+| 13 | Alerts | Send Telegram + email notifications |
+
+If any step fails, the pipeline logs the error and continues to the next step. LLM failure at Step 4 results in neutral sentiment (score=0.0) — the pipeline never aborts.
+
+#### `alerts.py` — Notification System
+Sends prediction alerts via two optional channels:
+- Telegram: Bot API with formatted message (emoji, direction, confidence, report)
+- Email: SMTP with HTML template
+
+Both channels are independently configured and optional.
+
+---
+
+### 3.9 Cloud Sync Layer (`src/sync/`)
+
+#### `publisher.py` — Cloud State Publisher
+Runs on DGX alongside backends. Pushes state updates to AWS relay via HTTPS POST:
+- `/push/prediction` — SPY prediction updates
+- `/push/flow_alert` — options flow alerts
+- `/push/es_state` — ES strategy state
+- `/push/heartbeat` — 30-second keepalive
+
+API key authentication via `X-API-Key` header. Retry on failure (3 attempts, 5s backoff). No-op if sync is disabled in config.
+
+#### `relay_server.py` — FastAPI Cloud Relay
+Runs on AWS EC2 t3.micro (~$8/mo). In-memory state only — no database. Receives POST pushes from DGX, serves state to cloud dashboards via GET endpoints and Server-Sent Events. Stale detection: marks source OFFLINE if no heartbeat for 90 seconds.
+
+---
+
+### 3.10 Launcher (`src/launcher.py`)
+
+Single entry point for the entire system. Contains:
+- `ProcessManager`: starts, stops, monitors, and restarts child processes
+- `Scheduler`: background thread that triggers the daily pipeline at 4:30 PM ET
+- `SystemLauncher`: orchestrates LLM check, ES strategy runner, dashboards, and scheduler
+- CLI with mutually exclusive flags: `--all`, `--spy`, `--es`, `--dashboards-only`, `--check-llm`, `--pipeline`
+
+---
+
+### 3.11 Cloud Deployment (`cloud/`)
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Combined relay + dashboard container |
+| `Dockerfile.relay` | Relay-only container (FastAPI + Uvicorn) |
+| `Dockerfile.dashboard` | Dashboard-only container (Streamlit) |
+| `docker-compose.yml` | Two-service orchestration (relay:8000, dashboard:8501) |
+| `deploy_aws.sh` | Automated ECR + EC2 deployment script |
+| `start.sh` | Combined container entrypoint |
+| `start_dashboards.sh` | Dashboard container entrypoint |
+| `.env.example` | Environment variables template |
+
+---
+
+### 3.12 Operations Scripts (`scripts/`)
+
+| File | Purpose |
+|------|---------|
+| `start.sh` | Start all components in order: Ollama, LLM check, dashboard (8501), ES runner (paper), scheduler (4:30 PM ET). Uses `.pids/` for PID tracking and `logs/` for log files. |
+| `stop.sh` | Graceful shutdown in reverse order with 10-second timeout then force-kill. `--all` flag also stops Ollama. Cleans up orphaned processes on port 8501. |
+| `status.sh` | Full health check: process status, port status, database health (size, row counts, latest dates), model info, disk usage, recent log activity. |
+| `restart.sh` | Runs `stop.sh` then `start.sh` with a 2-second pause. Passes through arguments (e.g., `--all`). |
+
+Scripts are self-contained — they auto-detect the project directory relative to their location and activate the Python virtual environment as needed.
+
+---
+
+## 4. Data Flow
+
+### Daily Pipeline Flow
+
+```
+Polygon/yfinance → prices table
+Finnhub/RSS      → news table
+FRED             → macro table
+Polygon          → options_chain, options_analytics tables
+                        │
+                        ▼
+              Feature Engineering (37+ features)
+                        │
+                        ▼
+              XGBoost Training (GPU, 252-day window)
+                        │
+                        ▼
+              Prediction → predictions table
+                        │
+                        ▼
+              LLM Report → predictions.report_text
+                        │
+                        ▼
+              Alerts → Telegram / Email
+```
+
+### Realtime Data Flow
+
+```
+Polygon WebSocket → 5-sec bars → intraday_bars table
+                  → options flow → sweep/block detection
+                        │
+                        ▼
+              Dashboard Bridge → spy_state.json / es_state.json
+                        │
+                        ▼
+              Streamlit Dashboard (port 8501)
+                        │
+              Cloud Publisher (optional)
+                        │
+                        ▼
+              AWS Relay → Cloud Dashboard
+```
+
+---
+
+## 5. Deployment Topology
+
+### Local (Primary)
+
+All components run on the DGX Spark at `192.168.1.211`:
+- Python processes managed by `src/launcher.py` or `scripts/start.sh`
+- SQLite database at `./data/spy.db`
+- Ollama serving DeepSeek R1 70B on localhost:11434
+- Unified dashboard on port 8501 (SPY Predictor, ES Strategy, What-If Analysis, Admin Console)
+- Operations scripts in `scripts/` for start/stop/status/restart
+- Code synced from Windows dev machine via Mutagen
+
+### Cloud (Optional Mirror)
+
+AWS EC2 t3.micro running Docker containers:
+- FastAPI relay on port 8000 (receives state pushes from DGX)
+- Streamlit dashboard on port 8501 (reads from relay)
+- No GPU, no database, no model inference — display only
+- Estimated cost: ~$8-10/month
+
+---
+
+## 6. Failure Modes and Resilience
+
+| Failure | System Behavior |
+|---------|----------------|
+| Polygon WebSocket disconnects | Auto-reconnect with exponential backoff (1s → 30s) |
+| Polygon REST unavailable | Falls back to yfinance for price data |
+| Ollama not running | Auto-start attempted; if fails, continues with neutral sentiment |
+| DeepSeek model not downloaded | Auto-download with progress logging; if fails, neutral sentiment |
+| LLM inference timeout | Skip sentiment step, use score=0.0 |
+| SQLite locked | 5-second busy timeout with WAL mode for concurrent reads |
+| Dashboard process crashes | Launcher detects and auto-restarts within 30 seconds |
+| Cloud relay unreachable | Publisher retries 3 times then skips; local system unaffected |
+| Circuit breaker triggered | ES strategy flattens all positions, pauses until 17:00 CT |
+| Pipeline step fails | Logs error, continues to next step; pipeline never fully aborts |

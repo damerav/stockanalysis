@@ -1,0 +1,15 @@
+websockets>=12.0
+aiohttp>=3.9
+yfinance>=0.2.36
+feedparser>=6.0
+requests>=2.31
+pandas>=2.2
+numpy>=1.26
+pyyaml>=6.0
+xgboost>=2.0
+scikit-learn>=1.4
+torch>=2.1
+streamlit>=1.30
+plotly>=5.18
+fastapi>=0.109
+uvicorn>=0.27
