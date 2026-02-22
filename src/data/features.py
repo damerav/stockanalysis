@@ -123,6 +123,108 @@ def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame):
 
 # --- 3A: Feature Vector Construction ---
 
+def compute_intraday_microstructure(conn: sqlite3.Connection, date: str) -> dict:
+    """Compute 8 intraday microstructure features from intraday_bars for a given date.
+
+    Returns dict with keys: opening_gap_pct, opening_range_breakout,
+    close_vs_high_pct, close_vs_low_pct, afternoon_reversal,
+    institutional_hour_vol, tick_divergence, vwap_reclaim_count.
+    All NaN if no intraday bars exist for the date.
+    """
+    fallback = {
+        "opening_gap_pct": np.nan, "opening_range_breakout": np.nan,
+        "close_vs_high_pct": np.nan, "close_vs_low_pct": np.nan,
+        "afternoon_reversal": np.nan, "institutional_hour_vol": np.nan,
+        "tick_divergence": np.nan, "vwap_reclaim_count": np.nan,
+    }
+    try:
+        # Fetch all SPY bars for this date
+        bars = pd.read_sql_query(
+            "SELECT timestamp, open, high, low, close, volume, vwap "
+            "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
+            conn, params=(f"{date}%",),
+        )
+        if bars.empty or len(bars) < 10:
+            return fallback
+
+        day_open = float(bars.iloc[0]["open"])
+        day_high = float(bars["high"].max())
+        day_low = float(bars["low"].min())
+        day_close = float(bars.iloc[-1]["close"])
+
+        # Previous day close for gap calc
+        prev = conn.execute(
+            "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (date,),
+        ).fetchone()
+        prev_close = float(prev[0]) if prev else day_open
+
+        # 1. opening_gap_pct
+        opening_gap_pct = (day_open - prev_close) / prev_close if prev_close else 0.0
+
+        # 2. opening_range_breakout — first 30 min = first 360 bars (5-sec)
+        first_30 = bars.head(360)
+        or_high = float(first_30["high"].max())
+        or_low = float(first_30["low"].min())
+        if day_close > or_high:
+            opening_range_breakout = 1
+        elif day_close < or_low:
+            opening_range_breakout = -1
+        else:
+            opening_range_breakout = 0
+
+        # 3. close_vs_high_pct
+        close_vs_high_pct = (day_close - day_high) / day_high if day_high else 0.0
+
+        # 4. close_vs_low_pct
+        close_vs_low_pct = (day_close - day_low) / day_low if day_low else 0.0
+
+        # 5. afternoon_reversal — morning = first half, afternoon = last 90 min (~1080 bars)
+        mid = len(bars) // 2
+        morning_dir = float(bars.iloc[mid]["close"]) - day_open
+        last_90_start = max(0, len(bars) - 1080)
+        afternoon_dir = day_close - float(bars.iloc[last_90_start]["close"])
+        afternoon_reversal = 1 if (morning_dir > 0 and afternoon_dir < 0) or \
+                                   (morning_dir < 0 and afternoon_dir > 0) else 0
+
+        # 6. institutional_hour_vol — 9:30-11:00 vs 14:00-16:00
+        # Timestamps are like "2026-02-21 09:30:05" or ISO format
+        bars["ts_str"] = bars["timestamp"].astype(str)
+        morning_vol = bars[bars["ts_str"].str.contains(
+            r" (09:3|09:4|09:5|10:|11:0)", regex=True, na=False
+        )]["volume"].sum()
+        afternoon_vol = bars[bars["ts_str"].str.contains(
+            r" (14:|15:)", regex=True, na=False
+        )]["volume"].sum()
+        institutional_hour_vol = float(morning_vol) / max(float(afternoon_vol), 1.0)
+
+        # 7. tick_divergence — we don't have NYSE TICK data in intraday_bars,
+        # so approximate with count of bars where close moved > 0.1% in 5 sec
+        pct_moves = bars["close"].pct_change().abs()
+        extreme_count = int((pct_moves > 0.001).sum())  # >0.1% per 5-sec bar
+        tick_divergence = extreme_count / max(len(bars), 1)
+
+        # 8. vwap_reclaim_count — number of times close crossed VWAP
+        if "vwap" in bars.columns and bars["vwap"].notna().any():
+            above_vwap = (bars["close"] > bars["vwap"]).astype(int)
+            vwap_reclaim_count = int(above_vwap.diff().abs().sum()) // 2
+        else:
+            vwap_reclaim_count = 0
+
+        return {
+            "opening_gap_pct": opening_gap_pct,
+            "opening_range_breakout": opening_range_breakout,
+            "close_vs_high_pct": close_vs_high_pct,
+            "close_vs_low_pct": close_vs_low_pct,
+            "afternoon_reversal": afternoon_reversal,
+            "institutional_hour_vol": institutional_hour_vol,
+            "tick_divergence": tick_divergence,
+            "vwap_reclaim_count": vwap_reclaim_count,
+        }
+    except Exception:
+        return fallback
+
+
 def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional[pd.DataFrame]:
     """Build the 35+ feature vector for model training/prediction.
 
@@ -228,6 +330,14 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
     fed_df = pd.DataFrame(fed_features, index=df.index)
     for col in fed_df.columns:
         df[col] = fed_df[col]
+
+    # --- Intraday microstructure features (Enhancement 21) ---
+    micro_features = []
+    for _, row in df.iterrows():
+        micro_features.append(compute_intraday_microstructure(conn, row["date"]))
+    micro_df = pd.DataFrame(micro_features, index=df.index)
+    for col in micro_df.columns:
+        df[col] = micro_df[col]
 
     # Fill forward macro data (reported less frequently)
     macro_cols = ["vix", "vix_change", "us10y_yield", "dxy", "fed_funds", "gold", "crude",
@@ -342,6 +452,10 @@ def get_feature_columns() -> list[str]:
         "sentiment_dispersion", "sentiment_velocity",
         # Intraday
         "vwap_spread", "intraday_momentum", "intraday_range", "volume_ratio",
+        # Intraday microstructure (Enhancement 21)
+        "opening_gap_pct", "opening_range_breakout", "close_vs_high_pct",
+        "close_vs_low_pct", "afternoon_reversal", "institutional_hour_vol",
+        "tick_divergence", "vwap_reclaim_count",
         # Options
         "put_call_ratio", "max_pain_distance", "iv_skew", "gex_normalized",
         # P3: Extended options
