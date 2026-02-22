@@ -23,6 +23,14 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Enhancement 26: DuckDB analytics support
+try:
+    from src.data.db_router import get_router, ANALYTICS_TABLES
+    _HAS_DUCKDB = True
+except ImportError:
+    _HAS_DUCKDB = False
+    ANALYTICS_TABLES = set()
+
 DATA_DIR = "./data"
 LOGS_DIR = "./logs"
 MODELS_DIR = "./models"
@@ -125,6 +133,27 @@ def _get_db():
 
 
 def _query_df(sql: str, params=()) -> pd.DataFrame:
+    """Query helper — routes to DuckDB for analytics tables, SQLite otherwise."""
+    # Enhancement 26: Try DuckDB for analytics table queries
+    if _HAS_DUCKDB:
+        try:
+            sql_upper = sql.upper()
+            is_analytics = any(t.upper() in sql_upper for t in ANALYTICS_TABLES)
+            if is_analytics:
+                import yaml
+                config_path = os.path.join(os.path.dirname(DATA_DIR), "config.yaml")
+                if not os.path.exists(config_path):
+                    config_path = "config.yaml"
+                try:
+                    with open(config_path) as f:
+                        config = yaml.safe_load(f)
+                except Exception:
+                    config = None
+                router = get_router(config)
+                return router.read_analytics(sql, params if params else None)
+        except Exception:
+            pass  # Fall through to SQLite
+
     conn = _get_db()
     if conn is None:
         return pd.DataFrame()
@@ -307,9 +336,24 @@ def tab_spy_predictor(days: int = 90):
                        "options_analytics", "intraday_features", "performance",
                        "earnings_calendar", "fed_communications"]
             rows = []
+            # Enhancement 26: Query DuckDB for analytics tables
+            duck_router = None
+            if _HAS_DUCKDB:
+                try:
+                    import yaml
+                    with open("config.yaml") as f:
+                        config = yaml.safe_load(f)
+                    duck_router = get_router(config)
+                except Exception:
+                    pass
+
             for t in tables:
                 try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    if duck_router and t in ANALYTICS_TABLES:
+                        cnt_df = duck_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
+                        count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
+                    else:
+                        count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                     rows.append({"Table": t, "Rows": count})
                 except Exception:
                     rows.append({"Table": t, "Rows": 0})
@@ -735,9 +779,24 @@ def tab_pipeline_status():
                    "options_analytics", "intraday_features", "performance",
                    "earnings_calendar", "fed_communications"]
         rows = []
+        # Enhancement 26: Query DuckDB for analytics tables
+        duck_router = None
+        if _HAS_DUCKDB:
+            try:
+                import yaml
+                with open("config.yaml") as f:
+                    config = yaml.safe_load(f)
+                duck_router = get_router(config)
+            except Exception:
+                pass
+
         for t in tables:
             try:
-                count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                if duck_router and t in ANALYTICS_TABLES:
+                    cnt_df = duck_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
+                    count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
+                else:
+                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                 rows.append({"Table": t, "Rows": count})
             except Exception:
                 rows.append({"Table": t, "Rows": 0})

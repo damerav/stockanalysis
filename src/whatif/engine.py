@@ -44,10 +44,10 @@ class WhatIfEngine:
         return self._predictor
 
     def _get_features(self) -> pd.DataFrame:
-        """Lazy-load the full feature DataFrame from SQLite."""
+        """Lazy-load the full feature DataFrame."""
         if self._feature_df is None:
             conn = get_connection(self.config)
-            self._feature_df = build_feature_vector(conn)
+            self._feature_df = build_feature_vector(conn, config=self.config)
             conn.close()
         return self._feature_df
 

@@ -30,6 +30,7 @@ from src.auth.google_oauth import (
     logout,
 )
 from src.dashboard.monitoring import page_monitoring
+from src.data.db_router import get_router, ANALYTICS_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -1012,16 +1013,21 @@ def _admin_status_tab():
     with col1:
         st.markdown("**Database**")
         db_path = os.path.join(DATA_DIR, "spy.db")
+        duck_path = os.path.join(DATA_DIR, "analytics.duckdb")
         if os.path.exists(db_path):
             size_mb = os.path.getsize(db_path) / (1024 * 1024)
-            st.success(f"Online — {size_mb:.1f} MB")
+            duck_size = ""
+            if os.path.exists(duck_path):
+                duck_mb = os.path.getsize(duck_path) / (1024 * 1024)
+                duck_size = f" + 🦆 {duck_mb:.1f} MB"
+            st.success(f"Online — SQLite {size_mb:.1f} MB{duck_size}")
             try:
                 conn = sqlite3.connect(db_path)
                 tables = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
                 ).fetchall()
                 conn.close()
-                st.caption(f"{len(tables)} tables")
+                st.caption(f"{len(tables)} SQLite tables" + (" + 5 DuckDB" if os.path.exists(duck_path) else ""))
             except Exception as e:
                 st.warning(f"Read error: {e}")
         else:
@@ -1072,6 +1078,14 @@ def _admin_status_tab():
     if os.path.exists(db_path):
         try:
             conn = sqlite3.connect(db_path)
+            # Enhancement 26: Check DuckDB for analytics tables
+            duck_router = None
+            try:
+                config = _load_config()
+                duck_router = get_router(config)
+            except Exception:
+                pass
+
             tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
                        "predictions", "intraday_bars", "options_chain",
                        "options_analytics", "intraday_features", "performance",
@@ -1079,14 +1093,29 @@ def _admin_status_tab():
             rows = []
             for t in tables:
                 try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                    min_date = conn.execute(f"SELECT MIN(date) FROM {t}").fetchone()[0] if t != "intraday_bars" else "—"
-                    max_date = conn.execute(f"SELECT MAX(date) FROM {t}").fetchone()[0] if t != "intraday_bars" else "—"
+                    if duck_router and t in ANALYTICS_TABLES:
+                        count_df = duck_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
+                        count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+                        if t != "intraday_bars":
+                            min_df = duck_router.read_analytics(f"SELECT MIN(date) as d FROM {t}")
+                            max_df = duck_router.read_analytics(f"SELECT MAX(date) as d FROM {t}")
+                            min_date = min_df.iloc[0]["d"] if not min_df.empty else "—"
+                            max_date = max_df.iloc[0]["d"] if not max_df.empty else "—"
+                        else:
+                            min_date, max_date = "—", "—"
+                        source = "🦆"
+                    else:
+                        count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                        min_date = conn.execute(f"SELECT MIN(date) FROM {t}").fetchone()[0] if t != "intraday_bars" else "—"
+                        max_date = conn.execute(f"SELECT MAX(date) FROM {t}").fetchone()[0] if t != "intraday_bars" else "—"
+                        source = "📦"
                 except Exception:
-                    count, min_date, max_date = 0, "—", "—"
-                rows.append({"Table": t, "Rows": count, "From": min_date or "—", "To": max_date or "—"})
+                    count, min_date, max_date, source = 0, "—", "—", "?"
+                rows.append({"Table": t, "Rows": count, "From": min_date or "—",
+                             "To": max_date or "—", "DB": source})
             conn.close()
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.caption("🦆 = DuckDB analytics, 📦 = SQLite operational")
         except Exception as e:
             st.error(f"Error reading database: {e}")
 
@@ -1192,16 +1221,28 @@ def _admin_actions_tab():
                     fetcher = FallbackFetcher()
                     macro = fetcher.get_macro_fred()
                     today = datetime.now().strftime("%Y-%m-%d")
-                    conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-                    conn.execute(
-                        "INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (today, macro.get("vix"), macro.get("vix_change"),
-                         macro.get("us10y_yield"), macro.get("dxy"),
-                         macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
-                    )
-                    conn.commit()
-                    conn.close()
+                    # Enhancement 26: Write to DuckDB
+                    try:
+                        config = _load_config()
+                        router = get_router(config)
+                        router.write_analytics(
+                            "INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (today, macro.get("vix"), macro.get("vix_change"),
+                             macro.get("us10y_yield"), macro.get("dxy"),
+                             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
+                        )
+                    except Exception:
+                        conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
+                        conn.execute(
+                            "INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (today, macro.get("vix"), macro.get("vix_change"),
+                             macro.get("us10y_yield"), macro.get("dxy"),
+                             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
+                        )
+                        conn.commit()
+                        conn.close()
                     st.success("Macro data updated")
                     st.json(macro)
                 except Exception as e:
@@ -1231,7 +1272,7 @@ def _admin_actions_tab():
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
                     conn = get_connection(config)
-                    fv = build_feature_vector(conn)
+                    fv = build_feature_vector(conn, config=config)
                     conn.close()
                     target = get_target(fv)
                     predictor = SPYPredictor(config)
@@ -1251,7 +1292,7 @@ def _admin_actions_tab():
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
                     conn = get_connection(config)
-                    fv = build_feature_vector(conn)
+                    fv = build_feature_vector(conn, config=config)
                     predictor = SPYPredictor(config)
                     if not predictor.load_latest_model():
                         st.error("No trained model found — train first")
@@ -1385,11 +1426,28 @@ def _admin_db_tab():
 
     conn = sqlite3.connect(db_path)
 
-    tables = [r[0] for r in conn.execute(
+    # Enhancement 26: Get tables from both DBs
+    duck_router = None
+    try:
+        config = _load_config()
+        duck_router = get_router(config)
+    except Exception:
+        pass
+
+    sqlite_tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     ).fetchall()]
 
-    selected = st.selectbox("Table", tables, key="db_table")
+    # Combine: analytics tables from DuckDB, rest from SQLite
+    all_tables = sorted(set(sqlite_tables) | ANALYTICS_TABLES)
+
+    selected = st.selectbox("Table", all_tables, key="db_table")
+    is_duck_table = duck_router and selected in ANALYTICS_TABLES
+
+    if is_duck_table:
+        st.caption(f"🦆 Reading from DuckDB analytics")
+    else:
+        st.caption(f"📦 Reading from SQLite")
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -1405,12 +1463,20 @@ def _admin_db_tab():
         date_col = "id"
 
     try:
-        df = pd.read_sql_query(
-            f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}",
-            conn,
-        )
+        if is_duck_table:
+            df = duck_router.read_analytics(
+                f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}"
+            )
+            count_df = duck_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {selected}")
+            total = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+        else:
+            df = pd.read_sql_query(
+                f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}",
+                conn,
+            )
+            total = conn.execute(f"SELECT COUNT(*) FROM {selected}").fetchone()[0]
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.caption(f"Showing {len(df)} of {conn.execute(f'SELECT COUNT(*) FROM {selected}').fetchone()[0]} rows")
+        st.caption(f"Showing {len(df)} of {total} rows")
     except Exception as e:
         st.error(f"Query error: {e}")
 
@@ -1418,13 +1484,27 @@ def _admin_db_tab():
 
     # Custom SQL query
     st.subheader("Custom Query")
+    db_target = st.radio("Target", ["Auto-detect", "DuckDB", "SQLite"], horizontal=True, key="db_target")
     query = st.text_area("SQL (read-only, SELECT only)", value=f"SELECT * FROM {selected} LIMIT 10", key="db_query", height=80)
     if st.button("Run Query", key="run_query"):
         if not query.strip().upper().startswith("SELECT"):
             st.error("Only SELECT queries are allowed")
         else:
             try:
-                df = pd.read_sql_query(query, conn)
+                use_duck = False
+                if db_target == "DuckDB" and duck_router:
+                    use_duck = True
+                elif db_target == "Auto-detect" and duck_router:
+                    # Check if query references analytics tables
+                    q_upper = query.upper()
+                    use_duck = any(t.upper() in q_upper for t in ANALYTICS_TABLES)
+
+                if use_duck:
+                    df = duck_router.read_analytics(query)
+                    st.caption("🦆 Executed on DuckDB")
+                else:
+                    df = pd.read_sql_query(query, conn)
+                    st.caption("📦 Executed on SQLite")
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 st.caption(f"{len(df)} rows returned")
             except Exception as e:

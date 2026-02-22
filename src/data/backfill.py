@@ -7,16 +7,27 @@ from datetime import datetime, timedelta
 from src.data.init_db import init_db, get_connection, load_config
 from src.data.polygon_fetcher import PolygonFetcher
 from src.data.fetcher import FallbackFetcher
+from src.data.db_router import get_router
 
 logger = logging.getLogger(__name__)
+
+
+def _insert_prices_duck(router, df):
+    """Insert price rows into DuckDB prices table."""
+    duck = router.get_analytics_conn()
+    for _, row in df.iterrows():
+        duck.execute(
+            """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (row["date"], row["open"], row["high"], row["low"],
+             row["close"], row["volume"])
+        )
 
 
 def bulk_load(days: int = 252, config: dict = None):
     """Load historical data for initial setup.
 
-    Args:
-        days: Number of trading days to load (default 252 = ~1 year)
-        config: Configuration dict (loaded from config.yaml if None)
+    Enhancement 26: Writes prices to DuckDB, operational data to SQLite.
     """
     if config is None:
         config = load_config()
@@ -25,6 +36,14 @@ def bulk_load(days: int = 252, config: dict = None):
     db_path = init_db(config)
     conn = get_connection(config)
     logger.info(f"Database ready at {db_path}")
+
+    # Get DuckDB router
+    try:
+        router = get_router(config)
+        use_duck = True
+    except Exception as e:
+        logger.warning(f"DuckDB unavailable, using SQLite only: {e}")
+        use_duck = False
 
     api_key = config.get("polygon", {}).get("api_key", "")
     has_polygon = api_key and api_key != "YOUR_POLYGON_KEY"
@@ -39,14 +58,17 @@ def bulk_load(days: int = 252, config: dict = None):
         df = polygon.get_daily_bars("SPY", start_date, end_date)
         if not df.empty:
             df = df.tail(days)
-            for _, row in df.iterrows():
-                conn.execute(
-                    """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (row["date"], row["open"], row["high"], row["low"],
-                     row["close"], row["volume"])
-                )
-            conn.commit()
+            if use_duck:
+                _insert_prices_duck(router, df)
+            else:
+                for _, row in df.iterrows():
+                    conn.execute(
+                        """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (row["date"], row["open"], row["high"], row["low"],
+                         row["close"], row["volume"])
+                    )
+                conn.commit()
             logger.info(f"Loaded {len(df)} days from Polygon")
         else:
             logger.warning("Polygon returned no data, falling back to yfinance")
@@ -56,14 +78,17 @@ def bulk_load(days: int = 252, config: dict = None):
         fallback = FallbackFetcher()
         df = fallback.get_daily_bars_yf("SPY", days=days)
         if not df.empty:
-            for _, row in df.iterrows():
-                conn.execute(
-                    """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (row["date"], row["open"], row["high"], row["low"],
-                     row["close"], row["volume"])
-                )
-            conn.commit()
+            if use_duck:
+                _insert_prices_duck(router, df)
+            else:
+                for _, row in df.iterrows():
+                    conn.execute(
+                        """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (row["date"], row["open"], row["high"], row["low"],
+                         row["close"], row["volume"])
+                    )
+                conn.commit()
             logger.info(f"Loaded {len(df)} days from yfinance")
         else:
             logger.error("No price data loaded from any source")
@@ -73,17 +98,26 @@ def bulk_load(days: int = 252, config: dict = None):
     fallback = FallbackFetcher()
     macro = fallback.get_macro_fred()
     today = datetime.now().strftime("%Y-%m-%d")
-    conn.execute(
-        """INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield,
-           dxy, fed_funds, gold, crude) VALUES (?,?,?,?,?,?,?,?)""",
-        (today, macro.get("vix"), macro.get("vix_change"),
-         macro.get("us10y_yield"), macro.get("dxy"),
-         macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
-    )
-    conn.commit()
+    if use_duck:
+        router.write_analytics(
+            """INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield,
+               dxy, fed_funds, gold, crude) VALUES (?,?,?,?,?,?,?,?)""",
+            (today, macro.get("vix"), macro.get("vix_change"),
+             macro.get("us10y_yield"), macro.get("dxy"),
+             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
+        )
+    else:
+        conn.execute(
+            """INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield,
+               dxy, fed_funds, gold, crude) VALUES (?,?,?,?,?,?,?,?)""",
+            (today, macro.get("vix"), macro.get("vix_change"),
+             macro.get("us10y_yield"), macro.get("dxy"),
+             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
+        )
+        conn.commit()
     logger.info(f"Macro data loaded: {macro}")
 
-    # --- Load news ---
+    # --- Load news (operational — stays in SQLite) ---
     logger.info("Loading recent news...")
     news = fallback.get_news_rss()
     for article in news:
@@ -97,12 +131,19 @@ def bulk_load(days: int = 252, config: dict = None):
     logger.info(f"Loaded {len(news)} news articles")
 
     # --- Summary ---
-    tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
-              "predictions", "intraday_bars", "options_chain",
-              "options_analytics", "intraday_features", "performance"]
-    for table in tables:
+    # Check DuckDB analytics tables
+    if use_duck:
+        for table in ["prices", "technicals", "macro", "intraday_bars", "options_chain"]:
+            count_df = router.read_analytics(f"SELECT COUNT(*) as cnt FROM {table}")
+            count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+            logger.info(f"  {table} (DuckDB): {count} rows")
+
+    # Check SQLite operational tables
+    sqlite_tables = ["news", "daily_sentiment", "predictions",
+                     "options_analytics", "intraday_features", "performance"]
+    for table in sqlite_tables:
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        logger.info(f"  {table}: {count} rows")
+        logger.info(f"  {table} (SQLite): {count} rows")
 
     conn.close()
     logger.info("Bulk load complete.")

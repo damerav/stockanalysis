@@ -13,6 +13,7 @@ from src.data.init_db import get_connection, load_config
 from src.data.calendar import get_event_features, has_nearby_event
 from src.data.earnings_calendar import get_earnings_features
 from src.data.fed_comms import get_fed_features
+from src.data.db_router import get_router, ANALYTICS_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -104,27 +105,49 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
     return result
 
 
-def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame):
-    """Store computed technicals in the database."""
-    for _, row in tech_df.iterrows():
-        if pd.isna(row.get("sma_20")):
-            continue
-        conn.execute(
-            """INSERT OR REPLACE INTO technicals
-               (date, sma_20, sma_50, rsi_14, macd, macd_signal, macd_hist,
-                bb_upper, bb_lower, bb_mid, atr_14)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (row["date"], row["sma_20"], row["sma_50"], row["rsi_14"],
-             row["macd"], row["macd_signal"], row["macd_hist"],
-             row["bb_upper"], row["bb_lower"], row["bb_mid"], row["atr_14"])
-        )
-    conn.commit()
+def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: dict = None):
+    """Store computed technicals in the database.
+    Enhancement 26: Writes to DuckDB analytics if available, falls back to SQLite."""
+    try:
+        router = get_router(config)
+        duck = router.get_analytics_conn()
+        for _, row in tech_df.iterrows():
+            if pd.isna(row.get("sma_20")):
+                continue
+            duck.execute(
+                """INSERT OR REPLACE INTO technicals
+                   (date, sma_20, sma_50, rsi_14, macd, macd_signal, macd_hist,
+                    bb_upper, bb_lower, bb_mid, atr_14)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (row["date"], row["sma_20"], row["sma_50"], row["rsi_14"],
+                 row["macd"], row["macd_signal"], row["macd_hist"],
+                 row["bb_upper"], row["bb_lower"], row["bb_mid"], row["atr_14"])
+            )
+        logger.debug("Technicals stored in DuckDB")
+    except Exception as e:
+        logger.warning(f"DuckDB write failed, falling back to SQLite: {e}")
+        for _, row in tech_df.iterrows():
+            if pd.isna(row.get("sma_20")):
+                continue
+            conn.execute(
+                """INSERT OR REPLACE INTO technicals
+                   (date, sma_20, sma_50, rsi_14, macd, macd_signal, macd_hist,
+                    bb_upper, bb_lower, bb_mid, atr_14)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (row["date"], row["sma_20"], row["sma_50"], row["rsi_14"],
+                 row["macd"], row["macd_signal"], row["macd_hist"],
+                 row["bb_upper"], row["bb_lower"], row["bb_mid"], row["atr_14"])
+            )
+            conn.commit()
 
 
 # --- 3A: Feature Vector Construction ---
 
-def compute_intraday_microstructure(conn: sqlite3.Connection, date: str) -> dict:
+def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config: dict = None) -> dict:
     """Compute 8 intraday microstructure features from intraday_bars for a given date.
+
+    Enhancement 26: Reads intraday_bars from DuckDB, prev close from DuckDB prices.
+    Falls back to SQLite conn if DuckDB unavailable.
 
     Returns dict with keys: opening_gap_pct, opening_range_breakout,
     close_vs_high_pct, close_vs_low_pct, afternoon_reversal,
@@ -138,26 +161,48 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str) -> dict
         "tick_divergence": np.nan, "vwap_reclaim_count": np.nan,
     }
     try:
-        # Fetch all SPY bars for this date
-        bars = pd.read_sql_query(
-            "SELECT timestamp, open, high, low, close, volume, vwap "
-            "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
-            conn, params=(f"{date}%",),
-        )
-        if bars.empty or len(bars) < 10:
-            return fallback
+        # Try DuckDB first for analytics tables
+        try:
+            router = get_router(config)
+            bars = router.read_analytics(
+                "SELECT timestamp, open, high, low, close, volume, vwap "
+                "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
+                (f"{date}%",),
+            )
+            if bars.empty or len(bars) < 10:
+                return fallback
 
-        day_open = float(bars.iloc[0]["open"])
-        day_high = float(bars["high"].max())
-        day_low = float(bars["low"].min())
-        day_close = float(bars.iloc[-1]["close"])
+            day_open = float(bars.iloc[0]["open"])
+            day_high = float(bars["high"].max())
+            day_low = float(bars["low"].min())
+            day_close = float(bars.iloc[-1]["close"])
 
-        # Previous day close for gap calc
-        prev = conn.execute(
-            "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
-            (date,),
-        ).fetchone()
-        prev_close = float(prev[0]) if prev else day_open
+            # Previous day close from DuckDB prices
+            prev_df = router.read_analytics(
+                "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
+                (date,),
+            )
+            prev_close = float(prev_df.iloc[0]["close"]) if not prev_df.empty else day_open
+        except Exception:
+            # Fall back to SQLite
+            bars = pd.read_sql_query(
+                "SELECT timestamp, open, high, low, close, volume, vwap "
+                "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
+                conn, params=(f"{date}%",),
+            )
+            if bars.empty or len(bars) < 10:
+                return fallback
+
+            day_open = float(bars.iloc[0]["open"])
+            day_high = float(bars["high"].max())
+            day_low = float(bars["low"].min())
+            day_close = float(bars.iloc[-1]["close"])
+
+            prev = conn.execute(
+                "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
+                (date,),
+            ).fetchone()
+            prev_close = float(prev[0]) if prev else day_open
 
         # 1. opening_gap_pct
         opening_gap_pct = (day_open - prev_close) / prev_close if prev_close else 0.0
@@ -225,54 +270,55 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str) -> dict
         return fallback
 
 
-def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional[pd.DataFrame]:
+def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dict = None) -> Optional[pd.DataFrame]:
     """Build the 35+ feature vector for model training/prediction.
 
-    Joins data from: prices, technicals, macro, daily_sentiment,
-    intraday_features, options_analytics.
+    Enhancement 26: Reads analytics tables from DuckDB, operational from SQLite,
+    merges in Python. Falls back to single SQLite JOIN if DuckDB unavailable.
 
     Returns DataFrame with one row per date, all features as columns.
     """
-    query = """
-    SELECT
-        p.date,
-        p.open, p.high, p.low, p.close, p.volume,
-        -- Technical features
-        t.sma_20, t.sma_50, t.rsi_14,
-        t.macd, t.macd_signal, t.macd_hist,
-        t.bb_upper, t.bb_lower, t.atr_14,
-        -- Macro features
-        m.vix, m.vix_change, m.us10y_yield, m.dxy, m.fed_funds, m.gold, m.crude,
-        -- VIX term structure (P1)
-        m.vix9d, m.vix3m, m.vix6m, m.vvix, m.skew_index,
-        -- Cross-asset signals (P1)
-        m.hy_spread, m.tlt_spy_ratio, m.eem_spy_ratio,
-        m.copper_gold_ratio, m.xlk_xlf_ratio, m.xlk_xle_ratio,
-        -- Sentiment features
-        s.score as sentiment_score, s.confidence as sentiment_confidence,
-        s.article_count, s.positive_ratio, s.negative_ratio,
-        -- Decomposed sentiment (P2)
-        s.macro_sentiment, s.earnings_sentiment,
-        s.geopolitical_sentiment, s.technical_sentiment,
-        s.sentiment_dispersion, s.sentiment_velocity,
-        -- Intraday features
-        i.vwap_spread, i.intraday_momentum, i.intraday_range, i.volume_ratio,
-        -- Options features
-        o.put_call_ratio, o.max_pain, o.iv_skew, o.gex,
-        -- P3: Extended options analytics
-        o.vanna_exposure, o.charm_exposure, o.zero_dte_pcr
-    FROM prices p
-    LEFT JOIN technicals t ON p.date = t.date
-    LEFT JOIN macro m ON p.date = m.date
-    LEFT JOIN daily_sentiment s ON p.date = s.date
-    LEFT JOIN intraday_features i ON p.date = i.date
-    LEFT JOIN options_analytics o ON p.date = o.date
-    """
-    if date:
-        query += f" WHERE p.date = '{date}'"
-    query += " ORDER BY p.date"
+    # Try DuckDB router first
+    try:
+        router = get_router(config)
+        df = router.read_feature_join(date)
+    except Exception as e:
+        logger.warning(f"DuckDB feature join failed, falling back to SQLite: {e}")
+        df = pd.DataFrame()
 
-    df = pd.read_sql_query(query, conn)
+    if df.empty:
+        # Fallback: original single-DB JOIN on SQLite
+        query = """
+        SELECT
+            p.date,
+            p.open, p.high, p.low, p.close, p.volume,
+            t.sma_20, t.sma_50, t.rsi_14,
+            t.macd, t.macd_signal, t.macd_hist,
+            t.bb_upper, t.bb_lower, t.atr_14,
+            m.vix, m.vix_change, m.us10y_yield, m.dxy, m.fed_funds, m.gold, m.crude,
+            m.vix9d, m.vix3m, m.vix6m, m.vvix, m.skew_index,
+            m.hy_spread, m.tlt_spy_ratio, m.eem_spy_ratio,
+            m.copper_gold_ratio, m.xlk_xlf_ratio, m.xlk_xle_ratio,
+            s.score as sentiment_score, s.confidence as sentiment_confidence,
+            s.article_count, s.positive_ratio, s.negative_ratio,
+            s.macro_sentiment, s.earnings_sentiment,
+            s.geopolitical_sentiment, s.technical_sentiment,
+            s.sentiment_dispersion, s.sentiment_velocity,
+            i.vwap_spread, i.intraday_momentum, i.intraday_range, i.volume_ratio,
+            o.put_call_ratio, o.max_pain, o.iv_skew, o.gex,
+            o.vanna_exposure, o.charm_exposure, o.zero_dte_pcr
+        FROM prices p
+        LEFT JOIN technicals t ON p.date = t.date
+        LEFT JOIN macro m ON p.date = m.date
+        LEFT JOIN daily_sentiment s ON p.date = s.date
+        LEFT JOIN intraday_features i ON p.date = i.date
+        LEFT JOIN options_analytics o ON p.date = o.date
+        """
+        if date:
+            query += f" WHERE p.date = '{date}'"
+        query += " ORDER BY p.date"
+        df = pd.read_sql_query(query, conn)
+
     if df.empty:
         return None
 
@@ -334,7 +380,7 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
     # --- Intraday microstructure features (Enhancement 21) ---
     micro_features = []
     for _, row in df.iterrows():
-        micro_features.append(compute_intraday_microstructure(conn, row["date"]))
+        micro_features.append(compute_intraday_microstructure(conn, row["date"], config))
     micro_df = pd.DataFrame(micro_features, index=df.index)
     for col in micro_df.columns:
         df[col] = micro_df[col]

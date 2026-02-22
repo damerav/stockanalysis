@@ -33,6 +33,7 @@ from src.data.feature_store import FeatureStore
 from src.model.regime import HMMRegimeDetector
 from src.data.earnings_calendar import fetch_earnings_yf, store_earnings
 from src.data.fed_comms import update_fed_communications
+from src.data.db_router import get_router
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,12 @@ class DailyPipeline:
     def _init_components(self):
         """Initialise all pipeline components."""
         self.conn = get_connection(self.config)
+        # Enhancement 26: DuckDB router for analytics tables
+        try:
+            self.router = get_router(self.config)
+        except Exception as e:
+            logger.warning(f"DuckDB router unavailable: {e}")
+            self.router = None
         api_key = self.config.get("polygon", {}).get("api_key", "")
         if api_key and api_key != "YOUR_POLYGON_KEY":
             self.polygon = PolygonFetcher(api_key)
@@ -159,20 +166,32 @@ class DailyPipeline:
         return result or {"no_prediction": True}
 
     def _step2_prices(self) -> dict:
-        """Step 2: Fetch today's daily prices."""
+        """Step 2: Fetch today's daily prices. Enhancement 26: Writes to DuckDB."""
+        def _write_price(row):
+            if self.router:
+                self.router.write_analytics(
+                    """INSERT OR REPLACE INTO prices
+                       (date, open, high, low, close, volume)
+                       VALUES (?,?,?,?,?,?)""",
+                    (row["date"], row["open"], row["high"],
+                     row["low"], row["close"], row["volume"]),
+                )
+            else:
+                self.conn.execute(
+                    """INSERT OR REPLACE INTO prices
+                       (date, open, high, low, close, volume)
+                       VALUES (?,?,?,?,?,?)""",
+                    (row["date"], row["open"], row["high"],
+                     row["low"], row["close"], row["volume"]),
+                )
+                self.conn.commit()
+
         if self.polygon:
             try:
                 df = self.polygon.get_daily_bars("SPY", self.today, self.today)
                 if not df.empty:
                     for _, row in df.iterrows():
-                        self.conn.execute(
-                            """INSERT OR REPLACE INTO prices
-                               (date, open, high, low, close, volume)
-                               VALUES (?,?,?,?,?,?)""",
-                            (row["date"], row["open"], row["high"],
-                             row["low"], row["close"], row["volume"]),
-                        )
-                    self.conn.commit()
+                        _write_price(row)
                     return {"source": "polygon", "rows": len(df)}
             except Exception as e:
                 logger.warning(f"Polygon price fetch failed: {e}")
@@ -183,14 +202,7 @@ class DailyPipeline:
             today_row = df[df["date"] == self.today]
             if not today_row.empty:
                 for _, row in today_row.iterrows():
-                    self.conn.execute(
-                        """INSERT OR REPLACE INTO prices
-                           (date, open, high, low, close, volume)
-                           VALUES (?,?,?,?,?,?)""",
-                        (row["date"], row["open"], row["high"],
-                         row["low"], row["close"], row["volume"]),
-                    )
-                self.conn.commit()
+                    _write_price(row)
                 return {"source": "yfinance", "rows": len(today_row)}
         return {"source": "none", "rows": 0}
 
@@ -286,48 +298,82 @@ class DailyPipeline:
             "xlk_xle_ratio": cross.get("xlk_xle_ratio"),
         })
 
-        self.conn.execute(
-            """INSERT OR REPLACE INTO macro
-               (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
-                vix9d, vix3m, vix6m, vvix, skew_index,
-                hy_spread, tlt_spy_ratio, eem_spy_ratio,
-                copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (self.today, macro.get("vix"), macro.get("vix_change"),
-             macro.get("us10y_yield"), macro.get("dxy"),
-             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"),
-             macro.get("vix9d"), macro.get("vix3m"), macro.get("vix6m"),
-             macro.get("vvix"), macro.get("skew_index"),
-             macro.get("hy_spread"), macro.get("tlt_spy_ratio"),
-             macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
-             macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
-        )
-        self.conn.commit()
+        if self.router:
+            self.router.write_analytics(
+                """INSERT OR REPLACE INTO macro
+                   (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
+                    vix9d, vix3m, vix6m, vvix, skew_index,
+                    hy_spread, tlt_spy_ratio, eem_spy_ratio,
+                    copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self.today, macro.get("vix"), macro.get("vix_change"),
+                 macro.get("us10y_yield"), macro.get("dxy"),
+                 macro.get("fed_funds"), macro.get("gold"), macro.get("crude"),
+                 macro.get("vix9d"), macro.get("vix3m"), macro.get("vix6m"),
+                 macro.get("vvix"), macro.get("skew_index"),
+                 macro.get("hy_spread"), macro.get("tlt_spy_ratio"),
+                 macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
+                 macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
+            )
+        else:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO macro
+                   (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
+                    vix9d, vix3m, vix6m, vvix, skew_index,
+                    hy_spread, tlt_spy_ratio, eem_spy_ratio,
+                    copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (self.today, macro.get("vix"), macro.get("vix_change"),
+                 macro.get("us10y_yield"), macro.get("dxy"),
+                 macro.get("fed_funds"), macro.get("gold"), macro.get("crude"),
+                 macro.get("vix9d"), macro.get("vix3m"), macro.get("vix6m"),
+                 macro.get("vvix"), macro.get("skew_index"),
+                 macro.get("hy_spread"), macro.get("tlt_spy_ratio"),
+                 macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
+                 macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
+            )
+            self.conn.commit()
         return macro
 
 
     def _step6_options_chain(self) -> dict:
-        """Step 6: Fetch options chain snapshot."""
+        """Step 6: Fetch options chain snapshot. Enhancement 26: Writes to DuckDB."""
         if not self.polygon:
             return {"skipped": True, "reason": "no polygon key"}
         try:
             chain = self.polygon.get_options_chain("SPY")
             if chain.empty:
                 return {"rows": 0}
-            for _, row in chain.iterrows():
-                self.conn.execute(
-                    """INSERT OR REPLACE INTO options_chain
-                       (date, contract_symbol, strike, expiry, option_type,
-                        last_price, bid, ask, volume, open_interest,
-                        iv, delta, gamma, theta, vega)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (self.today, row["contract_symbol"], row["strike"],
-                     row["expiry"], row["option_type"], row["last_price"],
-                     row["bid"], row["ask"], row["volume"],
-                     row["open_interest"], row["iv"], row["delta"],
-                     row["gamma"], row["theta"], row["vega"]),
-                )
-            self.conn.commit()
+            if self.router:
+                duck = self.router.get_analytics_conn()
+                for _, row in chain.iterrows():
+                    duck.execute(
+                        """INSERT OR REPLACE INTO options_chain
+                           (date, contract_symbol, strike, expiry, option_type,
+                            last_price, bid, ask, volume, open_interest,
+                            iv, delta, gamma, theta, vega)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (self.today, row["contract_symbol"], row["strike"],
+                         row["expiry"], row["option_type"], row["last_price"],
+                         row["bid"], row["ask"], row["volume"],
+                         row["open_interest"], row["iv"], row["delta"],
+                         row["gamma"], row["theta"], row["vega"]),
+                    )
+            else:
+                for _, row in chain.iterrows():
+                    self.conn.execute(
+                        """INSERT OR REPLACE INTO options_chain
+                           (date, contract_symbol, strike, expiry, option_type,
+                            last_price, bid, ask, volume, open_interest,
+                            iv, delta, gamma, theta, vega)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (self.today, row["contract_symbol"], row["strike"],
+                         row["expiry"], row["option_type"], row["last_price"],
+                         row["bid"], row["ask"], row["volume"],
+                         row["open_interest"], row["iv"], row["delta"],
+                         row["gamma"], row["theta"], row["vega"]),
+                    )
+                self.conn.commit()
             return {"rows": len(chain)}
         except Exception as e:
             logger.warning(f"Options chain fetch failed: {e}")
@@ -357,28 +403,41 @@ class DailyPipeline:
             return {"error": str(e)}
 
     def _step8_technicals(self) -> dict:
-        """Step 8: Compute daily technicals (SMAs, RSI, MACD, BB, ATR)."""
-        df = pd.read_sql_query(
-            "SELECT date, open, high, low, close, volume FROM prices ORDER BY date",
-            self.conn,
-        )
+        """Step 8: Compute daily technicals. Enhancement 26: Reads prices from DuckDB."""
+        if self.router:
+            df = self.router.read_analytics(
+                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date"
+            )
+        else:
+            df = pd.read_sql_query(
+                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date",
+                self.conn,
+            )
         if df.empty:
             return {"rows": 0}
         tech_df = compute_all_technicals(df, self.config)
-        store_technicals(self.conn, tech_df)
+        store_technicals(self.conn, tech_df, self.config)
         return {"rows": len(tech_df)}
 
     def _step9_intraday(self) -> dict:
-        """Step 9: Build intraday features (VWAP spread, momentum, range)."""
+        """Step 9: Build intraday features. Enhancement 26: Reads intraday_bars from DuckDB."""
         # Check if we have intraday bars for today
-        row = self.conn.execute(
-            "SELECT COUNT(*) FROM intraday_bars WHERE timestamp LIKE ?",
-            (f"{self.today}%",),
-        ).fetchone()
-        bar_count = row[0] if row else 0
+        bar_count = 0
+        if self.router:
+            df_cnt = self.router.read_analytics(
+                "SELECT COUNT(*) as cnt FROM intraday_bars WHERE timestamp LIKE ?",
+                (f"{self.today}%",),
+            )
+            bar_count = int(df_cnt.iloc[0]["cnt"]) if not df_cnt.empty else 0
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM intraday_bars WHERE timestamp LIKE ?",
+                (f"{self.today}%",),
+            ).fetchone()
+            bar_count = row[0] if row else 0
 
         if bar_count == 0:
-            # No intraday data — store zeros
+            # No intraday data — store zeros (operational table stays in SQLite)
             self.conn.execute(
                 """INSERT OR REPLACE INTO intraday_features
                    (date, vwap_spread, intraday_momentum, intraday_range, volume_ratio)
@@ -389,10 +448,16 @@ class DailyPipeline:
             return {"bars": 0, "features": "default"}
 
         # Compute from intraday bars
-        bars = pd.read_sql_query(
-            "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
-            self.conn, params=(f"{self.today}%",),
-        )
+        if self.router:
+            bars = self.router.read_analytics(
+                "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
+                (f"{self.today}%",),
+            )
+        else:
+            bars = pd.read_sql_query(
+                "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
+                self.conn, params=(f"{self.today}%",),
+            )
         if bars.empty:
             return {"bars": 0}
 
@@ -448,13 +513,13 @@ class DailyPipeline:
                 "SELECT date FROM prices ORDER BY date").fetchall()]
             fv = self.feature_store.get_features(
                 feature_cols, all_dates=all_dates,
-                build_fn=lambda missing: build_feature_vector(self.conn),
+                build_fn=lambda missing: build_feature_vector(self.conn, config=self.config),
             )
         except Exception as e:
             logger.warning(f"Feature store failed, falling back to direct build: {e}")
 
         if fv is None or fv.empty:
-            fv = build_feature_vector(self.conn)
+            fv = build_feature_vector(self.conn, config=self.config)
 
         if fv is None or len(fv) < 50:
             logger.warning("Insufficient data for training")
@@ -490,7 +555,7 @@ class DailyPipeline:
             if not self.predictor.load_latest_model():
                 return {"error": "no model available"}
 
-        fv = build_feature_vector(self.conn, date=self.today)
+        fv = build_feature_vector(self.conn, date=self.today, config=self.config)
         if fv is None or fv.empty:
             return {"error": "no features for today"}
 
@@ -501,14 +566,23 @@ class DailyPipeline:
 
         # P2: Add regime info to prediction for dashboard
         try:
-            regime = self.regime_detector.predict(
-                pd.read_sql_query(
+            if self.router:
+                price_df = self.router.read_analytics(
+                    "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60"
+                )
+                macro_df = self.router.read_analytics(
+                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60"
+                )
+            else:
+                price_df = pd.read_sql_query(
                     "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60",
                     self.conn,
-                ).assign(vix=lambda df: pd.read_sql_query(
+                )
+                macro_df = pd.read_sql_query(
                     "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", self.conn
-                ).get("vix", 18.0))
-            )
+                )
+            price_df["vix"] = macro_df.get("vix", 18.0)
+            regime = self.regime_detector.predict(price_df)
             prediction["regime"] = regime
         except Exception:
             prediction["regime"] = self.results.get("step_10", {}).get("result", {}).get("regime", "")
@@ -529,10 +603,17 @@ class DailyPipeline:
 
         # Update dashboard state
         macro = self.fallback.get_macro_fred() if self.fallback else {}
-        tech_row = self.conn.execute(
-            "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals WHERE date = ?",
-            (self.today,),
-        ).fetchone()
+        if self.router:
+            tech_df = self.router.read_analytics(
+                "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals WHERE date = ?",
+                (self.today,),
+            )
+            tech_row = tech_df.iloc[0] if not tech_df.empty else None
+        else:
+            tech_row = self.conn.execute(
+                "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals WHERE date = ?",
+                (self.today,),
+            ).fetchone()
         indicators = {}
         if tech_row:
             indicators = {"rsi_14": tech_row[0], "macd": tech_row[1],

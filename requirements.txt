@@ -23,3 +23,5 @@ prometheus_client>=0.20
 # P2 dependencies
 hmmlearn>=0.3
 lightgbm>=4.3
+# P3/Enhancement 26: DuckDB analytics layer
+duckdb>=1.1
