@@ -248,6 +248,54 @@ def page_spy():
         else:
             st.metric("Model", "🌲 XGBoost")
 
+    # P3: Earnings + Fed + Extended Options row
+    try:
+        import sqlite3 as _sql
+        _conn = _sql.connect(os.path.join(DATA_DIR, "spy.db"))
+        _today = datetime.now().strftime("%Y-%m-%d")
+
+        p3_col1, p3_col2, p3_col3 = st.columns(3)
+        with p3_col1:
+            # Earnings calendar
+            from src.data.earnings_calendar import get_earnings_features as _get_earn
+            earn = _get_earn(_conn, _today)
+            density = earn.get("earnings_density", 0)
+            days_next = earn.get("days_to_next_mega", 30)
+            earn_week = earn.get("earnings_week", 0)
+            st.metric("📅 Earnings Density", f"{density} mega-caps",
+                      delta="Earnings Week" if earn_week else None,
+                      delta_color="normal" if earn_week else "off")
+            st.caption(f"Next mega-cap in {days_next}d")
+
+        with p3_col2:
+            # Fed sentiment
+            from src.data.fed_comms import get_fed_features as _get_fed
+            fed = _get_fed(_conn, _today)
+            fomc = fed.get("fomc_hawkish_score", 0)
+            bb = fed.get("beige_book_score", 0)
+            avg = fed.get("fed_sentiment_avg", 0)
+            label = "🦅 Hawkish" if avg > 0.2 else "🕊️ Dovish" if avg < -0.2 else "⚖️ Neutral"
+            st.metric("Fed Sentiment", label, delta=f"{avg:+.2f}")
+            st.caption(f"FOMC: {fomc:+.2f} | Beige Book: {bb:+.2f}")
+
+        with p3_col3:
+            # Extended options greeks
+            opt_row = _conn.execute(
+                "SELECT vanna_exposure, charm_exposure, zero_dte_pcr "
+                "FROM options_analytics WHERE date = ? ORDER BY date DESC LIMIT 1",
+                (_today,),
+            ).fetchone()
+            if opt_row and opt_row[0] is not None:
+                st.metric("Vanna", f"{opt_row[0]:,.0f}")
+                st.caption(f"Charm: {opt_row[1]:,.0f} | 0DTE P/C: {opt_row[2]:.2f}" if opt_row[1] else "")
+            else:
+                st.metric("Extended Greeks", "—")
+                st.caption("Waiting for options data")
+
+        _conn.close()
+    except Exception:
+        pass  # P3 display is non-critical
+
     # P1: SHAP prediction drivers
     shap_drivers = prediction.get("shap_drivers", [])
     if shap_drivers:
@@ -986,7 +1034,8 @@ def _admin_status_tab():
             conn = sqlite3.connect(db_path)
             tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
                        "predictions", "intraday_bars", "options_chain",
-                       "options_analytics", "intraday_features", "performance"]
+                       "options_analytics", "intraday_features", "performance",
+                       "earnings_calendar", "fed_communications"]
             rows = []
             for t in tables:
                 try:

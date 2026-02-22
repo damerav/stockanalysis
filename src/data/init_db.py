@@ -89,7 +89,9 @@ CREATE TABLE IF NOT EXISTS options_chain (
 CREATE TABLE IF NOT EXISTS options_analytics (
     date TEXT PRIMARY KEY,
     put_call_ratio REAL, max_pain REAL,
-    iv_skew REAL, gex REAL
+    iv_skew REAL, gex REAL,
+    -- P3: Extended dealer greek exposures
+    vanna_exposure REAL, charm_exposure REAL, zero_dte_pcr REAL
 );
 
 -- Intraday derived features
@@ -158,6 +160,42 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("day_of_week", "INTEGER"), ("event_proximity", "INTEGER"),
     ]
     _add_columns_if_missing(conn, "performance", perf_new_cols)
+
+    # P3: Options analytics extended columns
+    opts_new_cols = [
+        ("vanna_exposure", "REAL"), ("charm_exposure", "REAL"),
+        ("zero_dte_pcr", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "options_analytics", opts_new_cols)
+
+    # P2: Decomposed sentiment columns
+    sentiment_new_cols = [
+        ("macro_sentiment", "REAL"), ("earnings_sentiment", "REAL"),
+        ("geopolitical_sentiment", "REAL"), ("technical_sentiment", "REAL"),
+        ("sentiment_dispersion", "REAL"), ("sentiment_velocity", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "daily_sentiment", sentiment_new_cols)
+
+    # P3: Earnings calendar table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS earnings_calendar (
+            date TEXT, ticker TEXT, eps_estimate REAL, eps_actual REAL,
+            surprise_pct REAL, market_cap_pct REAL,
+            PRIMARY KEY (date, ticker)
+        )
+    """)
+
+    # P3: Fed communications table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS fed_communications (
+            date TEXT PRIMARY KEY,
+            type TEXT,
+            hawkish_score REAL,
+            summary TEXT,
+            scored_at TEXT
+        )
+    """)
+    conn.commit()
 
 
 def _add_columns_if_missing(conn: sqlite3.Connection, table: str,

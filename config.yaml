@@ -117,3 +117,15 @@ regime:
 adaptive_window:
   candidates: [63, 126, 252, 504]
   validation_days: 21
+
+# P3: Earnings Calendar
+earnings:
+  mega_cap_tickers: ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "BRK-B", "TSLA",
+                      "UNH", "XOM", "JNJ", "JPM", "V", "PG", "MA", "HD", "AVGO", "LLY",
+                      "MRK", "COST"]
+  density_window_days: 3
+
+# P3: Fed Communications NLP
+fed_comms:
+  enabled: true
+  use_llm_scoring: true          # Use LLM for hawkish/dovish scoring; falls back to keywords

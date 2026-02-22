@@ -11,6 +11,8 @@ pd.set_option('future.no_silent_downcasting', True)
 
 from src.data.init_db import get_connection, load_config
 from src.data.calendar import get_event_features, has_nearby_event
+from src.data.earnings_calendar import get_earnings_features
+from src.data.fed_comms import get_fed_features
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +156,9 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
         -- Intraday features
         i.vwap_spread, i.intraday_momentum, i.intraday_range, i.volume_ratio,
         -- Options features
-        o.put_call_ratio, o.max_pain, o.iv_skew, o.gex
+        o.put_call_ratio, o.max_pain, o.iv_skew, o.gex,
+        -- P3: Extended options analytics
+        o.vanna_exposure, o.charm_exposure, o.zero_dte_pcr
     FROM prices p
     LEFT JOIN technicals t ON p.date = t.date
     LEFT JOIN macro m ON p.date = m.date
@@ -189,6 +193,42 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
     df["max_pain_distance"] = (df["close"] - df["max_pain"]) / df["close"]
     df["gex_normalized"] = df["gex"] / df["close"]
 
+    # --- P3: Extended options derived features ---
+    # Fill None/NaN in options columns before computing derived features
+    for oc in ["gex", "max_pain", "vanna_exposure", "charm_exposure", "zero_dte_pcr"]:
+        if oc in df.columns:
+            df[oc] = pd.to_numeric(df[oc], errors="coerce").fillna(0)
+    # GEX sign change (1 if GEX flipped sign vs previous day)
+    df["gex_sign_change"] = (np.sign(df["gex"]).diff().abs() > 0).astype(int)
+    # Max pain velocity (rate of change of max pain over 5 days)
+    df["max_pain_velocity"] = df["max_pain"].pct_change(5)
+    # Vanna normalized by close price
+    df["vanna_normalized"] = df["vanna_exposure"] / df["close"].replace(0, np.nan)
+    # Charm normalized by close price
+    df["charm_normalized"] = df["charm_exposure"] / df["close"].replace(0, np.nan)
+
+    # --- P3: Earnings calendar features ---
+    earn_features = []
+    for _, row in df.iterrows():
+        try:
+            earn_features.append(get_earnings_features(conn, row["date"]))
+        except Exception:
+            earn_features.append({"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0})
+    earn_df = pd.DataFrame(earn_features, index=df.index)
+    for col in earn_df.columns:
+        df[col] = earn_df[col]
+
+    # --- P3: Fed communication features ---
+    fed_features = []
+    for _, row in df.iterrows():
+        try:
+            fed_features.append(get_fed_features(conn, row["date"]))
+        except Exception:
+            fed_features.append({"fomc_hawkish_score": 0, "beige_book_score": 0, "fed_sentiment_avg": 0})
+    fed_df = pd.DataFrame(fed_features, index=df.index)
+    for col in fed_df.columns:
+        df[col] = fed_df[col]
+
     # Fill forward macro data (reported less frequently)
     macro_cols = ["vix", "vix_change", "us10y_yield", "dxy", "fed_funds", "gold", "crude",
                   "vix9d", "vix3m", "vix6m", "vvix", "skew_index",
@@ -206,6 +246,26 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
                       "sentiment_dispersion", "sentiment_velocity"]
     for col in sentiment_cols:
         df[col] = df[col].fillna(0)
+
+    # Fill NaN for P3 options derived features
+    p3_options_cols = ["vanna_exposure", "charm_exposure", "zero_dte_pcr",
+                       "gex_sign_change", "max_pain_velocity",
+                       "vanna_normalized", "charm_normalized"]
+    for col in p3_options_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+
+    # Fill NaN for P3 earnings features
+    p3_earnings_cols = ["earnings_density", "days_to_next_mega", "earnings_week"]
+    for col in p3_earnings_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+
+    # Fill NaN for P3 Fed features
+    p3_fed_cols = ["fomc_hawkish_score", "beige_book_score", "fed_sentiment_avg"]
+    for col in p3_fed_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
 
     # --- VIX term structure derived features (P1) ---
     if "vix3m" in df.columns and "vix9d" in df.columns:
@@ -249,8 +309,11 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
 
     # Economic event proximity flag (now computed from calendar)
     df["event_proximity"] = cal_df.apply(
-        lambda r: int(r.get("is_fomc_week", 0) or r.get("days_to_cpi", 999) <= 2
-                      or r.get("days_to_nfp", 999) <= 2), axis=1
+        lambda r: int(
+            bool(r.get("is_fomc_week", 0))
+            or (r.get("days_to_cpi") or 999) <= 2
+            or (r.get("days_to_nfp") or 999) <= 2
+        ), axis=1
     )
 
     return df
@@ -281,6 +344,9 @@ def get_feature_columns() -> list[str]:
         "vwap_spread", "intraday_momentum", "intraday_range", "volume_ratio",
         # Options
         "put_call_ratio", "max_pain_distance", "iv_skew", "gex_normalized",
+        # P3: Extended options
+        "vanna_exposure", "charm_exposure", "zero_dte_pcr",
+        "gex_sign_change", "max_pain_velocity", "vanna_normalized", "charm_normalized",
         # Derived
         "price_vs_sma20_pct", "price_vs_sma50_pct", "rsi_divergence",
         "volume_trend", "atr_percentile", "momentum_5d", "momentum_10d",
@@ -289,6 +355,10 @@ def get_feature_columns() -> list[str]:
         "days_to_cpi", "days_to_nfp", "days_to_opex",
         "is_triple_witching", "is_quarter_end",
         "day_of_week", "week_of_month",
+        # P3: Earnings calendar
+        "earnings_density", "days_to_next_mega", "earnings_week",
+        # P3: Fed communication
+        "fomc_hawkish_score", "beige_book_score", "fed_sentiment_avg",
         # Context (GAP 8)
         "vix_percentile", "spy_es_zscore", "rth_flag",
         "minutes_to_close", "event_proximity",

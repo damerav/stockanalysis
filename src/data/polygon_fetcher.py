@@ -132,10 +132,12 @@ class PolygonFetcher:
         return pd.DataFrame(rows)
 
     def get_options_analytics(self, underlying: str) -> dict:
-        """Compute options analytics: P/C ratio, max pain, IV skew, GEX."""
+        """Compute options analytics: P/C ratio, max pain, IV skew, GEX,
+        plus P3: vanna, charm, 0DTE PCR, gex_sign_change, max_pain_velocity."""
         chain = self.get_options_chain(underlying)
         if chain.empty:
-            return {"put_call_ratio": None, "max_pain": None, "iv_skew": None, "gex": None}
+            return {"put_call_ratio": None, "max_pain": None, "iv_skew": None, "gex": None,
+                    "vanna_exposure": None, "charm_exposure": None, "zero_dte_pcr": None}
 
         calls = chain[chain["option_type"] == "call"]
         puts = chain[chain["option_type"] == "put"]
@@ -154,8 +156,19 @@ class PolygonFetcher:
         # GEX: Gamma Exposure (simplified)
         gex = self._calc_gex(chain)
 
+        # P3: Vanna exposure — sum(gamma * delta * OI * 100) across all strikes
+        vanna = self._calc_vanna(chain)
+
+        # P3: Charm exposure — sum(theta * delta * OI * 100) across all strikes
+        charm = self._calc_charm(chain)
+
+        # P3: 0DTE put/call ratio
+        zero_dte_pcr = self._calc_zero_dte_pcr(chain)
+
         return {"put_call_ratio": pc_ratio, "max_pain": max_pain,
-                "iv_skew": iv_skew, "gex": gex}
+                "iv_skew": iv_skew, "gex": gex,
+                "vanna_exposure": vanna, "charm_exposure": charm,
+                "zero_dte_pcr": zero_dte_pcr}
 
     def _calc_max_pain(self, chain: pd.DataFrame) -> Optional[float]:
         """Calculate max pain strike."""
@@ -193,3 +206,45 @@ class PolygonFetcher:
         put_gex = chain[chain["option_type"] == "put"].apply(
             lambda r: -r["gamma"] * r["open_interest"] * 100, axis=1).sum()
         return call_gex + put_gex
+
+    # --- P3: Extended Options Analytics ---
+
+    def _calc_vanna(self, chain: pd.DataFrame) -> Optional[float]:
+        """Vanna exposure: ΔDelta/ΔIV — dealer vanna hedging drives directional flows.
+        Approximated as sum(gamma * vega * OI * 100) across strikes."""
+        if chain.empty or "gamma" not in chain.columns or "vega" not in chain.columns:
+            return None
+        valid = chain[chain["gamma"].notna() & chain["vega"].notna()]
+        if valid.empty:
+            return None
+        call_vanna = valid[valid["option_type"] == "call"].apply(
+            lambda r: r["gamma"] * r["vega"] * r["open_interest"] * 100, axis=1).sum()
+        put_vanna = valid[valid["option_type"] == "put"].apply(
+            lambda r: -r["gamma"] * r["vega"] * r["open_interest"] * 100, axis=1).sum()
+        return float(call_vanna + put_vanna)
+
+    def _calc_charm(self, chain: pd.DataFrame) -> Optional[float]:
+        """Charm exposure: ΔDelta/Δtime — creates predictable end-of-day flows.
+        Approximated as sum(theta * delta * OI * 100) across strikes."""
+        if chain.empty or "theta" not in chain.columns or "delta" not in chain.columns:
+            return None
+        valid = chain[chain["theta"].notna() & chain["delta"].notna()]
+        if valid.empty:
+            return None
+        charm = valid.apply(
+            lambda r: r["theta"] * r["delta"] * r["open_interest"] * 100, axis=1).sum()
+        return float(charm)
+
+    def _calc_zero_dte_pcr(self, chain: pd.DataFrame) -> Optional[float]:
+        """0DTE put/call ratio — dominant intraday directional signal since 2022."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        zero_dte = chain[chain["expiry"] == today]
+        if zero_dte.empty:
+            # Try tomorrow for after-hours
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            zero_dte = chain[chain["expiry"] == tomorrow]
+        if zero_dte.empty:
+            return None
+        call_vol = zero_dte[zero_dte["option_type"] == "call"]["volume"].sum()
+        put_vol = zero_dte[zero_dte["option_type"] == "put"]["volume"].sum()
+        return float(put_vol / call_vol) if call_vol > 0 else None

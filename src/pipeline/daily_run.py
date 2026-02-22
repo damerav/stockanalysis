@@ -31,6 +31,8 @@ from src.model.trainer import SPYPredictor, evaluate_past_prediction
 from src.realtime.dashboard_bridge import write_spy_state
 from src.data.feature_store import FeatureStore
 from src.model.regime import HMMRegimeDetector
+from src.data.earnings_calendar import fetch_earnings_yf, store_earnings
+from src.data.fed_comms import update_fed_communications
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,8 @@ class DailyPipeline:
             (7,   "Compute Options Analytics", self._step7_options_analytics),
             (8,   "Compute Technicals",        self._step8_technicals),
             (9,   "Build Intraday Features",   self._step9_intraday),
+            (9.5, "Earnings Calendar",          self._step95_earnings),
+            (9.6, "Fed Communications",         self._step96_fed_comms),
             (10,  "Retrain XGBoost",           self._step10_retrain),
             (11,  "Generate Prediction",        self._step11_predict),
             (12,  "Generate LLM Report",       self._step12_report),
@@ -330,18 +334,21 @@ class DailyPipeline:
             return {"error": str(e)}
 
     def _step7_options_analytics(self) -> dict:
-        """Step 7: Compute options analytics (P/C ratio, max pain, IV skew, GEX)."""
+        """Step 7: Compute options analytics (P/C ratio, max pain, IV skew, GEX,
+        P3: vanna, charm, 0DTE PCR)."""
         if not self.polygon:
             return {"skipped": True}
         try:
             analytics = self.polygon.get_options_analytics("SPY")
             self.conn.execute(
                 """INSERT OR REPLACE INTO options_analytics
-                   (date, put_call_ratio, max_pain, iv_skew, gex)
-                   VALUES (?,?,?,?,?)""",
+                   (date, put_call_ratio, max_pain, iv_skew, gex,
+                    vanna_exposure, charm_exposure, zero_dte_pcr)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 (self.today, analytics.get("put_call_ratio"),
                  analytics.get("max_pain"), analytics.get("iv_skew"),
-                 analytics.get("gex")),
+                 analytics.get("gex"), analytics.get("vanna_exposure"),
+                 analytics.get("charm_exposure"), analytics.get("zero_dte_pcr")),
             )
             self.conn.commit()
             return analytics
@@ -406,6 +413,29 @@ class DailyPipeline:
         )
         self.conn.commit()
         return {"bars": bar_count, "features": "computed"}
+
+    def _step95_earnings(self) -> dict:
+        """Step 9.5: Fetch and store earnings calendar for mega-caps."""
+        try:
+            earnings = fetch_earnings_yf()
+            if earnings:
+                store_earnings(self.conn, earnings)
+                logger.info(f"Stored {len(earnings)} earnings dates")
+            return {"earnings_fetched": len(earnings)}
+        except Exception as e:
+            logger.warning(f"Earnings calendar fetch failed (non-fatal): {e}")
+            return {"error": str(e)}
+
+    def _step96_fed_comms(self) -> dict:
+        """Step 9.6: Fetch and score latest Fed communications."""
+        try:
+            llm_analyzer = self.llm if (self.llm and self.llm.llm_available) else None
+            results = update_fed_communications(self.conn, llm_analyzer)
+            logger.info(f"Fed comms update: {results}")
+            return results
+        except Exception as e:
+            logger.warning(f"Fed communications update failed (non-fatal): {e}")
+            return {"error": str(e)}
 
     def _step10_retrain(self) -> dict:
         """Step 10: Build feature vector + retrain XGBoost (P2: with feature store, regime)."""
