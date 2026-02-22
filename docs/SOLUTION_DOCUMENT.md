@@ -8,7 +8,7 @@ The system is signal-only — all trade execution is manual.
 
 ### Two Subsystems
 
-1. **SPY/SPX Predictor** — Ingests multi-source market data, engineers 37+ features, trains an XGBoost classifier daily on GPU, and predicts next-day SPY direction on a 5-level scale (STRONG BULLISH to STRONG BEARISH). Uses a local 70B LLM for news sentiment scoring.
+1. **SPY/SPX Predictor** — Ingests multi-source market data, engineers 85 features across 8 categories, trains an XGBoost classifier daily on GPU (with optional BiLSTM+LightGBM stacking ensemble), and predicts next-day SPY direction on a 5-level scale (STRONG BULLISH to STRONG BEARISH). Uses a local 70B LLM for news sentiment scoring. Includes conformal prediction sets, HMM regime detection, earnings calendar integration, and Fed communication NLP.
 
 2. **ES Futures Strategy** — Generates entry/exit signals for E-mini S&P 500 futures using Keltner Channel bands, a 3-lot tiered exit system, adaptive volatility regimes, and optional AI-enhanced entry/exit models.
 
@@ -21,7 +21,7 @@ Both subsystems share data infrastructure, dashboards, cloud sync, and the daily
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
 | Runtime | Python 3.12 | Application language |
-| Database | SQLite 3.45 (WAL mode) | Local data store, 11 tables |
+| Database | SQLite 3.45 (WAL mode) | Local data store, 17 tables |
 | ML Framework | XGBoost 2.0 (GPU) | SPY direction classifier, ES entry gate |
 | Deep Learning | PyTorch 2.1 | CNN exit controller for ES strategy |
 | LLM | Ollama + DeepSeek R1 70B | News sentiment analysis, report generation, what-if narratives |
@@ -36,7 +36,9 @@ Both subsystems share data infrastructure, dashboards, cloud sync, and the daily
 
 ```
 websockets, aiohttp, yfinance, feedparser, requests, pandas, numpy,
-pyyaml, xgboost, scikit-learn, torch, streamlit, plotly, fastapi, uvicorn
+pyyaml, xgboost, scikit-learn, torch, streamlit, plotly, fastapi, uvicorn,
+pydantic, google-auth, google-auth-oauthlib, shap, transformers, scipy,
+prometheus_client, hmmlearn, lightgbm
 ```
 
 ---
@@ -46,14 +48,14 @@ pyyaml, xgboost, scikit-learn, torch, streamlit, plotly, fastapi, uvicorn
 ### 3.1 Data Layer (`src/data/`)
 
 #### `init_db.py` — Database Schema Manager
-Creates and manages the SQLite database with 11 tables. Provides `get_connection()` for all database access with WAL journal mode and 5-second busy timeout. Tables cover prices, technicals, news, sentiment, macro indicators, predictions, intraday bars, options chain, options analytics, intraday features, and performance tracking.
+Creates and manages the SQLite database with 13 application tables (plus internal tables for feature store and model registry). Provides `get_connection()` for all database access with WAL journal mode and 5-second busy timeout. Includes automatic schema migration (`_migrate_schema`) that adds new columns and tables for P1/P2/P3 enhancements on every connection. Tables cover prices, technicals, news, sentiment, macro indicators, predictions, intraday bars, options chain, options analytics, intraday features, performance tracking, earnings calendar, and Fed communications.
 
 #### `polygon_fetcher.py` — Polygon.io REST Client
 Primary data source for market data. Provides:
 - `get_daily_bars()` — daily OHLCV with adjusted prices
 - `get_5s_bars()` — intraday 5-second granularity
 - `get_options_chain()` — full chain with Greeks (delta, gamma, theta, vega, IV)
-- `get_options_analytics()` — computed put/call ratio, max pain, IV skew, GEX
+- `get_options_analytics()` — computed put/call ratio, max pain, IV skew, GEX, vanna exposure, charm exposure, zero-DTE put/call ratio (P3)
 
 Includes retry logic (3 attempts, exponential backoff), pagination handling, and rate limit awareness (100 req/min).
 
@@ -71,18 +73,49 @@ Identifies missing dates in the database and backfills from Polygon (with yfinan
 First-time setup utility that loads 252 trading days (1 year) of historical data. Run once: `python -m src.data.backfill --days 252`.
 
 #### `features.py` — Feature Engineering
-Builds a 37+ feature vector for each trading day from 5 categories:
+Builds an 85-feature vector for each trading day from 8 categories:
 
-| Category | Features | Source Table |
-|----------|----------|-------------|
-| Technical | price_vs_sma20/50, rsi_14, macd, macd_signal, macd_hist, bb_upper/lower_dist, atr_14, sma slopes | technicals |
-| Macro | vix_level, vix_change, us10y_yield, dxy, fed_funds, gold, crude | macro |
-| Sentiment | llm_sentiment_score, news_count, positive/negative_ratio | daily_sentiment |
+| Category | Features | Source |
+|----------|----------|--------|
+| Technical | price_vs_sma20/50, rsi_14, macd, macd_signal, macd_hist, bb_upper/lower_dist, atr_14, sma slopes | technicals table |
+| Macro | vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude | macro table |
+| VIX Term Structure (P1) | vix9d, vix3m, vix6m, vvix, skew_index, vix_term_slope, vix_term_curve, vix_realised_ratio | macro table |
+| Cross-Asset (P1) | hy_spread, tlt_spy_ratio, eem_spy_ratio, copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio | macro table |
+| Sentiment | sentiment_score, article_count, positive/negative_ratio | daily_sentiment |
+| Decomposed Sentiment (P2) | macro_sentiment, earnings_sentiment, geopolitical_sentiment, technical_sentiment, sentiment_dispersion, sentiment_velocity | daily_sentiment |
 | Intraday | vwap_spread, intraday_momentum, intraday_range, volume_ratio | intraday_features |
 | Options | put_call_ratio, max_pain_distance, iv_skew, gex_normalized | options_analytics |
+| Extended Options (P3) | vanna_exposure, charm_exposure, zero_dte_pcr, gex_sign_change, max_pain_velocity, vanna_normalized, charm_normalized | options_analytics (derived) |
+| Calendar/Events (P1) | days_to_fomc, is_fomc_week, is_fomc_day, days_to_cpi, days_to_nfp, days_to_opex, is_triple_witching, is_quarter_end, day_of_week, week_of_month | calendar module |
+| Earnings (P3) | earnings_density, days_to_next_mega, earnings_week | earnings_calendar table |
+| Fed Comms (P3) | fomc_hawkish_score, beige_book_score, fed_sentiment_avg | fed_communications table |
+| Context (GAP 8) | vix_percentile, spy_es_zscore, rth_flag, minutes_to_close, event_proximity | derived |
 | Derived | price_vs_sma_pct, rsi_divergence, volume_trend, atr_percentile, momentum_5d/10d | computed |
 
-Also provides `get_target()` for generating classification labels and `get_feature_columns()` for listing available features.
+Also provides `get_target()` with adaptive VIX-scaled neutral threshold, and `get_feature_columns()` for listing all 85 features.
+
+#### `earnings_calendar.py` — Earnings Calendar Integration (P3)
+Fetches upcoming earnings dates for top 20 S&P 500 mega-caps from yfinance. Computes three features per trading day:
+- `earnings_density`: number of mega-caps reporting within ±3 days
+- `days_to_next_mega`: days until next mega-cap earnings (capped at 30)
+- `earnings_week`: binary flag if any mega-cap reports this week
+
+#### `fed_comms.py` — Federal Reserve Communication NLP (P3)
+Fetches FOMC statements and Beige Book summaries from the Fed's RSS feeds. Scores each communication on a hawkish (+1) to dovish (-1) scale using the LLM (with keyword fallback). Computes three features:
+- `fomc_hawkish_score`: most recent FOMC statement score
+- `beige_book_score`: most recent Beige Book score
+- `fed_sentiment_avg`: average of both scores
+
+Only runs ~8 times per year (after each FOMC meeting). Cached in `fed_communications` table.
+
+#### `calendar.py` — Economic Event Calendar (P1)
+Provides `get_event_features()` returning 10 calendar-based features: days to FOMC/CPI/NFP/OpEx, triple witching flag, quarter-end flag, day of week, week of month.
+
+#### `drift_monitor.py` — Feature Drift Detection (P1)
+Computes Population Stability Index (PSI) and Kolmogorov-Smirnov tests between training and current feature distributions. PSI > 0.2 triggers alerts for model refit.
+
+#### `feature_store.py` — Feature Cache with Version Tracking (P2)
+SQLite-backed feature cache that stores computed feature vectors with version hashing. Avoids redundant recomputation during training and inference.
 
 ---
 
@@ -106,15 +139,37 @@ Generates a ~400-word market brief using the LLM. Input: day's technicals, senti
 
 #### `trainer.py` — XGBoost SPY Direction Predictor
 - Target: next-day SPY direction — UP (+1) / DOWN (-1) / NEUTRAL (0)
-- Neutral threshold: ±0.3% daily return
+- Neutral threshold: ±0.3% daily return (adaptive with VIX scaling)
 - Objective: `multi:softprob` with 3 classes
 - GPU acceleration: `tree_method='gpu_hist'`
-- Training window: 252 days rolling
-- Validation: walk-forward time-series split (80/20, no shuffle, no data leakage)
+- Training window: adaptive selection from [63, 126, 252, 504] days (P2)
+- Validation: purged walk-forward time-series split (P2) — no data leakage
 - Early stopping: 50 rounds on validation loss
 - Output: 5-level prediction scale (STRONG BULLISH to STRONG BEARISH) with 0-100% confidence
+- SHAP explanation: top prediction drivers with feature importance (P1)
 - Model persistence: `./models/xgb_spy_{date}.json`
-- Provides `predict()` for single-row inference used by dashboards and what-if engine
+- Integrates ensemble, conformal prediction, regime detection, and model registry (P2)
+
+#### `bilstm_model.py` — Bidirectional LSTM Classifier (P2)
+PyTorch BiLSTM sequence model for 3-class direction prediction. Sklearn-compatible wrapper (`BiLSTMClassifier`) for use in the stacking ensemble. Configurable sequence length, hidden dimensions, dropout, and training epochs.
+
+#### `ensemble.py` — Stacking Ensemble (P2)
+XGBoost + BiLSTM + LightGBM stacking ensemble with LogisticRegression meta-learner. Each base model produces 3-class probabilities; the meta-learner combines them for final prediction. Optional — enabled via `config.yaml` `ensemble.enabled: true`.
+
+#### `conformal.py` — Conformal Prediction Sets (P2)
+Provides calibrated prediction sets with guaranteed coverage. At 90% significance, outputs a set of plausible classes (e.g., {UP, NEUTRAL}). Flags low-conviction predictions when the set contains multiple classes.
+
+#### `regime.py` — HMM Regime Detection (P2)
+4-state Hidden Markov Model that classifies market regimes: bull_trend, bear_trend, high_vol_choppy, low_vol_range. Uses StandardScaler + diagonal covariance for robustness. Regime is displayed on the dashboard and used to contextualize predictions.
+
+#### `purged_cv.py` — Purged Walk-Forward Cross-Validation (P2)
+Time-series cross-validation with purge gaps between train and test sets to prevent data leakage. Configurable number of splits and purge window.
+
+#### `adaptive_window.py` — Adaptive Training Window Selection (P2)
+Selects the optimal training window from candidates [63, 126, 252, 504] days by evaluating validation accuracy for each. Adapts to changing market conditions.
+
+#### `registry.py` — SQLite-Backed Model Registry (P2)
+Tracks all trained models with metadata: training date, validation/test accuracy, feature count, deployment status. Supports gating (blocking underperforming models) and active model selection.
 
 ---
 
@@ -211,18 +266,22 @@ Features: fail-closed logic (blocks trades if AI unavailable), configurable entr
 #### `app.py` — Unified Dashboard (port 8501)
 Single Streamlit application with sidebar navigation across four pages:
 
-1. **SPY Predictor**: prediction banner, history chart, accuracy tracking, indicators, options flow alerts. Auto-refreshes every 15 seconds.
+1. **SPY Predictor**: prediction banner, P2 regime/conformal/ensemble info row, P3 earnings/Fed/extended-greeks row, SHAP prediction drivers (P1), history chart, stratified accuracy tracking (P1), indicators, options flow alerts. Auto-refreshes every 15 seconds.
 
 2. **ES Strategy**: position banner, candlestick chart with Keltner Channel overlay, signal feed, status panel. Auto-refreshes every 5 seconds.
 
 3. **What-If Analysis**: interactive scenario testing with ES parameter sweeps, SPY feature overrides, Monte Carlo simulations, stress tests, and feature ablation.
 
 4. **Admin Console**: browser-based system management with 5 tabs:
-   - System Status: health monitoring for database, LLM, and XGBoost model; data inventory with row counts and date ranges; latest prediction display
+   - System Status: health monitoring for database, LLM, and XGBoost model; data inventory with row counts and date ranges for all 13 application tables; latest prediction display; P2 model registry
    - Actions: ad-hoc execution of individual pipeline steps (data pull, news fetch, macro fetch, compute technicals, retrain XGBoost, generate prediction, LLM health check, generate report, full pipeline with skip-LLM option, send test alert)
    - Database: table browser with configurable limits, custom SQL queries (SELECT-only), vacuum, and integrity check
    - Configuration: key settings overview, full YAML editor with validation, save to disk
    - Logs: dashboard log viewer, pipeline history with report text, model file inventory
+
+5. **Monitoring**: native Plotly monitoring dashboards replicating Grafana panels (SPY Predictor, ES Strategy, System Health, Confidence API, Pipeline Status) with dark theme.
+
+6. **Grafana (compare)**: embedded Grafana iframes with Google OAuth proxy support for side-by-side comparison.
 
 Auto-detects mode: if `RELAY_URL` environment variable is set, fetches data from cloud relay; otherwise reads local JSON state files.
 
@@ -271,7 +330,7 @@ Sends what-if results to DeepSeek R1 70B for plain-English explanation. Supports
 
 ### 3.8 Pipeline Layer (`src/pipeline/`)
 
-#### `daily_run.py` — 13-Step Pipeline Orchestrator
+#### `daily_run.py` — 15-Step Pipeline Orchestrator
 Sequential pipeline running at 4:30 PM ET Monday-Friday:
 
 | Step | Name | Description |
@@ -281,14 +340,16 @@ Sequential pipeline running at 4:30 PM ET Monday-Friday:
 | 1 | Evaluate | Compare yesterday's prediction to actual outcome |
 | 2 | Prices | Fetch today's OHLCV (Polygon → yfinance fallback) |
 | 3 | News | Fetch headlines (Finnhub + RSS) |
-| 4 | Sentiment | LLM sentiment analysis (~60-90 min for 50 articles) |
-| 5 | Macro | Fetch VIX, yields, DXY, fed funds, gold, crude |
+| 4 | Sentiment | LLM sentiment analysis with decomposed categories (P2) |
+| 5 | Macro | Fetch VIX, yields, DXY, fed funds, gold, crude + VIX term structure + cross-asset signals (P1) |
 | 6 | Options Chain | Fetch SPX options chain snapshot |
-| 7 | Options Analytics | Compute P/C ratio, max pain, IV skew, GEX |
+| 7 | Options Analytics | Compute P/C ratio, max pain, IV skew, GEX + vanna, charm, 0DTE PCR (P3) |
 | 8 | Technicals | Compute SMA, RSI, MACD, BB, ATR |
 | 9 | Intraday | Build VWAP spread, momentum, range features |
-| 10 | Retrain | Build feature vector + retrain XGBoost on GPU |
-| 11 | Predict | Generate next-day prediction |
+| 9.5 | Earnings Calendar | Fetch mega-cap earnings dates from yfinance (P3) |
+| 9.6 | Fed Communications | Fetch + score FOMC statements and Beige Book (P3) |
+| 10 | Retrain | Build 85-feature vector + retrain XGBoost on GPU (P2: with feature store, regime, adaptive window, ensemble, conformal, registry) |
+| 11 | Predict | Generate next-day prediction with SHAP drivers (P1) + conformal set (P2) |
 | 12 | Report | Generate LLM daily report |
 | 13 | Alerts | Send Telegram + email notifications |
 
@@ -364,14 +425,19 @@ Scripts are self-contained — they auto-detect the project directory relative t
 ```
 Polygon/yfinance → prices table
 Finnhub/RSS      → news table
-FRED             → macro table
-Polygon          → options_chain, options_analytics tables
+FRED             → macro table (+ VIX term structure, cross-asset signals)
+Polygon          → options_chain, options_analytics tables (+ vanna, charm, 0DTE)
+yfinance         → earnings_calendar table (P3)
+Fed RSS          → fed_communications table (P3, LLM-scored)
                         │
                         ▼
-              Feature Engineering (37+ features)
+              Feature Engineering (85 features, 8 categories)
                         │
                         ▼
-              XGBoost Training (GPU, 252-day window)
+              XGBoost Training (GPU, adaptive window)
+              + Optional Ensemble (XGB + BiLSTM + LightGBM)
+              + Conformal Prediction Sets
+              + HMM Regime Detection
                         │
                         ▼
               Prediction → predictions table

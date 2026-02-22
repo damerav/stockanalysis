@@ -60,9 +60,12 @@ The unified dashboard runs on port 8501 with a sidebar menu containing four page
 Displays the current next-day SPY direction prediction.
 
 - Prediction banner: color-coded from green (STRONG BULLISH) to red (STRONG BEARISH) with confidence percentage
+- P2 info row: market regime (bull/bear/choppy/range), conformal prediction set, ensemble status
+- P3 info row: earnings density, Fed sentiment, extended greeks (vanna, charm, 0DTE PCR)
 - Probability breakdown: shows up/neutral/down percentages
+- SHAP prediction drivers (P1): top features influencing the current prediction
 - Prediction history: bar chart of the last 20 predictions with color-coded directions
-- Accuracy tracking: cumulative accuracy of past predictions vs actual outcomes
+- Stratified accuracy tracking (P1): cumulative accuracy of past predictions vs actual outcomes
 - Key indicators: RSI(14), MACD, ATR(14), VIX, volume ratio, sentiment score
 - Options flow alerts: real-time sweeps and block trades detected from SPX options
 
@@ -134,7 +137,7 @@ Displays real-time health of three core components:
 - LLM (Ollama): connection status, model availability
 - XGBoost Model: latest model file, size, total model count
 
-Also shows a data inventory table (row counts and date ranges for all 11 tables) and the latest prediction details.
+Also shows a data inventory table (row counts and date ranges for all 17 tables), the latest prediction details, and the P2 model registry.
 
 #### Actions Tab
 
@@ -150,7 +153,7 @@ Run pipeline steps individually or trigger full operations on demand.
 | 🔮 Generate Prediction | Run inference for next trading day |
 | 🩺 LLM Health Check | Check Ollama + model availability |
 | 📝 Generate Report | Generate LLM daily report for latest prediction |
-| 🚀 Run Full Pipeline | Run all 13 pipeline steps (with optional "Skip LLM" checkbox) |
+| 🚀 Run Full Pipeline | Run all 15 pipeline steps (with optional "Skip LLM" checkbox) |
 | 📨 Send Test Alert | Send a test prediction alert via Telegram/email |
 
 #### Database Tab
@@ -230,15 +233,20 @@ Runs `stop.sh` then `start.sh` with a 2-second pause between.
 
 ### SPY Predictor
 
-The XGBoost model uses 37+ features across 5 categories:
+The XGBoost model uses 85 features across 8 categories:
 
-- Technical: RSI, MACD, Bollinger Bands, moving averages, ATR
+- Technical: RSI, MACD, Bollinger Bands, moving averages, ATR, SMA slopes
 - Macro: VIX, 10Y yield, DXY, fed funds rate, gold, crude oil
-- Sentiment: LLM-scored news sentiment from 50 daily articles
+- VIX Term Structure (P1): VIX9D, VIX3M, VIX6M, VVIX, SKEW, term slope/curve, realised ratio
+- Cross-Asset (P1): HY spread, TLT/SPY ratio, EEM/SPY ratio, copper/gold ratio, sector ratios
+- Sentiment: LLM-scored news sentiment from 50 daily articles + decomposed categories (P2: macro, earnings, geopolitical, technical sentiment, dispersion, velocity)
 - Intraday: VWAP spread, momentum, range, volume ratio
-- Options: put/call ratio, max pain distance, IV skew, GEX
+- Options: put/call ratio, max pain distance, IV skew, GEX + extended greeks (P3: vanna, charm, 0DTE PCR)
+- Calendar/Events (P1): days to FOMC/CPI/NFP/OpEx, triple witching, quarter-end, day of week
+- Earnings (P3): earnings density, days to next mega-cap, earnings week flag
+- Fed Communications (P3): FOMC hawkish score, Beige Book score, Fed sentiment average
 
-The model retrains daily at 4:30 PM ET with the latest data and generates a prediction for the next trading day.
+The model retrains daily at 4:30 PM ET with the latest data and generates a prediction for the next trading day. P2 enhancements include adaptive training window selection, purged walk-forward cross-validation, optional stacking ensemble (XGBoost + BiLSTM + LightGBM), conformal prediction sets with 90% coverage, and HMM regime detection.
 
 ### ES Strategy
 
@@ -254,22 +262,25 @@ Volatility regime (Low/Med/High) adapts all parameters automatically based on re
 
 ## Daily Pipeline
 
-The automated pipeline runs at 4:30 PM ET Monday through Friday. It executes 13 steps:
+The automated pipeline runs at 4:30 PM ET Monday through Friday. It executes 15 steps:
 
 1. Check LLM availability
 2. Backfill any missing data
 3. Evaluate yesterday's prediction accuracy
 4. Fetch today's prices
 5. Fetch news articles
-6. Run LLM sentiment analysis (~60-90 min)
-7. Fetch macro data (VIX, yields, etc.)
+6. Run LLM sentiment analysis (~60-90 min) with decomposed categories (P2)
+7. Fetch macro data (VIX, yields, etc.) + VIX term structure + cross-asset signals (P1)
 8. Fetch options chain snapshot
-9. Compute options analytics
+9. Compute options analytics + vanna, charm, 0DTE PCR (P3)
 10. Compute technical indicators
-11. Build features and retrain XGBoost
-12. Generate next-day prediction
-13. Generate LLM daily report
-14. Send alerts (Telegram/email)
+11. Build intraday features
+12. Fetch mega-cap earnings calendar (P3)
+13. Fetch + score Fed communications (P3)
+14. Build 85-feature vector and retrain XGBoost on GPU (P2: adaptive window, ensemble, conformal, regime, registry)
+15. Generate next-day prediction with SHAP drivers (P1) + conformal set (P2)
+16. Generate LLM daily report
+17. Send alerts (Telegram/email)
 
 If the LLM is unavailable, the pipeline continues with neutral sentiment — it never aborts.
 

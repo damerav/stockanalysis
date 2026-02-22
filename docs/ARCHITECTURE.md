@@ -22,19 +22,28 @@ Signal-only system — all trade execution is manual.
 │  │  │ WebSocket │  │  prices) │  │ (news)   │  │ (VIX,etc) │  │            │
 │  │  └─────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬─────┘  │            │
 │  │        └──────────────┴─────────────┴──────────────┘        │            │
+│  │                                                             │            │
+│  │  ┌──────────┐  ┌──────────┐                                 │            │
+│  │  │ yfinance │  │ Fed RSS  │  (P3 data sources)              │            │
+│  │  │ Earnings │  │ FOMC +   │                                 │            │
+│  │  │ Calendar │  │ Beige Bk │                                 │            │
+│  │  └────┬─────┘  └────┬─────┘                                 │            │
+│  │       └──────────────┘                                      │            │
 │  └─────────────────────────────┬───────────────────────────────┘            │
 │                                │                                            │
 │  ┌─────────────────────── DATA LAYER ─────────────────────────┐            │
 │  │                             │                               │            │
 │  │                      ┌──────▼──────┐                        │            │
 │  │                      │  SQLite DB  │  ./data/spy.db         │            │
-│  │                      │  11 tables  │  WAL mode              │            │
+│  │                      │  17 tables  │  WAL mode              │            │
 │  │                      │  5s timeout │                        │            │
 │  │                      └──────┬──────┘                        │            │
 │  │                             │                               │            │
 │  │  ┌──────────────────────────┼──────────────────────────┐   │            │
-│  │  │         Feature Engineering (37+ features)           │   │            │
-│  │  │  Technical │ Macro │ Sentiment │ Intraday │ Options  │   │            │
+│  │  │         Feature Engineering (85 features)            │   │            │
+│  │  │  Technical │ Macro │ VIX Term │ Cross-Asset │        │   │            │
+│  │  │  Sentiment │ Intraday │ Options │ Calendar │         │   │            │
+│  │  │  Earnings │ Fed Comms │ Context │ Derived            │   │            │
 │  │  └──────────────────────────┬──────────────────────────┘   │            │
 │  └─────────────────────────────┼───────────────────────────────┘            │
 │                                │                                            │
@@ -44,7 +53,10 @@ Signal-only system — all trade execution is manual.
 │  │  │ Ollama    │  │ XGBoost Classifier  │  │ ES Strategy  │  │            │
 │  │  │ DeepSeek  │  │ GPU: gpu_hist       │  │ Engine       │  │            │
 │  │  │ R1 70B    │  │ 3-class softprob    │  │ Keltner +    │  │            │
-│  │  │ (~42GB)   │  │ 252-day rolling     │  │ 3-lot tiered │  │            │
+│  │  │ (~42GB)   │  │ Adaptive window     │  │ 3-lot tiered │  │            │
+│  │  │           │  │ + Ensemble (P2)     │  │              │  │            │
+│  │  │           │  │ + Conformal (P2)    │  │              │  │            │
+│  │  │           │  │ + HMM Regime (P2)   │  │              │  │            │
 │  │  └─────┬─────┘  └──────────┬─────────┘  └──────┬───────┘  │            │
 │  │        │                   │                    │           │            │
 │  │        │  ┌────────────────┼────────────────────┤           │            │
@@ -136,7 +148,7 @@ Signal-only system — all trade execution is manual.
 │                            │          │        es_state.json         │
 │                            ▼          ▼              │                │
 │                      daily_run.py ◄───┘              │                │
-│                      (13-step pipeline)              │                │
+│                      (15-step pipeline)              │                │
 │                            │                         │                │
 │                            ▼                         ▼                │
 │                      alerts.py              app.py (dashboard)       │
@@ -176,8 +188,20 @@ Signal-only system — all trade execution is manual.
 | `polygon_fetcher.py` | requests, pandas | daily_pull, daily_run |
 | `fetcher.py` | requests, feedparser, pandas | daily_pull, daily_run, dashboard |
 | `daily_pull.py` | polygon_fetcher, fetcher, init_db | daily_run, dashboard (admin) |
-| `features.py` | numpy, pandas, init_db | trainer, daily_run, whatif engine, dashboard |
-| `trainer.py` | xgboost, numpy, pandas | daily_run, whatif engine, dashboard |
+| `features.py` | numpy, pandas, init_db, calendar | trainer, daily_run, whatif engine, dashboard |
+| `calendar.py` | datetime | features.py, daily_run |
+| `drift_monitor.py` | numpy, scipy | daily_run, trainer |
+| `feature_store.py` | sqlite3, hashlib | trainer, daily_run |
+| `earnings_calendar.py` | yfinance, init_db | daily_run, features.py |
+| `fed_comms.py` | feedparser, requests, init_db | daily_run, features.py |
+| `trainer.py` | xgboost, numpy, pandas, ensemble, conformal, regime, purged_cv, adaptive_window, registry | daily_run, whatif engine, dashboard |
+| `bilstm_model.py` | torch, numpy | ensemble |
+| `ensemble.py` | xgboost, lightgbm, bilstm_model, sklearn | trainer |
+| `conformal.py` | numpy | trainer |
+| `regime.py` | hmmlearn, numpy | trainer, dashboard |
+| `purged_cv.py` | numpy | trainer |
+| `adaptive_window.py` | numpy | trainer |
+| `registry.py` | sqlite3, init_db | trainer, dashboard |
 | `analyzer.py` | requests (Ollama API) | daily_run, dashboard (admin) |
 | `reporter.py` | requests (Ollama API) | daily_run, dashboard (admin) |
 | `indicators.py` | numpy, pandas | engine (ES), CuMLRegimeClassifier |
@@ -188,11 +212,13 @@ Signal-only system — all trade execution is manual.
 | `labeling.py` | numpy, pandas | trainer |
 | `runner.py` | engine (ES), yaml | launcher |
 | `confidence_server.py` | fastapi, ai_models, engine | start.sh (port 8100) |
+| `metrics_exporter.py` | prometheus_client, fastapi | docker-compose (port 9190) |
 | `streamer.py` | websockets, aiohttp | launcher |
 | `dashboard_bridge.py` | json | daily_run, streamer |
 | `app.py` | streamlit, plotly, all modules | — (top-level UI) |
+| `monitoring.py` | streamlit, plotly, prometheus_client | app.py |
 | `engine.py` (whatif) | features, trainer, presets, narrator | dashboard |
-| `daily_run.py` | all data, llm, model, bridge | launcher, scheduler |
+| `daily_run.py` | all data, llm, model, bridge, earnings_calendar, fed_comms | launcher, scheduler |
 | `alerts.py` | requests, smtplib | daily_run |
 | `publisher.py` | requests | launcher |
 | `relay_server.py` | fastapi, uvicorn | cloud deployment |
@@ -251,17 +277,21 @@ Signal-only system — all trade execution is manual.
   │  options_chain ◄── Step 6                options_analytics ◄── Step 7    │
   │  technicals ◄── Step 8                   intraday_features ◄── Step 9   │
   │  daily_sentiment ◄── Step 4              performance ◄── Step 1         │
+  │  earnings_calendar ◄── Step 9.5          fed_communications ◄── Step 9.6│
   └──────────────────────────────┬───────────────────────────────────────────┘
                                  │
                           Step 10│  Feature Engineering
-                                 │  (37+ features from 5 categories)
+                                 │  (85 features from 8 categories)
                                  ▼
                     ┌────────────────────────┐
                     │  XGBoost Training      │
                     │  GPU: gpu_hist         │
-                    │  252-day rolling       │
+                    │  Adaptive window (P2)  │
                     │  3-class: UP/DOWN/NEUT │
-                    │  Walk-forward split    │
+                    │  Purged walk-forward   │
+                    │  + Ensemble (optional) │
+                    │  + Conformal sets (P2) │
+                    │  + HMM Regime (P2)     │
                     └───────────┬────────────┘
                                 │
                          Step 11│  Inference
@@ -287,6 +317,8 @@ Signal-only system — all trade execution is manual.
   Step 1:   Evaluate yesterday's prediction vs actual
   Step 4:   LLM sentiment analysis (~60-90 min for 50 articles)
             Falls back to neutral (0.0) if LLM unavailable
+  Step 9.5: Earnings calendar — mega-cap dates from yfinance (P3)
+  Step 9.6: Fed communications — FOMC/Beige Book NLP scoring (P3)
 ```
 
 ### 5.2 Realtime Data Flow (Market Hours)
@@ -627,8 +659,29 @@ Signal-only system — all trade execution is manual.
   │    predicted_at     │
   └─────────────────────┘
 
+  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
+  │ earnings_calendar   │  │ fed_communications  │  │  model_registry     │
+  │ (P3)                │  │ (P3)                │  │  (P2)               │
+  ├─────────────────────┤  ├─────────────────────┤  ├─────────────────────┤
+  │ PK id (auto)        │  │ PK id (auto)        │  │ PK id (auto)        │
+  │    date             │  │    date             │  │    train_date       │
+  │    ticker           │  │    type (FOMC/BB)   │  │    model_path       │
+  │    earnings_date    │  │    title            │  │    val_accuracy     │
+  │    fetched_at       │  │    score            │  │    test_accuracy    │
+  └─────────────────────┘  │    summary          │  │    feature_count    │
+                           │    fetched_at       │  │    is_active        │
+  ┌─────────────────────┐  └─────────────────────┘  └─────────────────────┘
+  │  feature_cache      │
+  │  (P2)               │
+  ├─────────────────────┤
+  │ PK (date, version)  │
+  │    features_json    │
+  │    created_at       │
+  └─────────────────────┘
+
   All tables joined on `date` (except intraday_bars on timestamp+ticker, news on id).
   Database: SQLite 3.45, WAL journal mode, 5-second busy timeout.
+  17 tables total: 13 application + internal tables for feature store and model registry.
 ```
 
 ---
@@ -737,17 +790,29 @@ Signal-only system — all trade execution is manual.
 stockanalysis/
 ├── src/
 │   ├── data/                  # Data ingestion and feature engineering
-│   │   ├── init_db.py         # Schema manager, get_connection()
-│   │   ├── polygon_fetcher.py # Polygon.io REST client
+│   │   ├── init_db.py         # Schema manager, get_connection(), 17 tables
+│   │   ├── polygon_fetcher.py # Polygon.io REST client (+ vanna, charm, 0DTE)
 │   │   ├── fetcher.py         # Fallback: yfinance, Finnhub, RSS, FRED
 │   │   ├── daily_pull.py      # Gap detection + backfill
 │   │   ├── backfill.py        # Initial bulk load (252 days)
-│   │   └── features.py        # 37+ feature engineering
+│   │   ├── features.py        # 85-feature engineering (8 categories)
+│   │   ├── calendar.py        # Economic event calendar (P1, 10 features)
+│   │   ├── drift_monitor.py   # PSI + KS feature drift detection (P1)
+│   │   ├── feature_store.py   # Feature cache with version tracking (P2)
+│   │   ├── earnings_calendar.py # Mega-cap earnings dates (P3)
+│   │   └── fed_comms.py       # FOMC + Beige Book NLP scoring (P3)
 │   ├── llm/                   # LLM integration
-│   │   ├── analyzer.py        # Sentiment analysis via Ollama
+│   │   ├── analyzer.py        # Sentiment analysis via Ollama (+ decomposed P2)
 │   │   └── reporter.py        # Daily report generation
 │   ├── model/                 # Machine learning
-│   │   └── trainer.py         # XGBoost SPY predictor (GPU)
+│   │   ├── trainer.py         # XGBoost SPY predictor (GPU) + P2 integrations
+│   │   ├── bilstm_model.py    # BiLSTM sequence classifier (P2)
+│   │   ├── ensemble.py        # XGB+BiLSTM+LightGBM stacking ensemble (P2)
+│   │   ├── conformal.py       # Conformal prediction sets (P2)
+│   │   ├── regime.py          # HMM 4-state regime detection (P2)
+│   │   ├── purged_cv.py       # Purged walk-forward cross-validation (P2)
+│   │   ├── adaptive_window.py # Adaptive training window selection (P2)
+│   │   └── registry.py        # SQLite-backed model registry (P2)
 │   ├── realtime/              # Real-time data
 │   │   ├── streamer.py        # Polygon WebSocket client
 │   │   └── dashboard_bridge.py# JSON state file writer
@@ -760,7 +825,8 @@ stockanalysis/
 │   │   ├── labeling.py        # Triple-barrier entry + reversal exit labels
 │   │   └── runner.py          # Live/paper/backtest runner
 │   ├── dashboard/             # Web UI
-│   │   ├── app.py             # Unified dashboard (4 pages + admin)
+│   │   ├── app.py             # Unified dashboard (6 pages + admin)
+│   │   ├── monitoring.py      # Native Plotly monitoring dashboards
 │   │   ├── realtime_app.py    # Legacy standalone SPY
 │   │   ├── es_dashboard.py    # Legacy standalone ES
 │   │   └── whatif_app.py      # Legacy standalone What-If
@@ -769,7 +835,7 @@ stockanalysis/
 │   │   ├── presets.py         # 5 stress test scenarios
 │   │   └── narrator.py        # LLM what-if explanations
 │   ├── pipeline/              # Automation
-│   │   ├── daily_run.py       # 13-step pipeline orchestrator
+│   │   ├── daily_run.py       # 15-step pipeline orchestrator
 │   │   └── alerts.py          # Telegram + email notifications
 │   ├── sync/                  # Cloud sync
 │   │   ├── publisher.py       # DGX → AWS state publisher
@@ -777,6 +843,8 @@ stockanalysis/
 │   ├── api/                   # Real-time AI API
 │   │   ├── confidence_server.py # /confidence, /exit, /spread endpoints (port 8100)
 │   │   └── metrics_exporter.py  # Prometheus metrics exporter (port 9190)
+│   ├── auth/                  # Authentication
+│   │   └── google_oauth.py    # Google OAuth + local user auth
 │   └── launcher.py            # Process manager + scheduler
 ├── grafana/                   # Grafana monitoring
 │   ├── grafana.ini            # Grafana config (Google OAuth + RBAC)
@@ -807,6 +875,7 @@ stockanalysis/
 │   └── es_state.json          # ES dashboard state
 ├── models/                    # Trained models
 │   ├── xgb_spy_YYYYMMDD.json # XGBoost model files
+│   ├── hmm_regime.pkl         # HMM regime model (P2)
 │   └── rl_trail_qtable.json   # RL trailing agent Q-table
 ├── logs/                      # Runtime logs
 │   └── trade_audit.jsonl      # Trade audit trail (JSONL)

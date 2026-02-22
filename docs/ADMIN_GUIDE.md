@@ -190,25 +190,85 @@ All configuration is in `config.yaml` at the project root.
 |-----|---------|-------------|
 | `path` | `./data/spy.db` | SQLite database file path |
 
+### auth
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mode` | `local` | Authentication mode: `local` or `google` |
+| `session_secret` | `change-me-to-random-secret` | Signs session tokens |
+| `users` | (see config.yaml) | Local user accounts with password, role, name |
+| `google_client_id` | `""` | Google OAuth client ID |
+| `google_client_secret` | `""` | Google OAuth client secret |
+| `allowed_domains` | `[]` | Allowed Google domains (empty = any) |
+| `allowed_emails` | `[]` | Allowed Google emails (empty = no whitelist) |
+
+### confidence_api
+| Key | Default | Description |
+|-----|---------|-------------|
+| `host` | `0.0.0.0` | API bind address |
+| `port` | `8100` | API port |
+| `audit_log` | `./logs/trade_audit.jsonl` | Trade audit log path |
+
+### ensemble (P2)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Enable XGBoost+BiLSTM+LightGBM stacking ensemble |
+| `bilstm_seq_len` | `20` | BiLSTM sequence length |
+| `bilstm_hidden` | `128` | BiLSTM hidden dimensions |
+| `bilstm_epochs` | `30` | BiLSTM training epochs |
+
+### conformal (P2)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Enable conformal prediction sets |
+| `significance` | `0.10` | Significance level (0.10 = 90% coverage) |
+
+### regime (P2)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `n_states` | `4` | Number of HMM states |
+| `model_dir` | `./models` | Directory for regime model persistence |
+
+### adaptive_window (P2)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `candidates` | `[63, 126, 252, 504]` | Training window candidates (trading days) |
+| `validation_days` | `21` | Validation window for window selection |
+
+### earnings (P3)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mega_cap_tickers` | (20 tickers) | S&P 500 mega-caps to track earnings for |
+| `density_window_days` | `3` | Window for earnings density calculation |
+
+### fed_comms (P3)
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `true` | Enable Fed communications NLP |
+| `use_llm_scoring` | `true` | Use LLM for hawkish/dovish scoring (falls back to keywords) |
+
 ---
 
 ## Database Schema
 
-SQLite database at `./data/spy.db` with 11 tables:
+SQLite database at `./data/spy.db` with 17 tables (13 application + internal):
 
 | Table | Primary Key | Purpose |
 |-------|-------------|---------|
 | `prices` | date | Daily OHLCV for SPY |
 | `technicals` | date | SMA, RSI, MACD, BB, ATR |
 | `news` | id (auto) | News headlines from Finnhub + RSS |
-| `daily_sentiment` | date | LLM-scored daily sentiment aggregate |
-| `macro` | date | VIX, 10Y yield, DXY, fed funds, gold, crude |
+| `daily_sentiment` | date | LLM-scored daily sentiment aggregate + decomposed categories (P2) |
+| `macro` | date | VIX, 10Y yield, DXY, fed funds, gold, crude + VIX term structure + cross-asset (P1) |
 | `predictions` | date | Model predictions with factors and report |
 | `intraday_bars` | (timestamp, ticker) | 5-second OHLCV bars |
 | `options_chain` | (date, contract_symbol) | Options chain with Greeks |
-| `options_analytics` | date | Put/call ratio, max pain, IV skew, GEX |
+| `options_analytics` | date | Put/call ratio, max pain, IV skew, GEX + vanna, charm, 0DTE PCR (P3) |
 | `intraday_features` | date | VWAP spread, momentum, range, volume ratio |
 | `performance` | date | Prediction accuracy tracking |
+| `earnings_calendar` | id (auto) | Mega-cap earnings dates from yfinance (P3) |
+| `fed_communications` | id (auto) | FOMC + Beige Book scores from Fed RSS (P3) |
+| `model_registry` | id (auto) | Trained model metadata, accuracy, deployment status (P2) |
+| `feature_cache` | (date, version) | Cached feature vectors with version hashing (P2) |
 
 Database uses WAL journal mode and 5-second busy timeout for concurrent access.
 
@@ -294,8 +354,9 @@ Real-time health monitoring:
 - Database: online/offline, size in MB, table count
 - LLM (Ollama): connection status, target model availability, available models list
 - XGBoost Model: latest model file name, size, total model count
-- Data Inventory: row counts and date ranges for all 11 database tables
+- Data Inventory: row counts and date ranges for all 17 database tables
 - Latest Prediction: date, direction, confidence, generation timestamp
+- Model Registry (P2): trained model history with accuracy and deployment status
 
 ### Actions Tab
 
@@ -311,7 +372,7 @@ Ad-hoc execution of pipeline steps and system operations:
 | 🔮 Generate Prediction | Run inference for next trading day, store in DB |
 | 🩺 LLM Health Check | Verify Ollama + model availability |
 | 📝 Generate Report | Generate LLM daily report for latest prediction |
-| 🚀 Run Full Pipeline | Run all 13 pipeline steps (with "Skip LLM" checkbox for faster runs) |
+| 🚀 Run Full Pipeline | Run all 15 pipeline steps (with "Skip LLM" checkbox for faster runs) |
 | 📨 Send Test Alert | Send a test prediction alert via configured channels |
 
 All actions show real-time progress spinners and display results (success/error with details) inline.
