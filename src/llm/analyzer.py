@@ -11,6 +11,7 @@ import json
 import logging
 import subprocess
 import requests
+import numpy as np
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -315,7 +316,7 @@ class LLMAnalyzer:
         return results
 
     def _analyze_batch(self, articles: list[dict]) -> list[dict]:
-        """Analyze a batch of articles."""
+        """Analyze a batch of articles with structured sentiment decomposition (P2)."""
         article_text = ""
         for idx, a in enumerate(articles):
             article_text += f"\n[{idx+1}] {a.get('headline', '')}\n{a.get('summary', '')[:300]}\n"
@@ -325,6 +326,7 @@ For each article, provide a JSON object with:
 - "score": float from -1.0 (very bearish) to 1.0 (very bullish)
 - "confidence": integer 0-100
 - "topics": list of key topics
+- "category": one of "macro", "earnings", "geopolitical", "technical", "other"
 
 Return ONLY a JSON array of objects, one per article. No other text.
 
@@ -367,6 +369,7 @@ Articles:{article_text}"""
                             "score": max(-1.0, min(1.0, float(item.get("score", 0)))),
                             "confidence": max(0, min(100, int(item.get("confidence", 0)))),
                             "topics": item.get("topics", []),
+                            "category": item.get("category", "other"),
                         })
                     # Pad if fewer results than expected
                     while len(results) < expected_count:
@@ -389,7 +392,10 @@ Articles:{article_text}"""
         }
 
     def aggregate_daily_sentiment(self, results: list[dict]) -> dict:
-        """Aggregate individual article sentiments into daily summary."""
+        """Aggregate individual article sentiments into daily summary.
+
+        P2: Includes structured decomposition by category.
+        """
         if not results:
             return self.get_neutral_sentiment()
 
@@ -405,6 +411,21 @@ Articles:{article_text}"""
         neutral = len(scores) - positive - negative
         total = len(scores) or 1
 
+        # P2: Decomposed sentiment by category
+        categories = {"macro": [], "earnings": [], "geopolitical": [], "technical": []}
+        for r in results:
+            cat = r.get("category", "other")
+            if cat in categories:
+                categories[cat].append(r["score"])
+
+        macro_sent = float(np.mean(categories["macro"])) if categories["macro"] else 0.0
+        earnings_sent = float(np.mean(categories["earnings"])) if categories["earnings"] else 0.0
+        geo_sent = float(np.mean(categories["geopolitical"])) if categories["geopolitical"] else 0.0
+        tech_sent = float(np.mean(categories["technical"])) if categories["technical"] else 0.0
+
+        # Dispersion: std dev of all scores
+        dispersion = float(np.std(scores)) if len(scores) > 1 else 0.0
+
         return {
             "score": round(weighted_score, 4),
             "confidence": round(sum(confidences) / len(confidences), 1),
@@ -412,4 +433,10 @@ Articles:{article_text}"""
             "positive_ratio": round(positive / total, 3),
             "negative_ratio": round(negative / total, 3),
             "neutral_ratio": round(neutral / total, 3),
+            # P2: Structured decomposition
+            "macro_sentiment": round(macro_sent, 4),
+            "earnings_sentiment": round(earnings_sent, 4),
+            "geopolitical_sentiment": round(geo_sent, 4),
+            "technical_sentiment": round(tech_sent, 4),
+            "sentiment_dispersion": round(dispersion, 4),
         }

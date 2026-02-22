@@ -29,6 +29,8 @@ from src.llm.analyzer import LLMAnalyzer
 from src.llm.reporter import DailyReporter
 from src.model.trainer import SPYPredictor, evaluate_past_prediction
 from src.realtime.dashboard_bridge import write_spy_state
+from src.data.feature_store import FeatureStore
+from src.model.regime import HMMRegimeDetector
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,9 @@ class DailyPipeline:
         self.llm = LLMAnalyzer(self.config)
         self.predictor = SPYPredictor(self.config)
         self.reporter = DailyReporter(self.config)
+        # P2 components
+        self.feature_store = FeatureStore(self.config)
+        self.regime_detector = HMMRegimeDetector()
 
     def run(self, skip_llm: bool = False) -> dict:
         """Execute the full 13-step pipeline.
@@ -238,11 +243,16 @@ class DailyPipeline:
         self.conn.execute(
             """INSERT OR REPLACE INTO daily_sentiment
                (date, score, confidence, article_count,
-                positive_ratio, negative_ratio, neutral_ratio)
-               VALUES (?,?,?,?,?,?,?)""",
+                positive_ratio, negative_ratio, neutral_ratio,
+                macro_sentiment, earnings_sentiment, geopolitical_sentiment,
+                technical_sentiment, sentiment_dispersion, sentiment_velocity)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (self.today, sentiment["score"], sentiment.get("confidence", 0),
              sentiment.get("article_count", 0), sentiment.get("positive_ratio", 0),
-             sentiment.get("negative_ratio", 0), sentiment.get("neutral_ratio", 1)),
+             sentiment.get("negative_ratio", 0), sentiment.get("neutral_ratio", 1),
+             sentiment.get("macro_sentiment", 0), sentiment.get("earnings_sentiment", 0),
+             sentiment.get("geopolitical_sentiment", 0), sentiment.get("technical_sentiment", 0),
+             sentiment.get("sentiment_dispersion", 0), sentiment.get("sentiment_velocity", 0)),
         )
         self.conn.commit()
 
@@ -398,19 +408,50 @@ class DailyPipeline:
         return {"bars": bar_count, "features": "computed"}
 
     def _step10_retrain(self) -> dict:
-        """Step 10: Build feature vector + retrain XGBoost."""
-        fv = build_feature_vector(self.conn)
+        """Step 10: Build feature vector + retrain XGBoost (P2: with feature store, regime)."""
+        feature_cols = get_feature_columns()
+
+        # P2: Try feature store for cached features
+        fv = None
+        try:
+            all_dates = [r[0] for r in self.conn.execute(
+                "SELECT date FROM prices ORDER BY date").fetchall()]
+            fv = self.feature_store.get_features(
+                feature_cols, all_dates=all_dates,
+                build_fn=lambda missing: build_feature_vector(self.conn),
+            )
+        except Exception as e:
+            logger.warning(f"Feature store failed, falling back to direct build: {e}")
+
+        if fv is None or fv.empty:
+            fv = build_feature_vector(self.conn)
+
         if fv is None or len(fv) < 50:
             logger.warning("Insufficient data for training")
             self.predictor.load_latest_model()
             return {"skipped": True, "reason": "insufficient data"}
 
-        feature_cols = get_feature_columns()
+        # P2: HMM regime detection
+        regime = "low_vol_range"
+        regime_info = {}
+        try:
+            # Train/update regime detector
+            price_macro = fv[["close", "volume"]].copy()
+            if "vix" in fv.columns:
+                price_macro["vix"] = fv["vix"]
+            regime_info = self.regime_detector.fit(price_macro)
+            regime = self.regime_detector.predict(price_macro.tail(60))
+            logger.info(f"Current regime: {regime}")
+        except Exception as e:
+            logger.warning(f"Regime detection failed (non-fatal): {e}")
+
         available = [c for c in feature_cols if c in fv.columns]
         X = fv[available]
         y = get_target(fv)
 
-        metrics = self.predictor.train(X, y, use_gpu=True)
+        metrics = self.predictor.train(X, y, use_gpu=True, feature_names=available)
+        metrics["regime"] = regime
+        metrics["regime_info"] = regime_info
         return metrics
 
     def _step11_predict(self) -> dict:
@@ -427,6 +468,23 @@ class DailyPipeline:
         available = [c for c in feature_cols if c in fv.columns]
         features = fv[available].iloc[0].values
         prediction = self.predictor.predict(features, feature_names=available)
+
+        # P2: Add regime info to prediction for dashboard
+        try:
+            regime = self.regime_detector.predict(
+                pd.read_sql_query(
+                    "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60",
+                    self.conn,
+                ).assign(vix=lambda df: pd.read_sql_query(
+                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", self.conn
+                ).get("vix", 18.0))
+            )
+            prediction["regime"] = regime
+        except Exception:
+            prediction["regime"] = self.results.get("step_10", {}).get("result", {}).get("regime", "")
+
+        # P2: Flag if ensemble was used
+        prediction["ensemble_used"] = self.predictor.ensemble is not None and self.predictor.use_ensemble
 
         # Store prediction
         self.conn.execute(
@@ -453,7 +511,8 @@ class DailyPipeline:
 
         write_spy_state(prediction=prediction, indicators=indicators)
         logger.info(f"Prediction: {prediction['scale_label']} "
-                    f"({prediction['confidence']:.0f}%)")
+                    f"({prediction['confidence']:.0f}%)"
+                    f"{' [LOW CONVICTION]' if prediction.get('is_low_conviction') else ''}")
         return prediction
 
     def _step12_report(self) -> dict:

@@ -147,6 +147,10 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
         -- Sentiment features
         s.score as sentiment_score, s.confidence as sentiment_confidence,
         s.article_count, s.positive_ratio, s.negative_ratio,
+        -- Decomposed sentiment (P2)
+        s.macro_sentiment, s.earnings_sentiment,
+        s.geopolitical_sentiment, s.technical_sentiment,
+        s.sentiment_dispersion, s.sentiment_velocity,
         -- Intraday features
         i.vwap_spread, i.intraday_momentum, i.intraday_range, i.volume_ratio,
         -- Options features
@@ -196,7 +200,10 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None) -> Optional
 
     # Fill NaN sentiment with neutral
     sentiment_cols = ["sentiment_score", "sentiment_confidence", "article_count",
-                      "positive_ratio", "negative_ratio"]
+                      "positive_ratio", "negative_ratio",
+                      "macro_sentiment", "earnings_sentiment",
+                      "geopolitical_sentiment", "technical_sentiment",
+                      "sentiment_dispersion", "sentiment_velocity"]
     for col in sentiment_cols:
         df[col] = df[col].fillna(0)
 
@@ -266,6 +273,10 @@ def get_feature_columns() -> list[str]:
         "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio",
         # Sentiment
         "sentiment_score", "article_count", "positive_ratio", "negative_ratio",
+        # Decomposed sentiment (P2)
+        "macro_sentiment", "earnings_sentiment",
+        "geopolitical_sentiment", "technical_sentiment",
+        "sentiment_dispersion", "sentiment_velocity",
         # Intraday
         "vwap_spread", "intraday_momentum", "intraday_range", "volume_ratio",
         # Options

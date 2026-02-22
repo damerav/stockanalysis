@@ -216,6 +216,38 @@ def page_spy():
     else:
         st.info("Waiting for prediction data...")
 
+    # P2: Regime + Conformal prediction info row
+    p2_col1, p2_col2, p2_col3 = st.columns(3)
+    with p2_col1:
+        # Regime display
+        regime = prediction.get("regime", "")
+        if regime:
+            regime_labels = {
+                "bull_trend": "🟢 Bull Trend",
+                "bear_trend": "🔴 Bear Trend",
+                "high_vol_choppy": "🟡 High-Vol Choppy",
+                "low_vol_range": "🔵 Low-Vol Range",
+            }
+            st.metric("Market Regime", regime_labels.get(regime, regime))
+    with p2_col2:
+        # Conformal prediction set
+        pred_set = prediction.get("prediction_set", [])
+        is_low_conv = prediction.get("is_low_conviction", False)
+        if pred_set:
+            set_str = " / ".join(pred_set)
+            if is_low_conv:
+                st.metric("Prediction Set", f"⚠️ {set_str}")
+                st.caption("LOW CONVICTION — multiple classes in set")
+            else:
+                st.metric("Prediction Set", f"✅ {set_str}")
+    with p2_col3:
+        # Ensemble info
+        if prediction.get("ensemble_used"):
+            st.metric("Model", "🔗 Ensemble")
+            st.caption("XGB + BiLSTM + LightGBM")
+        else:
+            st.metric("Model", "🌲 XGBoost")
+
     # P1: SHAP prediction drivers
     shap_drivers = prediction.get("shap_drivers", [])
     if shap_drivers:
@@ -987,6 +1019,31 @@ def _admin_status_tab():
             st.info("No predictions yet")
     except Exception:
         st.info("No predictions yet")
+
+    # P2: Model Registry
+    st.subheader("Model Registry")
+    try:
+        conn = sqlite3.connect(db_path)
+        reg_rows = conn.execute(
+            """SELECT model_id, training_date, val_accuracy, test_accuracy,
+                      feature_count, gated, deployment_status, created_at
+               FROM model_registry ORDER BY created_at DESC LIMIT 10"""
+        ).fetchall()
+        conn.close()
+        if reg_rows:
+            reg_df = pd.DataFrame(reg_rows, columns=[
+                "ID", "Date", "Val Acc", "Test Acc", "Features", "Gated", "Status", "Created"
+            ])
+            reg_df["Val Acc"] = reg_df["Val Acc"].apply(lambda x: f"{x:.3f}" if x else "—")
+            reg_df["Test Acc"] = reg_df["Test Acc"].apply(lambda x: f"{x:.3f}" if x else "—")
+            reg_df["Gated"] = reg_df["Gated"].map({0: "✅", 1: "🚫"})
+            status_map = {"active": "🟢 Active", "retired": "⚪ Retired", "gated": "🚫 Gated"}
+            reg_df["Status"] = reg_df["Status"].map(status_map).fillna(reg_df["Status"])
+            st.dataframe(reg_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No models registered yet — will populate after next training run")
+    except Exception:
+        st.info("Model registry not initialized yet")
 
 
 # --- Actions Tab ---

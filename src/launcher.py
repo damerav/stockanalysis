@@ -28,6 +28,12 @@ PIPELINE_HOUR = 16
 PIPELINE_MINUTE = 30
 SCHEDULE_CHECK_INTERVAL = 60  # seconds
 
+# P2: Intraday prediction update times (ET)
+INTRADAY_UPDATES = [
+    (8, 30),   # Pre-market: after overnight news + 8:30 AM economic releases
+    (12, 0),   # Mid-day: after morning session price action
+]
+
 
 class ProcessManager:
     """Manages child processes for all system components."""
@@ -102,12 +108,14 @@ class Scheduler:
         self._running = False
         self._thread: threading.Thread = None
         self._last_run_date: str = ""
+        self._last_intraday_runs: dict = {}  # P2: track intraday updates
 
     def start(self):
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True, name="scheduler")
         self._thread.start()
         logger.info(f"Scheduler started — pipeline at {PIPELINE_HOUR}:{PIPELINE_MINUTE:02d} ET (Mon-Fri)")
+        logger.info(f"Intraday updates at: {', '.join(f'{h}:{m:02d}' for h, m in INTRADAY_UPDATES)}")
 
     def stop(self):
         self._running = False
@@ -121,12 +129,23 @@ class Scheduler:
 
                 # Only Mon-Fri
                 if weekday < 5:
+                    # Full pipeline at 4:30 PM
                     if (now.hour == PIPELINE_HOUR and
                             now.minute >= PIPELINE_MINUTE and
                             now.minute < PIPELINE_MINUTE + 2 and
                             today != self._last_run_date):
                         self._last_run_date = today
                         self._run_pipeline()
+
+                    # P2: Intraday prediction updates
+                    for hour, minute in INTRADAY_UPDATES:
+                        key = f"{today}_{hour}:{minute:02d}"
+                        if (now.hour == hour and
+                                now.minute >= minute and
+                                now.minute < minute + 2 and
+                                key not in self._last_intraday_runs):
+                            self._last_intraday_runs[key] = True
+                            self._run_intraday_update(hour, minute)
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
 
@@ -146,6 +165,33 @@ class Scheduler:
             proc.kill()
         except Exception as e:
             logger.error(f"Pipeline execution failed: {e}")
+
+    def _run_intraday_update(self, hour: int, minute: int):
+        """P2: Run intraday prediction refresh (steps 3-5, 8-9, 11 only)."""
+        label = f"{hour}:{minute:02d}"
+        logger.info(f"Intraday prediction update triggered ({label})")
+        try:
+            cmd = [sys.executable, "-c",
+                   "from src.pipeline.daily_run import DailyPipeline; "
+                   "import yaml; "
+                   "config = yaml.safe_load(open('config.yaml')) or {}; "
+                   "p = DailyPipeline(config); "
+                   "p._init_components(); "
+                   "p._step3_news(); "
+                   "p._step4_sentiment(); "
+                   "p._step5_macro(); "
+                   "p._step8_technicals(); "
+                   "p._step9_intraday(); "
+                   "p._step11_predict(); "
+                   f"print('Intraday update {label} complete')"]
+            proc = subprocess.Popen(cmd)
+            proc.wait(timeout=600)  # 10 min max
+            logger.info(f"Intraday update ({label}) completed: exit {proc.returncode}")
+        except subprocess.TimeoutExpired:
+            logger.error(f"Intraday update ({label}) timed out")
+            proc.kill()
+        except Exception as e:
+            logger.error(f"Intraday update ({label}) failed: {e}")
 
 
 class SystemLauncher:

@@ -95,3 +95,25 @@ confidence_api:
   host: "0.0.0.0"
   port: 8100
   audit_log: "./logs/trade_audit.jsonl"
+
+# P2: Stacking Ensemble
+ensemble:
+  enabled: false                 # Set true to enable XGBoost+BiLSTM+LightGBM ensemble
+  bilstm_seq_len: 20
+  bilstm_hidden: 128
+  bilstm_epochs: 30
+
+# P2: Conformal Prediction
+conformal:
+  enabled: true
+  significance: 0.10             # 90% coverage
+
+# P2: HMM Regime Detection
+regime:
+  n_states: 4
+  model_dir: "./models"
+
+# P2: Adaptive Training Window
+adaptive_window:
+  candidates: [63, 126, 252, 504]
+  validation_days: 21

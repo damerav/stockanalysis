@@ -2,6 +2,8 @@
 
 P1 enhancements: isotonic calibration, SHAP explanations, performance gating,
 stratified accuracy tracking.
+P2 enhancements: purged walk-forward CV, adaptive training window, model registry,
+stacking ensemble, conformal prediction.
 """
 
 import os
@@ -43,6 +45,7 @@ class SPYPredictor:
     def __init__(self, config: dict = None):
         config = config or {}
         xgb_cfg = config.get("xgboost", {})
+        self.config = config
         self.lookback_days = xgb_cfg.get("lookback_days", 252)
         self.max_depth = xgb_cfg.get("max_depth", 6)
         self.learning_rate = xgb_cfg.get("learning_rate", 0.05)
@@ -53,16 +56,24 @@ class SPYPredictor:
         self.feature_importances = None
         self.model_dir = "./models"
         self.prior_accuracy = None  # P1: performance gating
+        # P2: Ensemble, conformal, registry
+        self.ensemble = None
+        self.conformal = None
+        self.registry = None
+        self.use_ensemble = config.get("ensemble", {}).get("enabled", False)
+        self.use_conformal = config.get("conformal", {}).get("enabled", True)
         os.makedirs(self.model_dir, exist_ok=True)
 
     def train(self, features_df: pd.DataFrame, target: pd.Series,
-              use_gpu: bool = True) -> dict:
-        """Train XGBoost with walk-forward time-series split.
+              use_gpu: bool = True, feature_names: list[str] = None) -> dict:
+        """Train XGBoost with P2 enhancements: adaptive window, purged CV,
+        ensemble, conformal prediction, model registry.
 
         Args:
             features_df: Feature matrix (rows=dates, cols=features)
             target: Direction labels (-1, 0, 1)
             use_gpu: Use GPU acceleration if available
+            feature_names: Feature column names for registry
 
         Returns:
             Dict with training metrics
@@ -87,6 +98,22 @@ class SPYPredictor:
         if len(X) < 50:
             logger.warning(f"Only {len(X)} valid samples, need at least 50")
             return {"error": "insufficient data"}
+
+        # --- P2: Adaptive training window selection ---
+        optimal_window = len(X)
+        window_scores = {}
+        try:
+            from src.model.adaptive_window import select_optimal_window
+            window_result = select_optimal_window(X, y_class)
+            optimal_window = min(window_result["optimal_window"], len(X))
+            window_scores = window_result.get("scores", {})
+            logger.info(f"Adaptive window selected: {optimal_window}d")
+            # Trim to optimal window
+            if optimal_window < len(X):
+                X = X[-optimal_window:]
+                y_class = y_class[-optimal_window:]
+        except Exception as e:
+            logger.warning(f"Adaptive window selection failed (using full data): {e}")
 
         # Walk-forward split: 70/20/10 with 5-day embargo (GAP 12)
         train_end = int(len(X) * 0.70)
@@ -117,7 +144,6 @@ class SPYPredictor:
         device = "cpu"
         if use_gpu:
             try:
-                # Try GPU
                 test_model = xgb.XGBClassifier(tree_method="hist", device="cuda",
                                                 n_estimators=1, verbosity=0)
                 test_model.fit(X_train[:10], y_train[:10])
@@ -127,7 +153,7 @@ class SPYPredictor:
             except Exception:
                 logger.info("GPU not available, using CPU")
 
-        # Train
+        # Train XGBoost
         params = {
             "objective": "multi:softprob",
             "num_class": 3,
@@ -156,7 +182,7 @@ class SPYPredictor:
             self.model.feature_importances_
         ))
 
-        # Log feature importance and flag low-gain features (GAP 12)
+        # Log low-gain features (GAP 12)
         total_imp = sum(self.model.feature_importances_)
         low_gain_features = []
         for idx, imp in enumerate(self.model.feature_importances_):
@@ -171,17 +197,32 @@ class SPYPredictor:
         accuracy = np.mean(val_pred == y_val)
         logger.info(f"Validation accuracy: {accuracy:.3f}")
 
-        # Test set metrics (GAP 12: 10% holdout)
+        # Test set metrics
         test_accuracy = None
         if len(X_test) > 0:
             test_pred = self.model.predict(X_test)
             test_accuracy = float(np.mean(test_pred == y_test))
             logger.info(f"Test accuracy: {test_accuracy:.3f}")
 
+        # --- P2: Purged walk-forward CV score ---
+        cv_result = {}
+        try:
+            from src.model.purged_cv import purged_walk_forward_score
+            cv_result = purged_walk_forward_score(
+                xgb.XGBClassifier, X, y_class, n_splits=5, embargo=5,
+                objective="multi:softprob", num_class=3,
+                tree_method=tree_method, device=device,
+                max_depth=self.max_depth, learning_rate=self.learning_rate,
+                n_estimators=200, verbosity=0,
+            )
+            logger.info(f"Purged CV: mean_acc={cv_result['mean_accuracy']:.3f} "
+                        f"± {cv_result['std_accuracy']:.3f}")
+        except Exception as e:
+            logger.warning(f"Purged CV failed (non-fatal): {e}")
+
         # --- P1: Isotonic probability calibration ---
         try:
             from sklearn.calibration import CalibratedClassifierCV
-            # Fit isotonic calibrator on validation set
             self.calibrator = CalibratedClassifierCV(
                 self.model, method="isotonic", cv="prefit"
             )
@@ -191,8 +232,31 @@ class SPYPredictor:
             logger.warning(f"Isotonic calibration failed (non-fatal): {e}")
             self.calibrator = None
 
+        # --- P2: Conformal prediction calibration ---
+        if self.use_conformal and len(X_test) > 10:
+            try:
+                from src.model.conformal import ConformalPredictor
+                cal_probs = self.model.predict_proba(X_test)
+                self.conformal = ConformalPredictor(
+                    significance=self.config.get("conformal", {}).get("significance", 0.10)
+                )
+                self.conformal.calibrate(cal_probs, y_test)
+            except Exception as e:
+                logger.warning(f"Conformal calibration failed (non-fatal): {e}")
+
+        # --- P2: Stacking ensemble training ---
+        ensemble_metrics = {}
+        if self.use_ensemble:
+            try:
+                from src.model.ensemble import StackingEnsemble
+                self.ensemble = StackingEnsemble(self.config)
+                ensemble_metrics = self.ensemble.fit(X, y_class, use_gpu=use_gpu)
+                logger.info(f"Ensemble trained: {ensemble_metrics}")
+            except Exception as e:
+                logger.warning(f"Ensemble training failed (non-fatal): {e}")
+                self.ensemble = None
+
         # --- P1: Performance gating ---
-        # Only save model if val accuracy >= 0.52 and not degraded > 2% vs prior
         gated = False
         gate_reason = ""
         if accuracy < 0.52:
@@ -203,19 +267,18 @@ class SPYPredictor:
             gate_reason = (f"val accuracy {accuracy:.3f} degraded > 2% "
                            f"vs prior {self.prior_accuracy:.3f}")
 
+        model_path = ""
         if gated:
             logger.warning(f"MODEL GATED — not saving: {gate_reason}")
-            # Try to reload prior model
             self.load_latest_model()
         else:
-            # Save model
             date_str = datetime.now().strftime("%Y%m%d")
             model_path = os.path.join(self.model_dir, f"xgb_spy_{date_str}.json")
             self.model.save_model(model_path)
             self.prior_accuracy = float(accuracy)
             logger.info(f"Model saved to {model_path}")
 
-        return {
+        metrics = {
             "accuracy": float(accuracy),
             "test_accuracy": test_accuracy,
             "train_size": len(X_train),
@@ -228,7 +291,28 @@ class SPYPredictor:
             "gate_reason": gate_reason,
             "calibrated": self.calibrator is not None,
             "best_iteration": self.model.best_iteration if hasattr(self.model, "best_iteration") else None,
+            # P2 additions
+            "adaptive_window": optimal_window,
+            "window_scores": window_scores,
+            "purged_cv": cv_result,
+            "ensemble": ensemble_metrics,
+            "conformal_calibrated": self.conformal is not None,
         }
+
+        # --- P2: Register model in registry ---
+        if not gated and model_path:
+            try:
+                from src.model.registry import ModelRegistry
+                self.registry = ModelRegistry(self.config)
+                self.registry.register(
+                    metrics, model_path,
+                    feature_names=feature_names or
+                        [f"f{i}" for i in range(X.shape[1])],
+                )
+            except Exception as e:
+                logger.warning(f"Model registry failed (non-fatal): {e}")
+
+        return metrics
 
     def predict(self, features: np.ndarray,
                 feature_names: list[str] = None) -> dict:
@@ -240,7 +324,7 @@ class SPYPredictor:
 
         Returns:
             Dict with direction, confidence, probabilities, scale label,
-            and optionally shap_drivers (top 5 feature contributions).
+            conformal prediction set, and optionally shap_drivers.
         """
         if self.model is None:
             logger.warning("No model loaded, returning neutral prediction")
@@ -252,14 +336,14 @@ class SPYPredictor:
         # Handle NaN features
         features = np.nan_to_num(features, nan=0.0)
 
-        # Use calibrated model if available (P1)
-        if self.calibrator is not None:
+        # --- P2: Use ensemble if available ---
+        if self.ensemble is not None and self.use_ensemble:
             try:
-                probs = self.calibrator.predict_proba(features)[0]
+                probs = self.ensemble.predict_proba(features)[0]
             except Exception:
-                probs = self.model.predict_proba(features)[0]
+                probs = self._get_base_probs(features)
         else:
-            probs = self.model.predict_proba(features)[0]  # [p_down, p_neutral, p_up]
+            probs = self._get_base_probs(features)
 
         pred_class = int(np.argmax(probs))
         pred_label = _class_to_label(pred_class)
@@ -287,18 +371,26 @@ class SPYPredictor:
             "predicted_class": pred_label,
         }
 
+        # --- P2: Conformal prediction set ---
+        if self.conformal is not None:
+            try:
+                conf_result = self.conformal.predict_single(probs)
+                result["prediction_set"] = conf_result["prediction_set"]
+                result["is_low_conviction"] = conf_result["is_low_conviction"]
+                result["set_size"] = conf_result["set_size"]
+            except Exception as e:
+                logger.debug(f"Conformal prediction skipped: {e}")
+
         # --- P1: SHAP explanations (top 5 feature drivers) ---
-        if feature_names is not None:
+        if feature_names is not None and self.model is not None:
             try:
                 import shap
                 explainer = shap.TreeExplainer(self.model)
                 shap_values = explainer.shap_values(features)
-                # shap_values is list of arrays (one per class) or 3D array
                 if isinstance(shap_values, list):
                     sv = shap_values[pred_class][0]
                 else:
                     sv = shap_values[0, :, pred_class] if shap_values.ndim == 3 else shap_values[0]
-                # Top 5 by absolute SHAP value
                 top_idx = np.argsort(np.abs(sv))[-5:][::-1]
                 drivers = []
                 for idx in top_idx:
@@ -313,6 +405,15 @@ class SPYPredictor:
                 logger.debug(f"SHAP explanation skipped: {e}")
 
         return result
+
+    def _get_base_probs(self, features: np.ndarray) -> np.ndarray:
+        """Get probabilities from calibrated or raw XGBoost model."""
+        if self.calibrator is not None:
+            try:
+                return self.calibrator.predict_proba(features)[0]
+            except Exception:
+                pass
+        return self.model.predict_proba(features)[0]
 
     def load_latest_model(self) -> bool:
         """Load the most recent saved model."""

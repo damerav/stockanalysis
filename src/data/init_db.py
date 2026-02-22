@@ -35,7 +35,14 @@ CREATE TABLE IF NOT EXISTS news (
 CREATE TABLE IF NOT EXISTS daily_sentiment (
     date TEXT PRIMARY KEY,
     score REAL, confidence REAL, article_count INTEGER,
-    positive_ratio REAL, negative_ratio REAL, neutral_ratio REAL
+    positive_ratio REAL, negative_ratio REAL, neutral_ratio REAL,
+    -- P2: Structured sentiment decomposition
+    macro_sentiment REAL,
+    earnings_sentiment REAL,
+    geopolitical_sentiment REAL,
+    technical_sentiment REAL,
+    sentiment_dispersion REAL,
+    sentiment_velocity REAL
 );
 
 -- Macro indicators
