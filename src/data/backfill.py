@@ -75,7 +75,7 @@ def bulk_load(days: int = 252, config: dict = None):
             has_polygon = False
 
     if not has_polygon:
-        fallback = FallbackFetcher()
+        fallback = FallbackFetcher(config=config)
         df = fallback.get_daily_bars_yf("SPY", days=days)
         if not df.empty:
             if use_duck:
@@ -95,7 +95,7 @@ def bulk_load(days: int = 252, config: dict = None):
 
     # --- Load macro data ---
     logger.info("Loading macro data from FRED...")
-    fallback = FallbackFetcher()
+    fallback = FallbackFetcher(config=config)
     macro = fallback.get_macro_fred()
     today = datetime.now().strftime("%Y-%m-%d")
     if use_duck:

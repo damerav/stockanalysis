@@ -1190,9 +1190,9 @@ def _admin_actions_tab():
             with st.spinner("Fetching news..."):
                 try:
                     from src.data.fetcher import FallbackFetcher
-                    fetcher = FallbackFetcher()
-                    articles = fetcher.get_news()
                     config = _load_config()
+                    fetcher = FallbackFetcher(config=config)
+                    articles = fetcher.get_news()
                     conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
                     inserted = 0
                     today = datetime.now().strftime("%Y-%m-%d")
@@ -1218,7 +1218,8 @@ def _admin_actions_tab():
             with st.spinner("Fetching macro data..."):
                 try:
                     from src.data.fetcher import FallbackFetcher
-                    fetcher = FallbackFetcher()
+                    config = _load_config()
+                    fetcher = FallbackFetcher(config=config)
                     macro = fetcher.get_macro_fred()
                     today = datetime.now().strftime("%Y-%m-%d")
                     # Enhancement 26: Write to DuckDB

@@ -65,7 +65,7 @@ class DailyPipeline:
         api_key = self.config.get("polygon", {}).get("api_key", "")
         if api_key and api_key != "YOUR_POLYGON_KEY":
             self.polygon = PolygonFetcher(api_key)
-        self.fallback = FallbackFetcher()
+        self.fallback = FallbackFetcher(config=self.config)
         self.llm = LLMAnalyzer(self.config)
         self.predictor = SPYPredictor(self.config)
         self.reporter = DailyReporter(self.config)

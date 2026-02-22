@@ -13,8 +13,13 @@ logger = logging.getLogger(__name__)
 class FallbackFetcher:
     """Fallback data sources when Polygon is unavailable."""
 
-    def __init__(self, finnhub_key: str = ""):
-        self.finnhub_key = finnhub_key
+    def __init__(self, finnhub_key: str = "", fred_key: str = "", config: dict = None):
+        if config:
+            self.finnhub_key = finnhub_key or config.get("finnhub", {}).get("api_key", "")
+            self.fred_key = fred_key or config.get("fred", {}).get("api_key", "")
+        else:
+            self.finnhub_key = finnhub_key
+            self.fred_key = fred_key
 
     # --- Price data fallback (yfinance) ---
 
@@ -103,7 +108,7 @@ class FallbackFetcher:
     # --- Macro data (FRED) ---
 
     def get_macro_fred(self) -> dict:
-        """Fetch macro indicators from FRED (free, no key needed for some series)."""
+        """Fetch macro indicators from FRED. Uses official API if key is set, else CSV fallback."""
         series = {
             "vix": "VIXCLS",
             "us10y_yield": "DGS10",
@@ -117,19 +122,43 @@ class FallbackFetcher:
             if fred_id is None:
                 continue
             try:
-                url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred_id}"
-                df = pd.read_csv(url)
-                # FRED CSV columns vary; find the date and value columns
-                if df.shape[1] >= 2:
-                    df.columns = ["date", "value"]
-                    df["value"] = pd.to_numeric(df["value"], errors="coerce")
-                    df = df.dropna(subset=["value"])
-                    if not df.empty:
-                        result[name] = float(df.iloc[-1]["value"])
+                if self.fred_key:
+                    # Official FRED API (more reliable, higher rate limits)
+                    url = "https://api.stlouisfed.org/fred/series/observations"
+                    params = {
+                        "series_id": fred_id,
+                        "api_key": self.fred_key,
+                        "file_type": "json",
+                        "sort_order": "desc",
+                        "limit": 5,
+                    }
+                    resp = requests.get(url, params=params, timeout=15)
+                    if resp.status_code == 200:
+                        obs = resp.json().get("observations", [])
+                        for o in obs:
+                            val = o.get("value", ".")
+                            if val != ".":
+                                result[name] = float(val)
+                                break
+                        else:
+                            result[name] = None
                     else:
+                        logger.warning(f"FRED API {fred_id} returned {resp.status_code}")
                         result[name] = None
                 else:
-                    result[name] = None
+                    # CSV fallback (no key needed)
+                    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={fred_id}"
+                    df = pd.read_csv(url)
+                    if df.shape[1] >= 2:
+                        df.columns = ["date", "value"]
+                        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+                        df = df.dropna(subset=["value"])
+                        if not df.empty:
+                            result[name] = float(df.iloc[-1]["value"])
+                        else:
+                            result[name] = None
+                    else:
+                        result[name] = None
             except Exception as e:
                 logger.warning(f"FRED {name} ({fred_id}) failed: {e}")
                 result[name] = None
@@ -151,15 +180,35 @@ class FallbackFetcher:
         # Compute VIX change if we have current VIX
         if result.get("vix") is not None:
             try:
-                url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS"
-                df = pd.read_csv(url)
-                df.columns = ["date", "value"]
-                df["value"] = pd.to_numeric(df["value"], errors="coerce")
-                df = df.dropna(subset=["value"])
-                if len(df) >= 2:
-                    result["vix_change"] = float(df.iloc[-1]["value"]) - float(df.iloc[-2]["value"])
+                if self.fred_key:
+                    url = "https://api.stlouisfed.org/fred/series/observations"
+                    params = {
+                        "series_id": "VIXCLS",
+                        "api_key": self.fred_key,
+                        "file_type": "json",
+                        "sort_order": "desc",
+                        "limit": 5,
+                    }
+                    resp = requests.get(url, params=params, timeout=15)
+                    if resp.status_code == 200:
+                        obs = resp.json().get("observations", [])
+                        vals = [float(o["value"]) for o in obs if o.get("value", ".") != "."]
+                        if len(vals) >= 2:
+                            result["vix_change"] = vals[0] - vals[1]
+                        else:
+                            result["vix_change"] = 0.0
+                    else:
+                        result["vix_change"] = 0.0
                 else:
-                    result["vix_change"] = 0.0
+                    url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS"
+                    df = pd.read_csv(url)
+                    df.columns = ["date", "value"]
+                    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+                    df = df.dropna(subset=["value"])
+                    if len(df) >= 2:
+                        result["vix_change"] = float(df.iloc[-1]["value"]) - float(df.iloc[-2]["value"])
+                    else:
+                        result["vix_change"] = 0.0
             except Exception:
                 result["vix_change"] = 0.0
         else:

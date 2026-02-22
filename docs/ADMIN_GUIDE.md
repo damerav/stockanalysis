@@ -58,8 +58,8 @@
 
 ### API Keys
 - Polygon.io Advanced ($398/mo) — real-time stocks + options WebSocket
-- Finnhub (free tier) — news headlines
-- FRED (free) — macro data (no key needed for basic endpoints)
+- FRED API key (free, registered) — macro data with higher rate limits
+- Finnhub API key (free tier) — news headlines
 - Telegram Bot Token (optional) — for alerts
 - SMTP credentials (optional) — for email alerts
 
@@ -107,6 +107,16 @@ All configuration is in `config.yaml` at the project root.
 | `api_key` | `YOUR_POLYGON_KEY` | Polygon.io API key |
 | `ws_stocks_url` | `wss://socket.polygon.io/stocks` | Stocks WebSocket endpoint |
 | `ws_options_url` | `wss://socket.polygon.io/options` | Options WebSocket endpoint |
+
+### fred
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_key` | *(your key)* | FRED API key — register free at https://fred.stlouisfed.org/docs/api/api_key.html. Enables official JSON API with higher rate limits. Falls back to CSV scraping if empty. |
+
+### finnhub
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_key` | *(your key)* | Finnhub API key — register free at https://finnhub.io/register. Provides market news headlines. Falls back to RSS-only if empty. |
 
 ### analysis
 | Key | Default | Description |
@@ -547,7 +557,7 @@ python -m src.launcher --pipeline
 
 ## Security Notes
 
-- The Polygon API key is stored in plain text in `config.yaml`. Restrict file permissions: `chmod 600 config.yaml`
+- API keys (Polygon, FRED, Finnhub) are stored in plain text in `config.yaml`. Restrict file permissions: `chmod 600 config.yaml`
 - The relay server uses API key authentication via `X-API-Key` header
 - Cloud relay stores state in memory only — no persistent data on AWS
 - SMTP credentials for email alerts should use app-specific passwords

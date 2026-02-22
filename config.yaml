@@ -3,6 +3,12 @@ polygon:
   ws_stocks_url: "wss://socket.polygon.io/stocks"
   ws_options_url: "wss://socket.polygon.io/options"
 
+fred:
+  api_key: "dff4b18b046e602a474a8d1037619af1"
+
+finnhub:
+  api_key: "d6dn6u9r01qm89pk83m0d6dn6u9r01qm89pk83mg"
+
 analysis:
   signal_interval: 300
   flow_sweep_threshold: 50000

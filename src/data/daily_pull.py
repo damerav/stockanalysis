@@ -192,8 +192,7 @@ def run_daily_pull(config: dict = None):
     conn = get_connection(config)
     api_key = config.get("polygon", {}).get("api_key", "")
     polygon = PolygonFetcher(api_key) if api_key and api_key != "YOUR_POLYGON_KEY" else None
-    fallback = FallbackFetcher()
-
+    fallback = FallbackFetcher(config=config)
     # Find and fill price gaps
     price_gaps = find_gaps(conn, "prices", config=config)
     backfill_prices(conn, price_gaps, polygon, fallback, config=config)
