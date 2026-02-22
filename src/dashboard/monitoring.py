@@ -304,7 +304,8 @@ def tab_spy_predictor(days: int = 90):
         if conn:
             tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
                        "predictions", "intraday_bars", "options_chain",
-                       "options_analytics", "intraday_features", "performance"]
+                       "options_analytics", "intraday_features", "performance",
+                       "earnings_calendar", "fed_communications"]
             rows = []
             for t in tables:
                 try:
@@ -731,7 +732,8 @@ def tab_pipeline_status():
     if conn:
         tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
                    "predictions", "intraday_bars", "options_chain",
-                   "options_analytics", "intraday_features", "performance"]
+                   "options_analytics", "intraday_features", "performance",
+                   "earnings_calendar", "fed_communications"]
         rows = []
         for t in tables:
             try:
