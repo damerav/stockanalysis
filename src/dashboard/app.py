@@ -296,6 +296,46 @@ def page_spy():
     except Exception:
         pass  # P3 display is non-critical
 
+    # Intraday Microstructure row (Enhancement 21)
+    try:
+        import sqlite3 as _sql2
+        _conn2 = _sql2.connect(os.path.join(DATA_DIR, "spy.db"))
+        _today2 = datetime.now().strftime("%Y-%m-%d")
+        from src.data.features import compute_intraday_microstructure as _get_micro
+        micro = _get_micro(_conn2, _today2)
+        _conn2.close()
+
+        import math
+        has_data = any(not (isinstance(v, float) and math.isnan(v)) for v in micro.values())
+        if has_data:
+            st.markdown("**🔬 Intraday Microstructure**")
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            with mc1:
+                gap = micro.get("opening_gap_pct", 0) or 0
+                gap_emoji = "🟢" if gap > 0 else "🔴" if gap < 0 else "⚪"
+                st.metric("Opening Gap", f"{gap_emoji} {gap:+.2%}")
+                orb = micro.get("opening_range_breakout", 0) or 0
+                orb_label = "▲ Breakout" if orb > 0 else "▼ Breakdown" if orb < 0 else "— Inside"
+                st.caption(f"30-min range: {orb_label}")
+            with mc2:
+                cvh = micro.get("close_vs_high_pct", 0) or 0
+                cvl = micro.get("close_vs_low_pct", 0) or 0
+                st.metric("Close vs High", f"{cvh:+.2%}")
+                st.caption(f"Close vs Low: {cvl:+.2%}")
+            with mc3:
+                rev = micro.get("afternoon_reversal", 0) or 0
+                rev_label = "⚡ Reversal" if rev else "→ Continuation"
+                st.metric("Afternoon", rev_label)
+                ihv = micro.get("institutional_hour_vol", 0) or 0
+                st.caption(f"AM/PM vol ratio: {ihv:.2f}")
+            with mc4:
+                vrc = micro.get("vwap_reclaim_count", 0) or 0
+                st.metric("VWAP Crosses", f"{int(vrc)}")
+                td = micro.get("tick_divergence", 0) or 0
+                st.caption(f"Tick divergence: {td:.3f}")
+    except Exception:
+        pass  # Microstructure display is non-critical
+
     # P1: SHAP prediction drivers
     shap_drivers = prediction.get("shap_drivers", [])
     if shap_drivers:
