@@ -32,6 +32,8 @@ SCHEDULE_CHECK_INTERVAL = 60  # seconds
 INTRADAY_UPDATES = [
     (8, 30),   # Pre-market: after overnight news + 8:30 AM economic releases
     (12, 0),   # Mid-day: after morning session price action
+    (13, 30),  # Early afternoon: post-lunch reversal window
+    (15, 0),   # Late session: final hour positioning
 ]
 
 

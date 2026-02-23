@@ -401,6 +401,8 @@ def page_spy():
 
     # --- Compact prediction banner ---
     if prediction:
+        # Confidence interpretation
+        conf_interp = "weak" if confidence < 55 else "moderate" if confidence < 70 else "strong" if confidence < 85 else "very strong"
         st.markdown(
             f"""<div style="background:{banner_color}; padding:10px 20px; border-radius:10px;
             text-align:center; margin-bottom:8px; display:flex; align-items:center; justify-content:center; gap:24px;">
@@ -408,6 +410,9 @@ def page_spy():
             <span style="color:#fff; font-size:1.2rem; font-weight:600;">{confidence:.0f}%</span>
             <span style="color:rgba(255,255,255,0.85); font-size:0.95rem;">
             ↑{probs.get('up', 0):.0f}% · —{probs.get('neutral', 0):.0f}% · ↓{probs.get('down', 0):.0f}%
+            </span>
+            <span style="color:rgba(255,255,255,0.7); font-size:0.8rem; font-style:italic;">
+            ({conf_interp} signal)
             </span></div>""",
             unsafe_allow_html=True,
         )
@@ -423,37 +428,47 @@ def page_spy():
             "bull_trend": "🟢 Bull", "bear_trend": "🔴 Bear",
             "high_vol_choppy": "🟡 Choppy", "low_vol_range": "🔵 Range",
         }
-        st.metric("Regime", regime_labels.get(regime, regime or "—"))
+        st.metric("Regime", regime_labels.get(regime, regime or "—"),
+                  help="HMM-detected market regime: Bull Trend, Bear Trend, High-Vol Choppy, or Low-Vol Range. Affects neutral threshold and model weighting.")
     with r2:
         if prediction.get("ensemble_used"):
-            st.metric("Model", "🔗 Ensemble")
+            st.metric("Model", "🔗 Ensemble",
+                      help="Stacking ensemble (XGBoost + BiLSTM + LightGBM) with logistic meta-learner.")
         else:
-            st.metric("Model", "🌲 XGB")
+            st.metric("Model", "🌲 XGB",
+                      help="XGBoost gradient-boosted tree model with isotonic calibration.")
     with r3:
         pred_set = prediction.get("prediction_set", [])
         is_low_conv = prediction.get("is_low_conviction", False)
         if pred_set:
             set_str = "/".join(pred_set)
-            st.metric("Conf. Set", f"{'⚠️' if is_low_conv else '✅'} {set_str}")
+            st.metric("Conf. Set", f"{'⚠️' if is_low_conv else '✅'} {set_str}",
+                      help="Conformal prediction set at 90% coverage. Multiple directions = low conviction. Single direction = high conviction.")
         else:
-            st.metric("Conf. Set", "—")
+            st.metric("Conf. Set", "—",
+                      help="Conformal prediction set — shows which directions are statistically plausible.")
     with r4:
         v = macro.get("vix") if macro else None
         vc = macro.get("vix_change") if macro else None
         st.metric("VIX", f"{v:.1f}" if v else "—",
-                  delta=f"{vc:+.1f}" if vc else None, delta_color="inverse")
+                  delta=f"{vc:+.1f}" if vc else None, delta_color="inverse",
+                  help="CBOE Volatility Index. <15 = low vol (range-bound), 15-25 = normal, >25 = high vol (trending). Inversely correlated with SPY.")
     with r5:
         v = macro.get("us10y_yield") if macro else None
-        st.metric("10Y", f"{v:.2f}%" if v else "—")
+        st.metric("10Y", f"{v:.2f}%" if v else "—",
+                  help="US 10-Year Treasury yield. Rising yields = tighter financial conditions, typically bearish for equities.")
     with r6:
         v = macro.get("dxy") if macro else None
-        st.metric("DXY", f"{v:.1f}" if v else "—")
+        st.metric("DXY", f"{v:.1f}" if v else "—",
+                  help="US Dollar Index. Strong dollar = headwind for multinational earnings and risk assets.")
     with r7:
         v = macro.get("gold") if macro else None
-        st.metric("Gold", f"${v:,.0f}" if v else "—")
+        st.metric("Gold", f"${v:,.0f}" if v else "—",
+                  help="Gold spot price. Safe-haven asset — rising gold often signals risk-off sentiment.")
     with r8:
         v = macro.get("crude") if macro else None
-        st.metric("Crude", f"${v:.1f}" if v else "—")
+        st.metric("Crude", f"${v:.1f}" if v else "—",
+                  help="WTI Crude Oil. Impacts energy sector and inflation expectations.")
 
     # --- P3: Earnings + Fed + Options (compact row) ---
     try:
@@ -632,9 +647,12 @@ def page_spy():
         if indicators:
             ic1, ic2 = st.columns(2)
             with ic1:
-                st.metric("RSI(14)", f"{indicators.get('rsi_14', 'N/A')}")
-                st.metric("MACD", f"{indicators.get('macd', 'N/A')}")
-                st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}")
+                st.metric("RSI(14)", f"{indicators.get('rsi_14', 'N/A')}",
+                          help="Relative Strength Index (14-day). >70 = overbought, <30 = oversold. Mean-reversion signal.")
+                st.metric("MACD", f"{indicators.get('macd', 'N/A')}",
+                          help="Moving Average Convergence Divergence. Positive = bullish momentum, negative = bearish.")
+                st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}",
+                          help="Average True Range (14-day). Measures daily volatility in dollar terms. Higher = wider expected range.")
             with ic2:
                 # Use macro data for VIX to stay consistent with the top row
                 _vix_val = macro.get("vix") if macro else None
@@ -643,9 +661,12 @@ def page_spy():
                     _vix_val = indicators.get("vix")
                     _vix_chg = indicators.get("vix_change")
                 st.metric("VIX", f"{_vix_val:.1f}" if _vix_val else "N/A",
-                          delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse")
-                st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}")
-                st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}")
+                          delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse",
+                          help="CBOE Volatility Index — same source as top row for consistency.")
+                st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}",
+                          help="Today's volume vs 20-day average. >1.5 = unusually high activity, often precedes large moves.")
+                st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}",
+                          help="Aggregated news sentiment from Finnhub + RSS. Range -1 (bearish) to +1 (bullish). Computed via LLM analysis.")
         else:
             st.caption("Waiting for indicator data...")
 
