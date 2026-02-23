@@ -31,8 +31,51 @@ from src.auth.google_oauth import (
 )
 from src.dashboard.monitoring import page_monitoring
 from src.data.db_router import get_router, ANALYTICS_TABLES
+from src.data.fetcher import FallbackFetcher
 
 logger = logging.getLogger(__name__)
+
+
+@st.cache_data(ttl=300)
+def _fetch_live_macro() -> dict:
+    """Cached live FRED macro values (5-min TTL)."""
+    try:
+        config = _load_config_cached()
+        fetcher = FallbackFetcher(config=config)
+        return fetcher.get_macro_fred()
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300)
+def _fetch_live_news_counts() -> dict:
+    """Cached live news source counts (5-min TTL)."""
+    try:
+        config = _load_config_cached()
+        fetcher = FallbackFetcher(config=config)
+        finnhub = fetcher.get_news_finnhub()
+        rss = fetcher.get_news_rss()
+        rss_by_source = {}
+        for a in rss:
+            src = a.get("source", "unknown")
+            rss_by_source[src] = rss_by_source.get(src, 0) + 1
+        return {
+            "finnhub_count": len(finnhub),
+            "finnhub_headline": finnhub[0].get("headline", "") if finnhub else "",
+            "rss_by_source": rss_by_source,
+            "rss_total": len(rss),
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=600)
+def _load_config_cached() -> dict:
+    try:
+        with open("config.yaml") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
 
 # --- Mode Detection ---
 RELAY_URL = os.environ.get("RELAY_URL", "")
@@ -248,6 +291,30 @@ def page_spy():
             st.caption("XGB + BiLSTM + LightGBM")
         else:
             st.metric("Model", "🌲 XGBoost")
+
+    # Live Macro Data (FRED) — cached 5 min
+    macro = _fetch_live_macro()
+    if macro and any(v is not None for v in macro.values()):
+        st.markdown("**📡 Live Macro (FRED)**")
+        lm1, lm2, lm3, lm4, lm5 = st.columns(5)
+        with lm1:
+            v = macro.get("vix")
+            vc = macro.get("vix_change")
+            st.metric("VIX", f"{v:.2f}" if v else "—",
+                      delta=f"{vc:+.2f}" if vc else None,
+                      delta_color="inverse")
+        with lm2:
+            v = macro.get("us10y_yield")
+            st.metric("10Y Yield", f"{v:.2f}%" if v else "—")
+        with lm3:
+            v = macro.get("dxy")
+            st.metric("DXY", f"{v:.2f}" if v else "—")
+        with lm4:
+            v = macro.get("gold")
+            st.metric("Gold", f"${v:,.0f}" if v else "—")
+        with lm5:
+            v = macro.get("crude")
+            st.metric("Crude", f"${v:.2f}" if v else "—")
 
     # P3: Earnings + Fed + Extended Options row
     try:
@@ -1162,6 +1229,79 @@ def _admin_status_tab():
             st.info("No models registered yet — will populate after next training run")
     except Exception:
         st.info("Model registry not initialized yet")
+
+    # Live Data Sources Status
+    st.subheader("📡 Data Sources")
+    ds1, ds2 = st.columns(2)
+
+    with ds1:
+        # FRED API
+        st.markdown("**FRED API**")
+        macro = _fetch_live_macro()
+        if macro and any(v is not None for k, v in macro.items() if k != "vix_change"):
+            items = []
+            for k in ["vix", "us10y_yield", "dxy", "fed_funds", "gold", "crude"]:
+                v = macro.get(k)
+                items.append(f"{k}: {v:.2f}" if v is not None else f"{k}: —")
+            st.success("Online — " + " | ".join(items))
+        else:
+            st.error("FRED unavailable or no data")
+
+        # yfinance
+        st.markdown("**yfinance**")
+        try:
+            import yfinance as yf
+            spy_data = yf.download("SPY", period="2d", progress=False)
+            if not spy_data.empty:
+                if isinstance(spy_data.columns, pd.MultiIndex):
+                    spy_data.columns = spy_data.columns.get_level_values(0)
+                last_close = float(spy_data["Close"].iloc[-1])
+                last_date = str(spy_data.index[-1].date())
+                st.success(f"Online — SPY ${last_close:.2f} ({last_date})")
+            else:
+                st.warning("yfinance returned no data")
+        except Exception as e:
+            st.error(f"yfinance offline: {e}")
+
+    with ds2:
+        # Finnhub + RSS
+        st.markdown("**Finnhub + RSS Feeds**")
+        news = _fetch_live_news_counts()
+        if news:
+            fh_count = news.get("finnhub_count", 0)
+            fh_headline = news.get("finnhub_headline", "")
+            rss_total = news.get("rss_total", 0)
+            rss_src = news.get("rss_by_source", {})
+            if fh_count > 0:
+                st.success(f"Finnhub: {fh_count} articles")
+                if fh_headline:
+                    st.caption(f"Latest: {fh_headline[:80]}...")
+            else:
+                st.warning("Finnhub: 0 articles (check API key)")
+            if rss_total > 0:
+                parts = [f"{src}: {cnt}" for src, cnt in rss_src.items()]
+                st.success(f"RSS: {rss_total} articles — " + ", ".join(parts))
+            else:
+                st.warning("RSS: 0 articles")
+        else:
+            st.error("News fetch failed")
+
+        # Ollama
+        st.markdown("**Ollama / DeepSeek**")
+        try:
+            resp = requests.get("http://localhost:11434/api/tags", timeout=5)
+            if resp.status_code == 200:
+                models = [m.get("name", "") for m in resp.json().get("models", [])]
+                config = _load_config()
+                target = config.get("llm", {}).get("model", "deepseek-r1:70b")
+                if any(target in n for n in models):
+                    st.success(f"Online — {target}")
+                else:
+                    st.warning(f"Running but {target} not loaded")
+            else:
+                st.error("Ollama not responding")
+        except Exception:
+            st.error("Ollama offline")
 
 
 # --- Actions Tab ---
