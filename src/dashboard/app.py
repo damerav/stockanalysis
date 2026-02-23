@@ -1189,14 +1189,16 @@ def _run_in_thread(target, status_key: str, args=()):
 def page_admin():
     st.title("⚙️ Admin Console")
 
-    tab_status, tab_actions, tab_db, tab_config, tab_logs = st.tabs([
-        "System Status", "Actions", "Database", "Configuration", "Logs",
+    tab_status, tab_actions, tab_users, tab_db, tab_config, tab_logs = st.tabs([
+        "System Status", "Actions", "👤 Users", "Database", "Configuration", "Logs",
     ])
 
     with tab_status:
         _admin_status_tab()
     with tab_actions:
         _admin_actions_tab()
+    with tab_users:
+        _admin_users_tab()
     with tab_db:
         _admin_db_tab()
     with tab_config:
@@ -1441,6 +1443,160 @@ def _admin_status_tab():
                 st.error("Ollama not responding")
         except Exception:
             st.error("Ollama offline")
+
+
+# --- Users Tab ---
+
+def _admin_users_tab():
+    st.subheader("User Management")
+
+    config = _load_config()
+    auth = config.get("auth", {})
+    users = auth.get("users", {})
+    mode = auth.get("mode", "local")
+
+    # Current user info
+    current_user = get_user()
+    current_role = current_user.get("role", "viewer") if current_user else "viewer"
+    is_admin = current_role == "admin"
+
+    st.markdown(f'<p style="color:#94A3B8;font-size:0.85rem;">Auth mode: <b>{mode}</b> · '
+                f'Logged in as: <b>{current_user.get("name", "—")}</b> ({current_role})</p>',
+                unsafe_allow_html=True)
+
+    if not is_admin:
+        st.warning("Only admin users can manage users.")
+        # Still show the user list (read-only)
+        if users:
+            rows = []
+            for uname, udata in users.items():
+                rows.append({
+                    "Username": uname,
+                    "Name": udata.get("name", ""),
+                    "Role": udata.get("role", "viewer"),
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        return
+
+    # --- User list ---
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">CURRENT USERS</p>',
+                unsafe_allow_html=True)
+
+    if users:
+        rows = []
+        for uname, udata in users.items():
+            rows.append({
+                "Username": uname,
+                "Name": udata.get("name", ""),
+                "Role": udata.get("role", "viewer"),
+                "Password": "••••••••",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No users configured")
+
+    st.divider()
+
+    # --- Add new user ---
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">ADD USER</p>',
+                unsafe_allow_html=True)
+
+    with st.form("add_user_form", clear_on_submit=True):
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            new_username = st.text_input("Username", key="new_username")
+            new_password = st.text_input("Password", type="password", key="new_password")
+        with ac2:
+            new_name = st.text_input("Display Name", key="new_name")
+            new_role = st.selectbox("Role", ["viewer", "admin"], key="new_role")
+
+        if st.form_submit_button("➕ Add User"):
+            if not new_username or not new_password:
+                st.error("Username and password are required")
+            elif new_username in users:
+                st.error(f"User '{new_username}' already exists")
+            else:
+                users[new_username] = {
+                    "password": new_password,
+                    "name": new_name or new_username,
+                    "role": new_role,
+                }
+                _save_users(config, users)
+                st.success(f"User '{new_username}' added")
+                st.rerun()
+
+    st.divider()
+
+    # --- Edit / Delete existing users ---
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">EDIT / DELETE USER</p>',
+                unsafe_allow_html=True)
+
+    if users:
+        sel_user = st.selectbox("Select user", list(users.keys()), key="edit_user_select")
+        udata = users.get(sel_user, {})
+
+        with st.form("edit_user_form"):
+            ec1, ec2 = st.columns(2)
+            with ec1:
+                edit_name = st.text_input("Display Name", value=udata.get("name", ""), key="edit_name")
+                edit_role = st.selectbox("Role", ["viewer", "admin"],
+                                         index=0 if udata.get("role", "viewer") == "viewer" else 1,
+                                         key="edit_role")
+            with ec2:
+                edit_password = st.text_input("New Password (leave blank to keep current)",
+                                              type="password", key="edit_password")
+
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                save_clicked = st.form_submit_button("💾 Save Changes")
+            with fc2:
+                delete_clicked = st.form_submit_button("🗑️ Delete User")
+
+            if save_clicked:
+                users[sel_user]["name"] = edit_name
+                users[sel_user]["role"] = edit_role
+                if edit_password:
+                    users[sel_user]["password"] = edit_password
+                _save_users(config, users)
+                st.success(f"User '{sel_user}' updated")
+                st.rerun()
+
+            if delete_clicked:
+                if sel_user == current_user.get("username"):
+                    st.error("Cannot delete your own account")
+                elif len(users) <= 1:
+                    st.error("Cannot delete the last user")
+                else:
+                    del users[sel_user]
+                    _save_users(config, users)
+                    st.success(f"User '{sel_user}' deleted")
+                    st.rerun()
+
+    # --- Google OAuth settings (if mode is google) ---
+    if mode == "google":
+        st.divider()
+        st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">GOOGLE OAUTH SETTINGS</p>',
+                    unsafe_allow_html=True)
+        st.caption("These are read from config.yaml or environment variables.")
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            client_id = auth.get("google_client_id", "") or os.environ.get("GOOGLE_CLIENT_ID", "")
+            st.text_input("Client ID", value=client_id[:20] + "..." if len(client_id) > 20 else client_id,
+                          disabled=True)
+            domains = auth.get("allowed_domains", [])
+            st.text_input("Allowed Domains", value=", ".join(domains) if domains else "Any",
+                          disabled=True)
+        with gc2:
+            emails = auth.get("allowed_emails", [])
+            st.text_input("Allowed Emails", value=", ".join(emails) if emails else "Any",
+                          disabled=True)
+
+
+def _save_users(config: dict, users: dict):
+    """Save updated users back to config.yaml."""
+    config.setdefault("auth", {})["users"] = users
+    with open("config.yaml", "w") as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
 # --- Actions Tab ---
