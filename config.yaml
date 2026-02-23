@@ -92,10 +92,9 @@ auth:
 
 # Grafana embedded dashboards
 grafana:
-  lan_url: "http://192.168.1.211:3001"           # LAN access URL
-  external_url: ""                                # External URL (e.g. http://trading.aiagenticinternational.org:3001)
-  # Default credentials: admin / admin (change GF_SECURITY_ADMIN_PASSWORD in cloud/.env)
-  # Anonymous access is enabled for embedded kiosk mode
+  lan_url: "http://192.168.1.211:3001"           # LAN access URL (used for iframe embed)
+  # Grafana port 3001 is LAN-only. External users automatically see native Plotly charts.
+  # Default credentials (for direct Grafana access): admin / admin
 
 # Real-time AI Confidence API (GAP 2)
 confidence_api:

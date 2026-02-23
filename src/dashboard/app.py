@@ -2214,7 +2214,22 @@ def _grafana_summary_cards():
 
 
 def page_grafana():
-    """Embed Grafana dashboards with seamless Streamlit integration."""
+    """Embed Grafana dashboards or fall back to native Plotly monitoring."""
+
+    # --- Check if Grafana is reachable from the server ---
+    config = _load_config_cached()
+    grafana_cfg = config.get("grafana", {})
+    _dgx_ip = os.environ.get("DGX_IP", "192.168.1.211")
+    grafana_lan = grafana_cfg.get("lan_url", "") or os.environ.get("GRAFANA_HOST", f"http://{_dgx_ip}:3001")
+    proxy_host = os.environ.get("GRAFANA_PROXY_HOST", f"http://{_dgx_ip}:9190")
+
+    # Server-side check: can we reach Grafana from the DGX itself?
+    grafana_ok = False
+    try:
+        _r = requests.get(f"{grafana_lan}/api/health", timeout=3)
+        grafana_ok = _r.status_code == 200
+    except Exception:
+        grafana_ok = False
 
     # --- Quick-glance summary cards ---
     _grafana_summary_cards()
@@ -2239,17 +2254,25 @@ def page_grafana():
             st.session_state["_nav_target"] = "⚙️ Admin"
             st.rerun()
 
-    # --- Grafana URL resolution ---
-    config = _load_config_cached()
-    grafana_cfg = config.get("grafana", {})
-    _dgx_ip = os.environ.get("DGX_IP", "192.168.1.211")
-    grafana_lan = grafana_cfg.get("lan_url", "") or os.environ.get("GRAFANA_HOST", f"http://{_dgx_ip}:3001")
-    grafana_ext = grafana_cfg.get("external_url", "") or os.environ.get("GRAFANA_EXTERNAL_URL", "")
-    proxy_host = os.environ.get("GRAFANA_PROXY_HOST", f"http://{_dgx_ip}:9190")
+    # --- Mode toggle: Grafana iframe vs native Plotly ---
+    if grafana_ok:
+        view_mode = st.radio(
+            "View Mode",
+            ["📊 Native Charts", "🔗 Grafana Embed"],
+            horizontal=True,
+            label_visibility="collapsed",
+            help="Native Charts work everywhere. Grafana Embed requires LAN access to port 3001.",
+        )
+    else:
+        view_mode = "📊 Native Charts"
+        st.info("ℹ️ Grafana is not reachable — showing native Plotly dashboards instead.")
 
-    # Use external URL if configured, otherwise fall back to LAN
-    grafana_host = grafana_ext if grafana_ext else grafana_lan
+    if view_mode == "📊 Native Charts":
+        # Render the same monitoring dashboards (all 5 tabs) using Plotly
+        page_monitoring()
+        return
 
+    # --- Grafana iframe mode (LAN only) ---
     grafana_tab = st.radio(
         "Grafana Dashboard",
         ["SPY Predictor", "ES Strategy", "System Health", "Confidence API", "Pipeline Status"],
@@ -2268,11 +2291,9 @@ def page_grafana():
     uid = dashboard_map.get(grafana_tab, "spy-predictor")
 
     # Build embed URL — anonymous access is enabled in Grafana for kiosk mode.
-    # Route through auth proxy only when Google OAuth is active.
     user_info = get_user()
     use_proxy = (
         user_info
-        and user_info.get("email", "").endswith("@local") is False
         and "@local" not in user_info.get("email", "")
     )
     token = get_session_token()
@@ -2282,22 +2303,19 @@ def page_grafana():
             f"?orgId=1&kiosk&auth_token={urllib.parse.quote(token)}"
         )
     else:
-        embed_url = f"{grafana_host}/d/{uid}?orgId=1&kiosk"
+        embed_url = f"{grafana_lan}/d/{uid}?orgId=1&kiosk"
 
     # Sidebar controls
     st.sidebar.markdown("---")
     st.sidebar.markdown("**Grafana Settings**")
     height = st.sidebar.slider("Panel Height", 400, 1200, 800, 50)
-    st.sidebar.caption(f"[Open full Grafana ↗]({grafana_host}/d/{uid})")
+    st.sidebar.caption(f"[Open full Grafana ↗]({grafana_lan}/d/{uid})")
 
     user_info = get_user()
     if user_info and user_info.get("email") != "anonymous":
         st.sidebar.caption(f"Grafana user: {user_info['email']}")
 
-    if not grafana_ext:
-        st.sidebar.caption("ℹ️ Set `grafana.external_url` in config.yaml for external access")
-
-    # Embed Grafana with JS bridge for intercepting navigation
+    # Embed Grafana iframe
     st.components.v1.html(
         f"""
         <style>
@@ -2305,32 +2323,8 @@ def page_grafana():
                 width: 100%; height: {height}px; border: none;
                 border-radius: 8px; background: #181b1f;
             }}
-            .grafana-fallback {{
-                display: none; color: #94A3B8; text-align: center;
-                padding: 60px 20px; font-family: sans-serif;
-            }}
-            .grafana-fallback h3 {{ color: #E2E8F0; }}
-            .grafana-fallback a {{ color: #6C9EFF; }}
         </style>
-        <iframe id="grafana-embed" src="{embed_url}"
-                onload="document.getElementById('grafana-fallback').style.display='none';"
-                onerror="document.getElementById('grafana-fallback').style.display='block'; this.style.display='none';"></iframe>
-        <div id="grafana-fallback" class="grafana-fallback">
-            <h3>📊 Grafana Dashboard</h3>
-            <p>Unable to load embedded dashboard. This may happen when accessing externally.</p>
-            <p><a href="{grafana_host}/d/{uid}" target="_blank">Open Grafana directly ↗</a></p>
-            <p style="font-size:0.85rem; margin-top:16px;">
-                Default credentials: <code>admin</code> / <code>admin</code><br>
-                (Anonymous viewer access is enabled for embedded mode)
-            </p>
-        </div>
-        <script>
-            window.addEventListener('message', function(e) {{
-                if (e.data && e.data.type === 'navigate') {{
-                    console.log('Grafana navigation:', e.data.url);
-                }}
-            }});
-        </script>
+        <iframe id="grafana-embed" src="{embed_url}"></iframe>
         """,
         height=height + 10,
     )
