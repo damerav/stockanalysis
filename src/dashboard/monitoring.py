@@ -829,6 +829,411 @@ def tab_pipeline_status():
 
 
 # ══════════════════════════════════════════════════════════════════════
+# TAB 6: DATA SOURCES
+# ══════════════════════════════════════════════════════════════════════
+
+def tab_data_sources():
+    """Data Sources monitoring — live status + historical data for every feed."""
+
+    import yaml
+    try:
+        with open("config.yaml") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception:
+        config = {}
+
+    from src.data.fetcher import FallbackFetcher
+    fetcher = FallbackFetcher(config=config)
+
+    # Sub-tabs for each data source category
+    src_tabs = st.tabs([
+        "📰 Finnhub News",
+        "📡 Yahoo RSS",
+        "📡 CNBC RSS",
+        "📡 MarketWatch RSS",
+        "📊 FRED Macro",
+        "💹 yfinance",
+        "📅 Earnings",
+        "🏛️ Fed Comms",
+        "🗄️ All News (DB)",
+    ])
+
+    # ── Finnhub News ──
+    with src_tabs[0]:
+        _ds_finnhub(fetcher)
+
+    # ── Yahoo RSS ──
+    with src_tabs[1]:
+        _ds_rss_source(fetcher, "yahoo",
+                       "https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US")
+
+    # ── CNBC RSS ──
+    with src_tabs[2]:
+        _ds_rss_source(fetcher, "cnbc",
+                       "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114")
+
+    # ── MarketWatch RSS ──
+    with src_tabs[3]:
+        _ds_rss_source(fetcher, "marketwatch",
+                       "https://feeds.marketwatch.com/marketwatch/topstories/")
+
+    # ── FRED Macro ──
+    with src_tabs[4]:
+        _ds_fred(fetcher)
+
+    # ── yfinance ──
+    with src_tabs[5]:
+        _ds_yfinance()
+
+    # ── Earnings Calendar ──
+    with src_tabs[6]:
+        _ds_earnings()
+
+    # ── Fed Communications ──
+    with src_tabs[7]:
+        _ds_fed_comms()
+
+    # ── All News from DB ──
+    with src_tabs[8]:
+        _ds_all_news_db()
+
+
+def _ds_finnhub(fetcher):
+    """Finnhub news sub-tab."""
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">FINNHUB NEWS API</p>',
+                unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        api_key = fetcher.finnhub_key
+        if api_key:
+            st.success(f"API Key: ...{api_key[-6:]}")
+        else:
+            st.error("No API key configured")
+
+    articles = fetcher.get_news_finnhub(days=3)
+    with c2:
+        if articles:
+            st.success(f"{len(articles)} articles fetched (last 3 days)")
+        else:
+            st.warning("0 articles — check API key or rate limits")
+
+    if articles:
+        rows = []
+        for a in articles:
+            rows.append({
+                "Date": a.get("date", ""),
+                "Source": a.get("source", ""),
+                "Headline": a.get("headline", "")[:120],
+                "URL": a.get("url", ""),
+            })
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                      column_config={"URL": st.column_config.LinkColumn("Link", display_text="🔗")})
+
+    # Historical from DB
+    st.markdown("---")
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+                unsafe_allow_html=True)
+    hist = _query_df(
+        "SELECT date, source, headline, url FROM news WHERE source = 'finnhub' "
+        "ORDER BY id DESC LIMIT 50"
+    )
+    if not hist.empty:
+        st.caption(f"{len(hist)} recent Finnhub articles in database")
+        st.dataframe(hist, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No Finnhub articles stored yet")
+
+
+def _ds_rss_source(fetcher, source_name: str, feed_url: str):
+    """RSS feed sub-tab for a specific source."""
+    import feedparser
+
+    label = source_name.upper()
+    st.markdown(f'<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">{label} RSS FEED</p>',
+                unsafe_allow_html=True)
+
+    # Live fetch
+    articles = []
+    try:
+        feed = feedparser.parse(feed_url)
+        for entry in feed.entries[:30]:
+            pub_date = ""
+            if hasattr(entry, "published_parsed") and entry.published_parsed:
+                from datetime import datetime as _dt
+                pub_date = _dt(*entry.published_parsed[:6]).strftime("%Y-%m-%d %H:%M")
+            articles.append({
+                "Published": pub_date,
+                "Headline": entry.get("title", "")[:140],
+                "URL": entry.get("link", ""),
+            })
+        st.success(f"Live: {len(articles)} articles from {label}")
+    except Exception as e:
+        st.error(f"Feed error: {e}")
+
+    if articles:
+        df = pd.DataFrame(articles)
+        st.dataframe(df, use_container_width=True, hide_index=True,
+                      column_config={"URL": st.column_config.LinkColumn("Link", display_text="🔗")})
+
+    # Historical from DB
+    st.markdown("---")
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+                unsafe_allow_html=True)
+    hist = _query_df(
+        "SELECT date, headline, url FROM news WHERE source = ? ORDER BY id DESC LIMIT 50",
+        (source_name,)
+    )
+    if not hist.empty:
+        st.caption(f"{len(hist)} stored {label} articles")
+        st.dataframe(hist, use_container_width=True, hide_index=True)
+    else:
+        st.caption(f"No {label} articles stored yet")
+
+
+def _ds_fred(fetcher):
+    """FRED macro data sub-tab."""
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">FRED MACRO DATA</p>',
+                unsafe_allow_html=True)
+
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        api_key = fetcher.fred_key
+        if api_key:
+            st.success(f"API Key: ...{api_key[-6:]}")
+        else:
+            st.warning("No key — using CSV fallback")
+
+    # Live fetch
+    macro = fetcher.get_macro_fred()
+    with c2:
+        ok = sum(1 for k, v in macro.items() if v is not None and k != "vix_change")
+        st.success(f"Live: {ok}/6 indicators") if ok >= 4 else st.warning(f"Live: {ok}/6 indicators")
+
+    # Show current values
+    if macro:
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        with m1:
+            v = macro.get("vix")
+            st.metric("VIX", f"{v:.2f}" if v else "—")
+        with m2:
+            v = macro.get("us10y_yield")
+            st.metric("10Y Yield", f"{v:.2f}%" if v else "—")
+        with m3:
+            v = macro.get("dxy")
+            st.metric("DXY", f"{v:.2f}" if v else "—")
+        with m4:
+            v = macro.get("fed_funds")
+            st.metric("Fed Funds", f"{v:.2f}%" if v else "—")
+        with m5:
+            v = macro.get("gold")
+            st.metric("Gold", f"${v:,.0f}" if v else "—")
+        with m6:
+            v = macro.get("crude")
+            st.metric("Crude", f"${v:.2f}" if v else "—")
+
+    # Historical chart from DB
+    st.markdown("---")
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+                unsafe_allow_html=True)
+    hist = _query_df("SELECT date, vix, us10y_yield, dxy, gold, crude FROM macro ORDER BY date DESC LIMIT 90")
+    if not hist.empty:
+        hist = hist.iloc[::-1]  # chronological
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                            subplot_titles=["VIX & 10Y Yield", "Gold & Crude"])
+        fig.add_trace(go.Scatter(x=hist["date"], y=hist["vix"], name="VIX",
+                                 line=dict(color=COLORS["red"], width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist["date"], y=hist["us10y_yield"], name="10Y",
+                                 line=dict(color=COLORS["blue"], width=2), yaxis="y2"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=hist["date"], y=hist["gold"], name="Gold",
+                                 line=dict(color=COLORS["yellow"], width=2)), row=2, col=1)
+        fig.add_trace(go.Scatter(x=hist["date"], y=hist["crude"], name="Crude",
+                                 line=dict(color=COLORS["green"], width=2)), row=2, col=1)
+        fig.update_layout(**DARK_LAYOUT, height=300,
+                          title=dict(text="Macro History", font=TITLE_FONT))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(hist.tail(20).iloc[::-1], use_container_width=True, hide_index=True)
+    else:
+        st.caption("No macro history in database yet")
+
+
+def _ds_yfinance():
+    """yfinance data sub-tab."""
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">YFINANCE (SPY PRICES)</p>',
+                unsafe_allow_html=True)
+
+    # Live check
+    try:
+        import yfinance as yf
+        spy = yf.download("SPY", period="5d", progress=False)
+        if not spy.empty:
+            if isinstance(spy.columns, pd.MultiIndex):
+                spy.columns = spy.columns.get_level_values(0)
+            last_close = float(spy["Close"].iloc[-1])
+            last_date = str(spy.index[-1].date())
+            st.success(f"Live: SPY ${last_close:.2f} ({last_date})")
+        else:
+            st.warning("yfinance returned no data")
+    except Exception as e:
+        st.error(f"yfinance error: {e}")
+
+    # Historical from DB
+    st.markdown("---")
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">PRICE HISTORY (from DB)</p>',
+                unsafe_allow_html=True)
+    hist = _query_df("SELECT date, open, high, low, close, volume FROM prices ORDER BY date DESC LIMIT 60")
+    if not hist.empty:
+        hist_c = hist.iloc[::-1]
+        fig = go.Figure(go.Candlestick(
+            x=hist_c["date"], open=hist_c["open"], high=hist_c["high"],
+            low=hist_c["low"], close=hist_c["close"], name="SPY",
+        ))
+        fig.update_layout(**DARK_LAYOUT, height=280,
+                          title=dict(text="SPY Price (last 60 days)", font=TITLE_FONT),
+                          xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.dataframe(hist.head(20), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No price data in database yet")
+
+
+def _ds_earnings():
+    """Earnings calendar sub-tab."""
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">EARNINGS CALENDAR</p>',
+                unsafe_allow_html=True)
+
+    conn = _get_db()
+    if not conn:
+        st.warning("Database not available")
+        return
+
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM earnings_calendar").fetchone()[0]
+        st.metric("Total Entries", f"{count:,}")
+
+        upcoming = pd.read_sql_query(
+            "SELECT date, ticker, market_cap_rank FROM earnings_calendar "
+            "WHERE date >= date('now') ORDER BY date ASC LIMIT 30", conn
+        )
+        if not upcoming.empty:
+            st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">UPCOMING</p>',
+                        unsafe_allow_html=True)
+            st.dataframe(upcoming, use_container_width=True, hide_index=True)
+
+        recent = pd.read_sql_query(
+            "SELECT date, ticker, market_cap_rank FROM earnings_calendar "
+            "WHERE date < date('now') ORDER BY date DESC LIMIT 30", conn
+        )
+        if not recent.empty:
+            st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">RECENT</p>',
+                        unsafe_allow_html=True)
+            st.dataframe(recent, use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.warning(f"Earnings table not available: {e}")
+    finally:
+        conn.close()
+
+
+def _ds_fed_comms():
+    """Fed communications sub-tab."""
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">FED COMMUNICATIONS</p>',
+                unsafe_allow_html=True)
+
+    conn = _get_db()
+    if not conn:
+        st.warning("Database not available")
+        return
+
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM fed_communications").fetchone()[0]
+        st.metric("Total Entries", f"{count:,}")
+
+        recent = pd.read_sql_query(
+            "SELECT date, doc_type, hawkish_score, dovish_score, net_score "
+            "FROM fed_communications ORDER BY date DESC LIMIT 30", conn
+        )
+        if not recent.empty:
+            # Sentiment chart
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=recent["date"], y=recent["net_score"],
+                marker_color=[COLORS["red"] if v > 0 else COLORS["green"] for v in recent["net_score"]],
+                name="Net Score (+ = hawkish)",
+            ))
+            fig.update_layout(**DARK_LAYOUT, height=220,
+                              title=dict(text="Fed Sentiment (net score)", font=TITLE_FONT))
+            st.plotly_chart(fig, use_container_width=True)
+
+            st.dataframe(recent, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No fed communications stored yet")
+    except Exception as e:
+        st.warning(f"Fed comms table not available: {e}")
+    finally:
+        conn.close()
+
+
+def _ds_all_news_db():
+    """All news from database — filterable by source."""
+    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">ALL NEWS (DATABASE)</p>',
+                unsafe_allow_html=True)
+
+    conn = _get_db()
+    if not conn:
+        st.warning("Database not available")
+        return
+
+    try:
+        # Source breakdown
+        sources = pd.read_sql_query(
+            "SELECT source, COUNT(*) as count FROM news GROUP BY source ORDER BY count DESC", conn
+        )
+        if not sources.empty:
+            fig = go.Figure(go.Bar(
+                x=sources["count"], y=sources["source"], orientation="h",
+                marker_color=COLORS["blue"],
+                text=sources["count"].apply(lambda x: f"{x:,}"),
+                textposition="auto",
+                textfont=dict(color="#E2E8F0"),
+            ))
+            fig.update_layout(**DARK_LAYOUT, height=180,
+                              title=dict(text="Articles by Source", font=TITLE_FONT),
+                              xaxis_title="Count")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Filter
+        all_sources = ["All"] + sources["source"].tolist() if not sources.empty else ["All"]
+        f1, f2 = st.columns([1, 2])
+        with f1:
+            sel_source = st.selectbox("Source", all_sources, key="ds_news_source")
+        with f2:
+            limit = st.slider("Rows", 10, 200, 50, key="ds_news_limit")
+
+        if sel_source == "All":
+            df = pd.read_sql_query(
+                f"SELECT date, source, headline, url FROM news ORDER BY id DESC LIMIT {limit}", conn
+            )
+        else:
+            df = pd.read_sql_query(
+                f"SELECT date, source, headline, url FROM news WHERE source = ? ORDER BY id DESC LIMIT {limit}",
+                conn, params=(sel_source,)
+            )
+
+        if not df.empty:
+            total = conn.execute("SELECT COUNT(*) FROM news").fetchone()[0]
+            st.caption(f"Showing {len(df)} of {total:,} total articles")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No articles in database")
+    except Exception as e:
+        st.warning(f"News query error: {e}")
+    finally:
+        conn.close()
+
+
+# ══════════════════════════════════════════════════════════════════════
 # MAIN PAGE ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════
 
@@ -916,6 +1321,7 @@ def page_monitoring():
         "🖥️ System Health",
         "🤖 Confidence API",
         "⚙️ Pipeline Status",
+        "📡 Data Sources",
     ])
 
     with tabs[0]:
@@ -928,6 +1334,8 @@ def page_monitoring():
         tab_confidence_api()
     with tabs[4]:
         tab_pipeline_status()
+    with tabs[5]:
+        tab_data_sources()
 
     if refresh_secs > 0:
         import time as _time
