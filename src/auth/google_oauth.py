@@ -11,6 +11,7 @@ Seed users from config.yaml are migrated on first run.
 import os
 import json
 import hmac
+import time
 import hashlib
 import logging
 import sqlite3
@@ -259,26 +260,88 @@ def verify_session_token(token: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Cookie helpers — persist auth across browser refreshes
+# Session persistence — server-side files + browser cookie + query param
 # ---------------------------------------------------------------------------
 
-_COOKIE_NAME = "sa_auth_token"
+_COOKIE_NAME = "sa_session_id"
 _COOKIE_MAX_AGE = 86400 * 7  # 7 days
+_SESSION_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", ".sessions",
+)
 
 
-def _set_cookie(token: str):
-    """Set auth cookie in the browser via a tiny JS component."""
+def _ensure_session_dir():
+    """Create the server-side session directory if needed."""
+    os.makedirs(_SESSION_DIR, exist_ok=True)
+
+
+def _generate_session_id() -> str:
+    """Generate a random session ID."""
+    import secrets
+    return secrets.token_urlsafe(32)
+
+
+def _save_server_session(session_id: str, token: str):
+    """Save auth token to a server-side file keyed by session_id."""
+    _ensure_session_dir()
+    path = os.path.join(_SESSION_DIR, f"{session_id}.json")
+    data = {"token": token, "created": datetime.now().isoformat()}
+    with open(path, "w") as f:
+        json.dump(data, f)
+
+
+def _load_server_session(session_id: str) -> Optional[str]:
+    """Load auth token from server-side session file. Returns token or None."""
+    if not session_id:
+        return None
+    path = os.path.join(_SESSION_DIR, f"{session_id}.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("token")
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _delete_server_session(session_id: str):
+    """Delete a server-side session file."""
+    if not session_id:
+        return
+    path = os.path.join(_SESSION_DIR, f"{session_id}.json")
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _cleanup_stale_sessions(max_age_days: int = 7):
+    """Remove session files older than max_age_days. Called sparingly."""
+    _ensure_session_dir()
+    try:
+        now = time.time()
+        cutoff = now - (max_age_days * 86400)
+        for fname in os.listdir(_SESSION_DIR):
+            fpath = os.path.join(_SESSION_DIR, fname)
+            if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                os.remove(fpath)
+    except OSError:
+        pass
+
+
+def _set_cookie(session_id: str):
+    """Set session ID cookie in the browser via JS injection."""
     import streamlit.components.v1 as components
     js = f"""
     <script>
-    document.cookie = "{_COOKIE_NAME}={token}; path=/; max-age={_COOKIE_MAX_AGE}; SameSite=Lax";
+    document.cookie = "{_COOKIE_NAME}={session_id}; path=/; max-age={_COOKIE_MAX_AGE}; SameSite=Lax";
     </script>
     """
     components.html(js, height=0, width=0)
 
 
 def _clear_cookie():
-    """Delete auth cookie from the browser."""
+    """Delete session cookie from the browser."""
     import streamlit.components.v1 as components
     js = f"""
     <script>
@@ -289,7 +352,7 @@ def _clear_cookie():
 
 
 def _read_cookie() -> Optional[str]:
-    """Read the auth cookie value using st.context.cookies (Streamlit ≥1.37)."""
+    """Read the session ID cookie using st.context.cookies (Streamlit ≥1.37)."""
     try:
         cookies = st.context.cookies
         return cookies.get(_COOKIE_NAME)
@@ -297,17 +360,55 @@ def _read_cookie() -> Optional[str]:
         return None
 
 
+def _persist_session(token: str):
+    """Persist session using server-side file + cookie + query param (triple redundancy)."""
+    session_id = _generate_session_id()
+    _save_server_session(session_id, token)
+    _set_cookie(session_id)
+    # Also store in query params as fallback (survives refresh even if cookie JS fails)
+    st.query_params["sid"] = session_id
+    # Keep in session_state for current run
+    st.session_state["_session_id"] = session_id
+
+
 def _restore_session_from_cookie():
-    """If session_state is empty but a valid cookie exists, restore the session."""
+    """If session_state is empty but a valid session exists, restore it.
+
+    Checks three sources in order:
+      1. st.query_params['sid'] (most reliable — embedded in URL)
+      2. Browser cookie (set via JS)
+      3. session_state._session_id (same tab, no refresh)
+    """
     if st.session_state.get("auth_user") is not None:
         return
-    token = _read_cookie()
+
+    # Try query param first (survives refresh reliably)
+    session_id = st.query_params.get("sid")
+
+    # Fallback to cookie
+    if not session_id:
+        session_id = _read_cookie()
+
+    # Fallback to session_state (shouldn't be needed but just in case)
+    if not session_id:
+        session_id = st.session_state.get("_session_id")
+
+    if not session_id:
+        return
+
+    # Look up the server-side session file
+    token = _load_server_session(session_id)
     if not token:
         return
+
     user = verify_session_token(token)
     if user:
         st.session_state["auth_user"] = user
         st.session_state["auth_token"] = token
+        st.session_state["_session_id"] = session_id
+        # Re-set query param in case it was restored from cookie
+        if "sid" not in st.query_params:
+            st.query_params["sid"] = session_id
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +417,10 @@ def _restore_session_from_cookie():
 
 def is_authenticated() -> bool:
     """Check if the current Streamlit session has a valid user."""
+    # Cleanup stale sessions once per app lifecycle
+    if not st.session_state.get("_sessions_cleaned"):
+        _cleanup_stale_sessions()
+        st.session_state["_sessions_cleaned"] = True
     _restore_session_from_cookie()
     return st.session_state.get("auth_user") is not None
 
@@ -331,10 +436,15 @@ def get_session_token() -> Optional[str]:
 
 
 def logout():
-    """Clear session state and cookie."""
-    for key in ["auth_user", "auth_token"]:
+    """Clear session state, server-side session file, and cookie."""
+    session_id = st.session_state.get("_session_id")
+    _delete_server_session(session_id)
+    for key in ["auth_user", "auth_token", "_session_id"]:
         st.session_state.pop(key, None)
     _clear_cookie()
+    # Clear the sid query param
+    if "sid" in st.query_params:
+        st.query_params.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +528,11 @@ def handle_oauth_callback():
         }
         st.session_state["auth_user"] = session_user
         st.session_state["auth_token"] = create_session_token(session_user)
-        _set_cookie(st.session_state["auth_token"])
-        st.query_params.clear()
+        _persist_session(st.session_state["auth_token"])
+        # Don't clear all query_params — _persist_session sets 'sid'
+        for k in list(st.query_params.keys()):
+            if k != "sid":
+                del st.query_params[k]
 
     except Exception as e:
         logger.error("OAuth callback error: %s", e)
@@ -459,7 +572,7 @@ def render_login_page() -> bool:
                         token = create_session_token(user)
                         st.session_state["auth_user"] = user
                         st.session_state["auth_token"] = token
-                        _set_cookie(token)
+                        _persist_session(token)
                         st.rerun()
                     else:
                         st.error("Invalid username or password")
@@ -483,7 +596,7 @@ def render_login_page() -> bool:
                         token = create_session_token(user)
                         st.session_state["auth_user"] = user
                         st.session_state["auth_token"] = token
-                        _set_cookie(token)
+                        _persist_session(token)
                         st.rerun()
                     else:
                         st.error("Invalid username or password")
