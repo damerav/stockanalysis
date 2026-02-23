@@ -201,29 +201,57 @@ def tab_spy_predictor(days: int = 90):
     """SPY Predictor monitoring — mirrors Grafana spy-predictor dashboard."""
 
     # ── Row 1: Stat cards ──
+    # Use spy_state.json for real-time metrics (same source as SPY Predictor page)
+    # to avoid inconsistencies between pages. DB is used for historical charts below.
     conn = _get_db()
     close_val = rsi_val = atr_val = vix_val = 0.0
     direction_str = "—"
     confidence_val = 0.0
 
+    # Load real-time state (same source as SPY Predictor page)
+    spy_state = {}
+    try:
+        with open(os.path.join(DATA_DIR, "spy_state.json")) as f:
+            spy_state = json.load(f)
+    except Exception:
+        pass
+
+    pred = spy_state.get("prediction", {})
+    indicators = spy_state.get("indicators", {})
+
+    # Real-time values from state file
+    direction_str = pred.get("direction", "—")
+    confidence_val = pred.get("confidence", 0)
+    rsi_val = indicators.get("rsi_14", 0) or 0
+    vix_val = indicators.get("vix", 0) or 0
+
+    # SPY close from DB (state file doesn't carry it)
     if conn:
         row = conn.execute("SELECT close FROM prices ORDER BY date DESC LIMIT 1").fetchone()
         if row:
             close_val = float(row[0] or 0)
 
-        row = conn.execute("SELECT rsi_14, atr_14 FROM technicals ORDER BY date DESC LIMIT 1").fetchone()
-        if row:
-            rsi_val = float(row[0] or 0)
-            atr_val = float(row[1] or 0)
+        # ATR from DB (state file has it but let's be consistent)
+        atr_val = indicators.get("atr_14", 0) or 0
 
-        row = conn.execute("SELECT vix FROM macro ORDER BY date DESC LIMIT 1").fetchone()
-        if row:
-            vix_val = float(row[0] or 0)
+        # Fall back to DB if state file has no data
+        if not direction_str or direction_str == "—":
+            row = conn.execute("SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1").fetchone()
+            if row:
+                direction_str = str(row[0] or "—")
+                confidence_val = float(row[1] or 0)
 
-        row = conn.execute("SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1").fetchone()
-        if row:
-            direction_str = str(row[0] or "—")
-            confidence_val = float(row[1] or 0)
+        if not rsi_val:
+            row = conn.execute("SELECT rsi_14, atr_14 FROM technicals ORDER BY date DESC LIMIT 1").fetchone()
+            if row:
+                rsi_val = float(row[0] or 0)
+                atr_val = float(row[1] or 0)
+
+        if not vix_val:
+            row = conn.execute("SELECT vix FROM macro ORDER BY date DESC LIMIT 1").fetchone()
+            if row:
+                vix_val = float(row[0] or 0)
+
         conn.close()
 
     dir_color = "green" if "BULL" in direction_str.upper() else "red" if "BEAR" in direction_str.upper() else "yellow"
@@ -240,6 +268,30 @@ def tab_spy_predictor(days: int = 90):
     ]
     for col, (label, val, color) in zip(cols, cards):
         col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+
+    # Staleness indicator (same logic as SPY Predictor page)
+    updated_at = spy_state.get("updated_at", "")
+    _stale_color = "#475569"
+    _stale_label = ""
+    if updated_at:
+        try:
+            _upd_dt = (datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                       if "T" in updated_at
+                       else datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S"))
+            _age_min = (datetime.now() - _upd_dt).total_seconds() / 60
+            if _age_min > 60:
+                _stale_color = "#EF4444"
+                _stale_label = " ⚠️ STALE"
+            elif _age_min > 30:
+                _stale_color = "#F59E0B"
+                _stale_label = " ⏳"
+        except Exception:
+            pass
+    st.markdown(
+        f'<p style="color:{_stale_color}; font-size:0.75rem; text-align:right; margin-top:2px; margin-bottom:0;">'
+        f'Updated: {updated_at or "N/A"}{_stale_label}</p>',
+        unsafe_allow_html=True,
+    )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
