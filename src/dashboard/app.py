@@ -303,7 +303,7 @@ if user:
 page = st.sidebar.radio(
     "Navigate",
     ["📈 SPY Predictor", "📊 ES Strategy", "🔬 What-If Analysis",
-     "📉 Monitoring", "📉 Grafana (compare)", "⚙️ Admin"],
+     "📉 Monitoring", "📊 Grafana Dashboards", "⚙️ Admin"],
     label_visibility="collapsed",
 )
 st.sidebar.divider()
@@ -336,7 +336,7 @@ def load_spy_state() -> dict:
             return {}
 
 
-def load_prediction_history(n: int = 20) -> pd.DataFrame:
+def load_prediction_history(n: int = 30) -> pd.DataFrame:
     if IS_CLOUD:
         return pd.DataFrame()
     try:
@@ -565,7 +565,7 @@ def page_spy():
     with col1:
         st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
                     unsafe_allow_html=True)
-        hist_df = load_prediction_history(20)
+        hist_df = load_prediction_history(30)
         if not hist_df.empty:
             colors = hist_df["direction"].map({
                 "BULLISH": "#4ADE80", "STRONG_BULLISH": "#22C55E",
@@ -585,7 +585,8 @@ def page_spy():
                 yaxis_title="Conf %", yaxis_range=[0, 100],
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#94A3B8", size=10),
-                xaxis=dict(gridcolor="#1E2530", tickfont=dict(size=9)),
+                xaxis=dict(gridcolor="#1E2530", tickfont=dict(size=9),
+                           tickformat="%b %d", dtick="D1"),
                 yaxis=dict(gridcolor="#1E2530"),
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -635,8 +636,14 @@ def page_spy():
                 st.metric("MACD", f"{indicators.get('macd', 'N/A')}")
                 st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}")
             with ic2:
-                st.metric("VIX", f"{indicators.get('vix', 'N/A')}",
-                          delta=f"{indicators.get('vix_change', 0):+.1f}" if indicators.get('vix_change') else None)
+                # Use macro data for VIX to stay consistent with the top row
+                _vix_val = macro.get("vix") if macro else None
+                _vix_chg = macro.get("vix_change") if macro else None
+                if _vix_val is None:
+                    _vix_val = indicators.get("vix")
+                    _vix_chg = indicators.get("vix_change")
+                st.metric("VIX", f"{_vix_val:.1f}" if _vix_val else "N/A",
+                          delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse")
                 st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}")
                 st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}")
         else:
@@ -660,8 +667,23 @@ def page_spy():
             else:
                 st.caption("No alerts yet")
 
-    st.markdown(f'<p style="color:#475569; font-size:0.75rem; text-align:right; margin-top:4px;">'
-                f'Updated: {updated_at or "N/A"}</p>', unsafe_allow_html=True)
+    # Staleness indicator
+    _stale_color = "#475569"
+    _stale_label = ""
+    if updated_at:
+        try:
+            _upd_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if "T" in updated_at else datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S")
+            _age_min = (datetime.now() - _upd_dt).total_seconds() / 60
+            if _age_min > 60:
+                _stale_color = "#EF4444"
+                _stale_label = " ⚠️ STALE"
+            elif _age_min > 30:
+                _stale_color = "#F59E0B"
+                _stale_label = " ⏳"
+        except Exception:
+            pass
+    st.markdown(f'<p style="color:{_stale_color}; font-size:0.75rem; text-align:right; margin-top:4px;">'
+                f'Updated: {updated_at or "N/A"}{_stale_label}</p>', unsafe_allow_html=True)
 
 
 # ======================================================================
@@ -784,12 +806,18 @@ def page_es():
 
             fig.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20),
                               xaxis_rangeslider_visible=False, showlegend=True,
-                              legend=dict(orientation="h", yanchor="bottom", y=1.02))
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              font=dict(color="#E2E8F0", size=11))
+            fig.update_xaxes(gridcolor="#1E2530")
+            fig.update_yaxes(gridcolor="#1E2530")
             fig.update_yaxes(title_text="Price", row=1, col=1)
             fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
             st.plotly_chart(fig, use_container_width=True)
     else:
-        st.caption("Waiting for chart data...")
+        st.warning("⚠️ No chart data available. This typically means the intraday data pipeline "
+                   "(Polygon.io) is not running or the API key is not configured. "
+                   "Check Admin → System Status → Data Sources for connection status.")
 
     # Signal Feed + Status
     col1, col2 = st.columns([3, 2])
@@ -1974,6 +2002,24 @@ def _admin_db_tab():
 
 # --- Configuration Tab ---
 
+def _mask_sensitive_yaml(raw: str) -> str:
+    """Mask API keys and secrets in YAML text for display."""
+    import re
+    # Match lines like:  api_key: "value"  or  session_secret: "value"
+    sensitive_keys = r'(api_key|api_secret|client_id|client_secret|session_secret|token|password)'
+    def _mask_line(m):
+        prefix = m.group(1)
+        value = m.group(2).strip().strip('"').strip("'")
+        if not value or value.startswith("YOUR_") or value == "":
+            return m.group(0)  # don't mask placeholders
+        masked = value[:4] + "****" + value[-2:] if len(value) > 8 else "********"
+        return f'{prefix}"{masked}"'
+    return re.sub(
+        rf'({sensitive_keys}\s*:\s*)"?([^"\n]+)"?',
+        _mask_line, raw, flags=re.IGNORECASE
+    )
+
+
 def _admin_config_tab():
     st.subheader("Configuration")
 
@@ -1997,23 +2043,32 @@ def _admin_config_tab():
 
     st.divider()
 
-    # Editable config
+    # Editable config — mask sensitive values in display
     st.markdown("**Edit Configuration**")
-    st.caption("Edit the YAML below and click Save. Changes take effect on next component restart.")
-    edited = st.text_area("config.yaml", value=raw, height=400, key="config_editor")
+    st.caption("API keys and secrets are masked. Edit the YAML below and click Save. "
+               "Changes take effect on next component restart.")
+
+    # Toggle to reveal/mask sensitive values
+    show_secrets = st.checkbox("🔓 Reveal sensitive values", value=False, key="reveal_secrets")
+    display_raw = raw if show_secrets else _mask_sensitive_yaml(raw)
+
+    edited = st.text_area("config.yaml", value=display_raw, height=400, key="config_editor")
 
     if st.button("💾 Save Configuration", key="save_config"):
-        try:
-            # Validate YAML
-            parsed = yaml.safe_load(edited)
-            if not isinstance(parsed, dict):
-                st.error("Invalid YAML — must be a mapping")
-            else:
-                with open(config_path, "w") as f:
-                    f.write(edited)
-                st.success("Configuration saved. Restart components to apply changes.")
-        except yaml.YAMLError as e:
-            st.error(f"YAML syntax error: {e}")
+        # Prevent saving masked values
+        if not show_secrets and "****" in edited:
+            st.error("Cannot save masked values. Enable 'Reveal sensitive values' first, then edit and save.")
+        else:
+            try:
+                parsed = yaml.safe_load(edited)
+                if not isinstance(parsed, dict):
+                    st.error("Invalid YAML — must be a mapping")
+                else:
+                    with open(config_path, "w") as f:
+                        f.write(edited)
+                    st.success("Configuration saved. Restart components to apply changes.")
+            except yaml.YAMLError as e:
+                st.error(f"YAML syntax error: {e}")
 
 
 # --- Logs Tab ---
@@ -2021,21 +2076,39 @@ def _admin_config_tab():
 def _admin_logs_tab():
     st.subheader("System Logs")
 
+    log_files = {
+        "Dashboard": "./logs/dashboard.log",
+        "Scheduler": "./logs/scheduler.log",
+        "ES Strategy": "./logs/es_strategy.log",
+        "Confidence API": "./logs/confidence_api.log",
+        "Metrics Exporter": "./logs/metrics_exporter.log",
+    }
+
     log_source = st.selectbox("Log Source", [
-        "Dashboard Log (/tmp/dashboard.log)",
+        *[f"{name} ({path})" for name, path in log_files.items()],
         "Pipeline (last run)",
         "Model Files",
     ], key="log_source")
 
-    if log_source.startswith("Dashboard"):
-        log_path = "/tmp/dashboard.log"
+    # Check if it's a log file selection
+    log_match = next((path for name, path in log_files.items()
+                      if log_source.startswith(name)), None)
+
+    if log_match:
         try:
-            with open(log_path) as f:
+            with open(log_match) as f:
                 lines = f.readlines()
             n = st.slider("Lines (most recent)", 20, 200, 50, key="log_lines")
-            st.code("".join(lines[-n:]), language="log")
+            # Filter option to hide deprecation warnings
+            hide_deprecation = st.checkbox("Hide deprecation warnings", value=True, key="hide_depr")
+            filtered = lines
+            if hide_deprecation:
+                filtered = [l for l in lines if "DeprecationWarning" not in l and "FutureWarning" not in l]
+            st.code("".join(filtered[-n:]), language="log")
+            if hide_deprecation and len(filtered) < len(lines):
+                st.caption(f"Filtered out {len(lines) - len(filtered)} deprecation warnings")
         except FileNotFoundError:
-            st.info("No dashboard log found at /tmp/dashboard.log")
+            st.info(f"No log found at {log_match}")
         except Exception as e:
             st.error(f"Error reading log: {e}")
 
@@ -2239,7 +2312,7 @@ elif page == "🔬 What-If Analysis":
     page_whatif()
 elif page == "📉 Monitoring":
     page_monitoring()
-elif page == "📉 Grafana (compare)":
+elif page == "📊 Grafana Dashboards":
     page_grafana()
 elif page == "⚙️ Admin":
     page_admin()
