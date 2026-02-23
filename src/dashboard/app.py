@@ -261,7 +261,7 @@ st.markdown(
     .js-plotly-plot .plotly .main-svg { background: transparent !important; }
 
     /* ===== Compact vertical spacing ===== */
-    .block-container { padding-top: 1rem !important; padding-bottom: 0 !important; }
+    .block-container { padding-top: 2.5rem !important; padding-bottom: 0 !important; }
     [data-testid="stVerticalBlock"] > div { gap: 0.4rem !important; }
     [data-testid="stMetric"] { padding: 4px 0 !important; }
     [data-testid="stExpander"] {

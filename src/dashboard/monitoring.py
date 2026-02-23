@@ -1114,7 +1114,7 @@ def _ds_earnings():
         st.metric("Total Entries", f"{count:,}")
 
         upcoming = pd.read_sql_query(
-            "SELECT date, ticker, market_cap_rank FROM earnings_calendar "
+            "SELECT date, ticker, market_cap_pct FROM earnings_calendar "
             "WHERE date >= date('now') ORDER BY date ASC LIMIT 30", conn
         )
         if not upcoming.empty:
@@ -1123,7 +1123,7 @@ def _ds_earnings():
             st.dataframe(upcoming, use_container_width=True, hide_index=True)
 
         recent = pd.read_sql_query(
-            "SELECT date, ticker, market_cap_rank FROM earnings_calendar "
+            "SELECT date, ticker, market_cap_pct FROM earnings_calendar "
             "WHERE date < date('now') ORDER BY date DESC LIMIT 30", conn
         )
         if not recent.empty:
@@ -1151,19 +1151,19 @@ def _ds_fed_comms():
         st.metric("Total Entries", f"{count:,}")
 
         recent = pd.read_sql_query(
-            "SELECT date, doc_type, hawkish_score, dovish_score, net_score "
+            "SELECT date, type, hawkish_score, summary "
             "FROM fed_communications ORDER BY date DESC LIMIT 30", conn
         )
         if not recent.empty:
             # Sentiment chart
             fig = go.Figure()
             fig.add_trace(go.Bar(
-                x=recent["date"], y=recent["net_score"],
-                marker_color=[COLORS["red"] if v > 0 else COLORS["green"] for v in recent["net_score"]],
-                name="Net Score (+ = hawkish)",
+                x=recent["date"], y=recent["hawkish_score"],
+                marker_color=[COLORS["red"] if v > 0 else COLORS["green"] for v in recent["hawkish_score"]],
+                name="Hawkish Score (+ = hawkish)",
             ))
             fig.update_layout(**DARK_LAYOUT, height=220,
-                              title=dict(text="Fed Sentiment (net score)", font=TITLE_FONT))
+                              title=dict(text="Fed Sentiment (hawkish score)", font=TITLE_FONT))
             st.plotly_chart(fig, use_container_width=True)
 
             st.dataframe(recent, use_container_width=True, hide_index=True)
