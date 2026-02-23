@@ -1,37 +1,24 @@
-"""Authentication for Streamlit — Local users + Google OAuth.
+"""Authentication for Streamlit — Local users (DB + bcrypt) + Google OAuth.
 
 Supports two modes:
-  1. Local users (default) — username/password from config.yaml
+  1. Local users (default) — username/bcrypt-hashed password in SQLite
   2. Google OAuth — when google_client_id is configured
 
-Config in config.yaml:
-  auth:
-    mode: "local"                # "local" or "google"
-    session_secret: "random-secret-key"
-    users:
-      admin:
-        password: "admin123"
-        role: "admin"
-        name: "Administrator"
-      user:
-        password: "user123"
-        role: "viewer"
-        name: "Default User"
-    google_client_id: ""
-    google_client_secret: ""
-    allowed_domains: []
-    allowed_emails: []
+Users are stored in the `users` table of spy.db with bcrypt-hashed passwords.
+Seed users from config.yaml are migrated on first run.
 """
 
 import os
 import json
-import time
 import hmac
 import hashlib
 import logging
+import sqlite3
 import urllib.parse
+from datetime import datetime
 from typing import Optional
 
+import bcrypt
 import requests
 import streamlit as st
 
@@ -42,8 +29,8 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 SCOPES = "openid email profile"
 
-# Default local users (used if not defined in config.yaml)
-DEFAULT_USERS = {
+# Default seed users (migrated to DB on first run)
+_SEED_USERS = {
     "admin": {"password": "admin123", "role": "admin", "name": "Administrator"},
     "user": {"password": "user123", "role": "viewer", "name": "Default User"},
 }
@@ -66,7 +53,7 @@ def _get_auth_config() -> dict:
     auth = cfg.get("auth", {})
     return {
         "mode": auth.get("mode", "local"),
-        "users": auth.get("users", DEFAULT_USERS),
+        "users": auth.get("users", {}),  # only used for seed migration
         "client_id": os.environ.get("GOOGLE_CLIENT_ID", auth.get("google_client_id", "")),
         "client_secret": os.environ.get(
             "GOOGLE_CLIENT_SECRET", auth.get("google_client_secret", "")
@@ -77,6 +64,169 @@ def _get_auth_config() -> dict:
             "SESSION_SECRET", auth.get("session_secret", "stockanalysis-default-secret")
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Database-backed user management
+# ---------------------------------------------------------------------------
+
+def _get_db_path() -> str:
+    """Resolve the spy.db path."""
+    import yaml
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "config.yaml",
+    )
+    try:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+    return cfg.get("database", {}).get("path", "./data/spy.db")
+
+
+def _get_user_db() -> sqlite3.Connection:
+    """Get a connection to the user database, ensuring the table exists."""
+    db_path = _get_db_path()
+    conn = sqlite3.connect(db_path, timeout=5)
+    conn.row_factory = sqlite3.Row
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            name TEXT,
+            role TEXT DEFAULT 'viewer',
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def _ensure_users_seeded():
+    """Migrate seed users from config.yaml to DB on first run (one-time)."""
+    conn = _get_user_db()
+    count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if count > 0:
+        conn.close()
+        return  # already seeded
+
+    # Seed from config.yaml users or defaults
+    cfg = _get_auth_config()
+    seed = cfg.get("users", {}) or _SEED_USERS
+    now = datetime.now().isoformat()
+    for username, data in seed.items():
+        pw = data.get("password", "changeme")
+        pw_hash = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash, name, role, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (username, pw_hash, data.get("name", username), data.get("role", "viewer"), now, now),
+        )
+    conn.commit()
+    conn.close()
+    logger.info(f"Seeded {len(seed)} users from config to database")
+
+
+def hash_password(password: str) -> str:
+    """Hash a password with bcrypt."""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against a bcrypt hash."""
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except Exception:
+        return False
+
+
+def db_get_user(username: str) -> Optional[dict]:
+    """Get a user from the database by username."""
+    _ensure_users_seeded()
+    conn = _get_user_db()
+    row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def db_list_users() -> list[dict]:
+    """List all users from the database."""
+    _ensure_users_seeded()
+    conn = _get_user_db()
+    rows = conn.execute("SELECT username, name, role, created_at, updated_at FROM users ORDER BY username").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def db_create_user(username: str, password: str, name: str = "", role: str = "viewer") -> bool:
+    """Create a new user in the database. Returns True on success."""
+    _ensure_users_seeded()
+    conn = _get_user_db()
+    now = datetime.now().isoformat()
+    pw_hash = hash_password(password)
+    try:
+        conn.execute(
+            "INSERT INTO users (username, password_hash, name, role, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (username, pw_hash, name or username, role, now, now),
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+
+def db_update_user(username: str, name: str = None, role: str = None, password: str = None) -> bool:
+    """Update an existing user. Only non-None fields are updated."""
+    conn = _get_user_db()
+    now = datetime.now().isoformat()
+    updates = []
+    params = []
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name)
+    if role is not None:
+        updates.append("role = ?")
+        params.append(role)
+    if password:
+        updates.append("password_hash = ?")
+        params.append(hash_password(password))
+    if not updates:
+        conn.close()
+        return False
+    updates.append("updated_at = ?")
+    params.append(now)
+    params.append(username)
+    conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = ?", params)
+    conn.commit()
+    changed = conn.total_changes > 0
+    conn.close()
+    return changed
+
+
+def db_delete_user(username: str) -> bool:
+    """Delete a user from the database."""
+    conn = _get_user_db()
+    conn.execute("DELETE FROM users WHERE username = ?", (username,))
+    conn.commit()
+    changed = conn.total_changes > 0
+    conn.close()
+    return changed
+
+
+def db_user_count() -> int:
+    """Return the total number of users."""
+    _ensure_users_seeded()
+    conn = _get_user_db()
+    count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    conn.close()
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +300,7 @@ def _read_cookie() -> Optional[str]:
 def _restore_session_from_cookie():
     """If session_state is empty but a valid cookie exists, restore the session."""
     if st.session_state.get("auth_user") is not None:
-        return  # already authenticated
+        return
     token = _read_cookie()
     if not token:
         return
@@ -188,19 +338,18 @@ def logout():
 
 
 # ---------------------------------------------------------------------------
-# Local authentication
+# Local authentication (DB-backed with bcrypt)
 # ---------------------------------------------------------------------------
 
 def _authenticate_local_user(username: str, password: str) -> Optional[dict]:
-    """Validate username/password against config. Returns user dict or None."""
-    cfg = _get_auth_config()
-    users = cfg.get("users", DEFAULT_USERS)
-    entry = users.get(username)
-    if entry and entry.get("password") == password:
+    """Validate username/password against the database. Returns user dict or None."""
+    _ensure_users_seeded()
+    user = db_get_user(username)
+    if user and verify_password(password, user["password_hash"]):
         return {
             "email": f"{username}@local",
-            "name": entry.get("name", username),
-            "role": entry.get("role", "viewer"),
+            "name": user.get("name", username),
+            "role": user.get("role", "viewer"),
             "username": username,
         }
     return None
@@ -212,7 +361,6 @@ def _authenticate_local_user(username: str, password: str) -> Optional[dict]:
 
 def _get_redirect_uri() -> str:
     """Build the OAuth redirect URI from the current Streamlit URL."""
-    # In production, set STREAMLIT_URL env var
     base = os.environ.get("STREAMLIT_URL", "http://localhost:8501")
     return base.rstrip("/") + "/"
 
@@ -229,7 +377,6 @@ def handle_oauth_callback():
         return
 
     try:
-        # Exchange code for tokens
         resp = requests.post(
             GOOGLE_TOKEN_URL,
             data={
@@ -247,7 +394,6 @@ def handle_oauth_callback():
             logger.error("No access_token in OAuth response: %s", tokens)
             return
 
-        # Fetch user info
         user_resp = requests.get(
             GOOGLE_USERINFO_URL,
             headers={"Authorization": f"Bearer {access_token}"},
@@ -257,7 +403,6 @@ def handle_oauth_callback():
         email = user_info.get("email", "")
         domain = email.split("@")[-1] if email else ""
 
-        # Check allowed domains / emails
         if cfg["allowed_domains"] and domain not in cfg["allowed_domains"]:
             st.error(f"Domain @{domain} is not allowed.")
             return
@@ -265,12 +410,11 @@ def handle_oauth_callback():
             st.error(f"Email {email} is not in the allow list.")
             return
 
-        # Set session
         session_user = {
             "email": email,
             "name": user_info.get("name", email),
             "picture": user_info.get("picture", ""),
-            "role": "admin",  # Google users get admin by default
+            "role": "admin",
         }
         st.session_state["auth_user"] = session_user
         st.session_state["auth_token"] = create_session_token(session_user)
@@ -300,11 +444,9 @@ def render_login_page() -> bool:
         unsafe_allow_html=True,
     )
 
-    # Center the login form
     _, col, _ = st.columns([1, 2, 1])
 
     with col:
-        # --- Local login form ---
         if mode == "local" or not has_google:
             with st.form("login_form"):
                 username = st.text_input("Username")
@@ -322,13 +464,11 @@ def render_login_page() -> bool:
                     else:
                         st.error("Invalid username or password")
 
-            # Show Google option if credentials exist even in local mode
             if has_google:
                 st.divider()
                 st.caption("Or sign in with Google")
                 _render_google_button(cfg)
 
-        # --- Google OAuth primary ---
         elif mode == "google" and has_google:
             _render_google_button(cfg)
             st.divider()

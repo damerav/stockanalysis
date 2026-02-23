@@ -28,6 +28,11 @@ from src.auth.google_oauth import (
     handle_oauth_callback,
     render_login_page,
     logout,
+    db_list_users,
+    db_create_user,
+    db_update_user,
+    db_delete_user,
+    db_user_count,
 )
 from src.dashboard.monitoring import page_monitoring
 from src.data.db_router import get_router, ANALYTICS_TABLES
@@ -1452,7 +1457,6 @@ def _admin_users_tab():
 
     config = _load_config()
     auth = config.get("auth", {})
-    users = auth.get("users", {})
     mode = auth.get("mode", "local")
 
     # Current user info
@@ -1461,36 +1465,32 @@ def _admin_users_tab():
     is_admin = current_role == "admin"
 
     st.markdown(f'<p style="color:#94A3B8;font-size:0.85rem;">Auth mode: <b>{mode}</b> · '
-                f'Logged in as: <b>{current_user.get("name", "—")}</b> ({current_role})</p>',
+                f'Logged in as: <b>{current_user.get("name", "—")}</b> ({current_role}) · '
+                f'Storage: <b>Database (bcrypt)</b></p>',
                 unsafe_allow_html=True)
+
+    # --- User list ---
+    users = db_list_users()
 
     if not is_admin:
         st.warning("Only admin users can manage users.")
-        # Still show the user list (read-only)
         if users:
-            rows = []
-            for uname, udata in users.items():
-                rows.append({
-                    "Username": uname,
-                    "Name": udata.get("name", ""),
-                    "Role": udata.get("role", "viewer"),
-                })
+            rows = [{"Username": u["username"], "Name": u["name"], "Role": u["role"]} for u in users]
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         return
 
-    # --- User list ---
     st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">CURRENT USERS</p>',
                 unsafe_allow_html=True)
 
     if users:
-        rows = []
-        for uname, udata in users.items():
-            rows.append({
-                "Username": uname,
-                "Name": udata.get("name", ""),
-                "Role": udata.get("role", "viewer"),
-                "Password": "••••••••",
-            })
+        rows = [{
+            "Username": u["username"],
+            "Name": u["name"],
+            "Role": u["role"],
+            "Password": "🔒 bcrypt",
+            "Created": (u.get("created_at") or "—")[:19],
+            "Updated": (u.get("updated_at") or "—")[:19],
+        } for u in users]
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info("No users configured")
@@ -1513,17 +1513,15 @@ def _admin_users_tab():
         if st.form_submit_button("➕ Add User"):
             if not new_username or not new_password:
                 st.error("Username and password are required")
-            elif new_username in users:
-                st.error(f"User '{new_username}' already exists")
+            elif len(new_password) < 6:
+                st.error("Password must be at least 6 characters")
             else:
-                users[new_username] = {
-                    "password": new_password,
-                    "name": new_name or new_username,
-                    "role": new_role,
-                }
-                _save_users(config, users)
-                st.success(f"User '{new_username}' added")
-                st.rerun()
+                ok = db_create_user(new_username, new_password, new_name or new_username, new_role)
+                if ok:
+                    st.success(f"User '{new_username}' created (password bcrypt-hashed)")
+                    st.rerun()
+                else:
+                    st.error(f"User '{new_username}' already exists")
 
     st.divider()
 
@@ -1531,20 +1529,23 @@ def _admin_users_tab():
     st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">EDIT / DELETE USER</p>',
                 unsafe_allow_html=True)
 
-    if users:
-        sel_user = st.selectbox("Select user", list(users.keys()), key="edit_user_select")
-        udata = users.get(sel_user, {})
+    usernames = [u["username"] for u in users]
+    if usernames:
+        sel_user = st.selectbox("Select user", usernames, key="edit_user_select")
+        sel_data = next((u for u in users if u["username"] == sel_user), {})
 
         with st.form("edit_user_form"):
             ec1, ec2 = st.columns(2)
             with ec1:
-                edit_name = st.text_input("Display Name", value=udata.get("name", ""), key="edit_name")
+                edit_name = st.text_input("Display Name", value=sel_data.get("name", ""), key="edit_name")
                 edit_role = st.selectbox("Role", ["viewer", "admin"],
-                                         index=0 if udata.get("role", "viewer") == "viewer" else 1,
+                                         index=0 if sel_data.get("role", "viewer") == "viewer" else 1,
                                          key="edit_role")
             with ec2:
                 edit_password = st.text_input("New Password (leave blank to keep current)",
                                               type="password", key="edit_password")
+                if edit_password:
+                    st.caption("Password will be bcrypt-hashed before storage")
 
             fc1, fc2 = st.columns(2)
             with fc1:
@@ -1553,22 +1554,21 @@ def _admin_users_tab():
                 delete_clicked = st.form_submit_button("🗑️ Delete User")
 
             if save_clicked:
-                users[sel_user]["name"] = edit_name
-                users[sel_user]["role"] = edit_role
-                if edit_password:
-                    users[sel_user]["password"] = edit_password
-                _save_users(config, users)
-                st.success(f"User '{sel_user}' updated")
-                st.rerun()
+                if edit_password and len(edit_password) < 6:
+                    st.error("Password must be at least 6 characters")
+                else:
+                    db_update_user(sel_user, name=edit_name, role=edit_role,
+                                   password=edit_password if edit_password else None)
+                    st.success(f"User '{sel_user}' updated")
+                    st.rerun()
 
             if delete_clicked:
                 if sel_user == current_user.get("username"):
                     st.error("Cannot delete your own account")
-                elif len(users) <= 1:
+                elif db_user_count() <= 1:
                     st.error("Cannot delete the last user")
                 else:
-                    del users[sel_user]
-                    _save_users(config, users)
+                    db_delete_user(sel_user)
                     st.success(f"User '{sel_user}' deleted")
                     st.rerun()
 
@@ -1590,13 +1590,6 @@ def _admin_users_tab():
             emails = auth.get("allowed_emails", [])
             st.text_input("Allowed Emails", value=", ".join(emails) if emails else "Any",
                           disabled=True)
-
-
-def _save_users(config: dict, users: dict):
-    """Save updated users back to config.yaml."""
-    config.setdefault("auth", {})["users"] = users
-    with open("config.yaml", "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
 # --- Actions Tab ---

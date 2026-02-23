@@ -27,3 +27,7 @@ Thumbs.db
 # Temp
 _tmp_*.py
 *.pyc
+test_*.py
+.pids/
+Kiro_Enhancement_Prompt.md
+SPY_SPX_Enhancement_Report.md

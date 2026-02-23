@@ -81,16 +81,9 @@ database:
 auth:
   mode: "local"                  # "local" or "google"
   session_secret: "change-me-to-random-secret"  # Signs session tokens
-  # Local users (mode: local)
-  users:
-    admin:
-      password: "admin123"
-      role: "admin"
-      name: "Administrator"
-    user:
-      password: "user123"
-      role: "viewer"
-      name: "Default User"
+  # Users are stored in the database with bcrypt-hashed passwords.
+  # Seed users (admin/admin123, user/user123) are auto-created on first run.
+  # Manage users via Admin → Users tab in the dashboard.
   # Google OAuth (mode: google)
   google_client_id: ""           # Set via GOOGLE_CLIENT_ID env var or here
   google_client_secret: ""       # Set via GOOGLE_CLIENT_SECRET env var or here

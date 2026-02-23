@@ -210,6 +210,18 @@ def _migrate_schema(conn: sqlite3.Connection):
             scored_at TEXT
         )
     """)
+
+    # Users table (bcrypt-hashed passwords)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            name TEXT,
+            role TEXT DEFAULT 'viewer',
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
     conn.commit()
 
 
