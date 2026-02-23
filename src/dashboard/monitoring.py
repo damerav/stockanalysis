@@ -39,30 +39,30 @@ PIDS_DIR = "./.pids"
 # ── Grafana-inspired dark theme for Plotly ────────────────────────────
 DARK_LAYOUT = dict(
     template="plotly_dark",
-    paper_bgcolor="#181b1f",
-    plot_bgcolor="#181b1f",
-    font=dict(color="#d8d9da", size=12),
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    font=dict(color="#E2E8F0", size=12),
     margin=dict(l=40, r=10, t=36, b=30),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    xaxis=dict(gridcolor="#2c3035", showgrid=True),
-    yaxis=dict(gridcolor="#2c3035", showgrid=True),
+    xaxis=dict(gridcolor="#1E2530", showgrid=True, zerolinecolor="#2A3040"),
+    yaxis=dict(gridcolor="#1E2530", showgrid=True, zerolinecolor="#2A3040"),
 )
 
 # Title style applied separately to avoid duplicate kwarg conflicts
 TITLE_FONT = dict(color="#FFFFFF", size=14)
 
 COLORS = {
-    "green": "#73BF69",
-    "red": "#F2495C",
-    "yellow": "#FF9830",
-    "blue": "#5794F2",
-    "cyan": "#8AB8FF",
-    "orange": "#FF9830",
-    "purple": "#B877D9",
+    "green": "#4ADE80",
+    "red": "#F87171",
+    "yellow": "#FBBF24",
+    "blue": "#6C9EFF",
+    "cyan": "#67E8F9",
+    "orange": "#FB923C",
+    "purple": "#C084FC",
     "white": "#FFFFFF",
-    "bg": "#181b1f",
-    "card_bg": "#1f2329",
-    "border": "#2c3035",
+    "bg": "#0E1117",
+    "card_bg": "#151A24",
+    "border": "#1E2530",
 }
 
 
@@ -73,7 +73,7 @@ def _badge(label: str, online: bool) -> str:
     return (
         f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
         f'border-radius:8px; padding:16px; text-align:center;">'
-        f'<div style="color:#999; font-size:0.8em; margin-bottom:4px;">{label}</div>'
+        f'<div style="color:#94A3B8; font-size:0.8em; margin-bottom:4px;">{label}</div>'
         f'<div style="color:{color}; font-size:1.4em; font-weight:bold;">{text}</div>'
         f'</div>'
     )
@@ -81,11 +81,11 @@ def _badge(label: str, online: bool) -> str:
 
 def _metric_card(label: str, value: str, color: str = "white", sub: str = "") -> str:
     c = COLORS.get(color, color)
-    sub_html = f'<div style="color:#999; font-size:0.75em;">{sub}</div>' if sub else ""
+    sub_html = f'<div style="color:#94A3B8; font-size:0.75em;">{sub}</div>' if sub else ""
     return (
         f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
         f'border-radius:8px; padding:16px; text-align:center;">'
-        f'<div style="color:#999; font-size:0.8em; margin-bottom:4px;">{label}</div>'
+        f'<div style="color:#94A3B8; font-size:0.8em; margin-bottom:4px;">{label}</div>'
         f'<div style="color:{c}; font-size:1.5em; font-weight:bold;">{value}</div>'
         f'{sub_html}</div>'
     )
@@ -116,7 +116,7 @@ def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
         ),
     ))
     fig.update_layout(
-        paper_bgcolor=COLORS["bg"], font=dict(color="#d8d9da"),
+        paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#E2E8F0"),
         height=height, margin=dict(l=20, r=20, t=50, b=20),
     )
     return fig
@@ -309,7 +309,7 @@ def tab_spy_predictor(days: int = 90):
             fig.add_hrect(y0=0, y1=30, fillcolor="rgba(115,191,105,0.1)", line_width=0)
             fig.add_hline(y=70, line_dash="dash", line_color=COLORS["red"], opacity=0.5)
             fig.add_hline(y=30, line_dash="dash", line_color=COLORS["green"], opacity=0.5)
-        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor="#2c3035", showgrid=True)}
+        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor="#1E2530", showgrid=True)}
         fig.update_layout(**rsi_layout, title=dict(text="RSI (14)", font=TITLE_FONT), height=220)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -363,7 +363,7 @@ def tab_spy_predictor(days: int = 90):
                 x=df["Rows"], y=df["Table"], orientation="h",
                 marker=dict(color=COLORS["blue"], line=dict(width=0)),
             ))
-            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor="#2c3035", showgrid=True)}
+            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor="#1E2530", showgrid=True)}
             fig.update_layout(**inv_layout, title=dict(text="Data Inventory", font=TITLE_FONT), height=220,
                               xaxis_title="Row Count")
             st.plotly_chart(fig, use_container_width=True)
@@ -672,7 +672,7 @@ def tab_confidence_api():
                 f'border-radius:8px; padding:20px;">'
                 f'<div style="color:{COLORS["yellow"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
                 f'⚠️ Models Not Loaded</div>'
-                f'<div style="color:#d8d9da; font-size:0.9em; line-height:1.6;">'
+                f'<div style="color:#E2E8F0; font-size:0.9em; line-height:1.6;">'
                 f'{"❌ Entry Gate (es_entry_gate.json)" if not entry_loaded else "✅ Entry Gate"}<br>'
                 f'{"❌ Exit Controller (es_exit_cnn.pt)" if not exit_loaded else "✅ Exit Controller"}<br><br>'
                 f'The ES strategy models need to be trained first.<br>'
@@ -708,13 +708,13 @@ def tab_confidence_api():
                 f'border-radius:8px; padding:20px;">'
                 f'<div style="color:{COLORS["blue"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
                 f'📡 API Endpoints</div>'
-                f'<div style="color:#d8d9da; font-size:0.9em; line-height:1.8; font-family:monospace;">'
+                f'<div style="color:#E2E8F0; font-size:0.9em; line-height:1.8; font-family:monospace;">'
                 f'GET  /health &nbsp;&nbsp;&nbsp;→ Service health<br>'
                 f'POST /confidence → Entry gate score<br>'
                 f'POST /exit &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Exit signal<br>'
                 f'POST /spread &nbsp;&nbsp;&nbsp;→ Update spread<br>'
                 f'</div>'
-                f'<div style="color:#999; font-size:0.8em; margin-top:10px;">'
+                f'<div style="color:#94A3B8; font-size:0.8em; margin-top:10px;">'
                 f'Base URL: http://localhost:8100</div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -763,7 +763,7 @@ def tab_pipeline_status():
         col.markdown(
             f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
             f'border-radius:8px; padding:20px; text-align:center;">'
-            f'<div style="color:#999; font-size:0.85em; margin-bottom:6px;">{label}</div>'
+            f'<div style="color:#94A3B8; font-size:0.85em; margin-bottom:6px;">{label}</div>'
             f'<div style="color:{color}; font-size:1.6em; font-weight:bold;">{text}</div>'
             f'</div>',
             unsafe_allow_html=True,
@@ -835,21 +835,21 @@ def tab_pipeline_status():
 def page_monitoring():
     """Main monitoring page with tabbed sub-dashboards."""
 
-    # Dark theme CSS
+    # Dark theme CSS (inherits from app.py global CSS, just override tab styling)
     st.markdown(
         f"""
         <style>
-        .stApp {{ background-color: {COLORS["bg"]}; }}
-        .stTabs [data-baseweb="tab-list"] {{ gap: 8px; }}
+        .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background-color: #0A0D12; border-radius: 8px; padding: 4px; }}
         .stTabs [data-baseweb="tab"] {{
-            background-color: {COLORS["card_bg"]};
-            border-radius: 6px 6px 0 0;
-            padding: 8px 20px;
-            color: #d8d9da;
+            background-color: transparent;
+            border-radius: 6px;
+            padding: 8px 16px;
+            color: #94A3B8;
+            font-weight: 500;
         }}
         .stTabs [aria-selected="true"] {{
-            background-color: {COLORS["blue"]} !important;
-            color: white !important;
+            background-color: {COLORS["card_bg"]} !important;
+            color: #FFFFFF !important;
         }}
         </style>
         """,

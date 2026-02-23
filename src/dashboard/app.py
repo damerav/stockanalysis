@@ -84,52 +84,195 @@ DATA_DIR = "./data"
 
 st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 
-# --- Global dark mode CSS (supplements .streamlit/config.toml dark theme) ---
+# --- Global dark mode CSS — modern high-contrast theme ---
 st.markdown(
     """<style>
-    /* Sidebar accent */
-    .stSidebar { background-color: #111317 !important; }
-    .stDivider { border-color: #2c3035 !important; }
+    /* ===== Base overrides ===== */
+    .stApp { background-color: #0E1117 !important; }
 
-    /* Dropdown menus */
-    [data-baseweb="popover"] { background-color: #1f2329 !important; }
-    [data-baseweb="popover"] li:hover { background-color: #2c3035 !important; }
-    [role="listbox"] { background-color: #1f2329 !important; }
-    [role="option"]:hover { background-color: #2c3035 !important; }
-
-    /* Form containers */
-    [data-testid="stForm"] {
-        background-color: #1f2329 !important;
-        border: 1px solid #3a3f47 !important;
-        border-radius: 10px;
-        padding: 24px !important;
+    /* Sidebar */
+    .stSidebar, section[data-testid="stSidebar"] {
+        background-color: #0A0D12 !important;
+        border-right: 1px solid #1E2530 !important;
+    }
+    .stSidebar .stRadio label {
+        color: #E2E8F0 !important;
+        font-size: 0.95rem !important;
     }
 
-    /* Text inputs — visible borders */
-    [data-testid="stForm"] input {
-        background-color: #272b33 !important;
-        border: 1px solid #3a3f47 !important;
-        border-radius: 6px !important;
-        color: #e8e9ea !important;
-        padding: 10px 12px !important;
+    /* Dividers — subtle but visible */
+    .stDivider, hr { border-color: #2A3040 !important; }
+
+    /* ===== Typography — bright and readable ===== */
+    h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+        color: #F1F5F9 !important;
+        font-weight: 700 !important;
     }
-    [data-testid="stForm"] input:focus {
-        border-color: #5794F2 !important;
-        box-shadow: 0 0 0 1px #5794F2 !important;
+    p, span, label, .stMarkdown, .stText, .stCaption,
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] span {
+        color: #E2E8F0 !important;
     }
 
-    /* Sign In button */
-    [data-testid="stForm"] button[kind="secondaryFormSubmit"],
-    [data-testid="stForm"] button {
-        background-color: #5794F2 !important;
-        color: #fff !important;
-        border: none !important;
-        border-radius: 6px !important;
-        padding: 10px 0 !important;
+    /* Metric values — large, white, crisp */
+    [data-testid="stMetricValue"] {
+        color: #FFFFFF !important;
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+    }
+    /* Metric labels — visible, not washed out */
+    [data-testid="stMetricLabel"] {
+        color: #94A3B8 !important;
+        font-size: 0.85rem !important;
+        font-weight: 500 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+    /* Metric delta */
+    [data-testid="stMetricDelta"] {
+        font-size: 0.85rem !important;
         font-weight: 600 !important;
     }
+
+    /* Captions — lighter gray, still readable */
+    .stCaption, [data-testid="stCaptionContainer"] {
+        color: #8899AA !important;
+        font-size: 0.8rem !important;
+    }
+
+    /* ===== Cards / Containers ===== */
+    [data-testid="stMetric"],
+    [data-testid="stMetricValue"],
+    [data-testid="column"] {
+        background-color: transparent !important;
+    }
+
+    /* Section headers with accent underline */
+    .stMarkdown h2, .stSubheader {
+        border-bottom: 2px solid #6C9EFF33;
+        padding-bottom: 6px;
+        margin-bottom: 12px !important;
+    }
+
+    /* ===== Dropdowns ===== */
+    [data-baseweb="popover"] { background-color: #151A24 !important; }
+    [data-baseweb="popover"] li { color: #E2E8F0 !important; }
+    [data-baseweb="popover"] li:hover { background-color: #1E2530 !important; }
+    [role="listbox"] { background-color: #151A24 !important; }
+    [role="option"] { color: #E2E8F0 !important; }
+    [role="option"]:hover { background-color: #1E2530 !important; }
+
+    /* Select boxes */
+    [data-baseweb="select"] > div {
+        background-color: #151A24 !important;
+        border-color: #2A3040 !important;
+        color: #E2E8F0 !important;
+    }
+
+    /* ===== Form containers (login) ===== */
+    [data-testid="stForm"] {
+        background-color: #151A24 !important;
+        border: 1px solid #2A3040 !important;
+        border-radius: 12px;
+        padding: 28px !important;
+    }
+    [data-testid="stForm"] input {
+        background-color: #1A1F2B !important;
+        border: 1px solid #2A3040 !important;
+        border-radius: 8px !important;
+        color: #F1F5F9 !important;
+        padding: 10px 14px !important;
+        font-size: 0.95rem !important;
+    }
+    [data-testid="stForm"] input:focus {
+        border-color: #6C9EFF !important;
+        box-shadow: 0 0 0 2px rgba(108, 158, 255, 0.25) !important;
+    }
+    [data-testid="stForm"] button[kind="secondaryFormSubmit"],
+    [data-testid="stForm"] button {
+        background-color: #6C9EFF !important;
+        color: #fff !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 10px 0 !important;
+        font-weight: 600 !important;
+        font-size: 0.95rem !important;
+    }
     [data-testid="stForm"] button:hover {
-        background-color: #4080e0 !important;
+        background-color: #5A8AE6 !important;
+    }
+
+    /* ===== Tabs ===== */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        background-color: #0A0D12 !important;
+        border-radius: 8px;
+        padding: 4px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #8899AA !important;
+        font-weight: 500 !important;
+        border-radius: 6px !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #FFFFFF !important;
+        background-color: #1A1F2B !important;
+    }
+
+    /* ===== DataFrames / Tables ===== */
+    [data-testid="stDataFrame"] {
+        border: 1px solid #1E2530 !important;
+        border-radius: 8px !important;
+    }
+
+    /* ===== Buttons ===== */
+    .stButton > button {
+        border: 1px solid #2A3040 !important;
+        border-radius: 8px !important;
+        color: #E2E8F0 !important;
+        font-weight: 500 !important;
+        transition: all 0.15s ease !important;
+    }
+    .stButton > button:hover {
+        border-color: #6C9EFF !important;
+        color: #FFFFFF !important;
+        background-color: #1A1F2B !important;
+    }
+
+    /* ===== Success/Warning/Error alerts ===== */
+    [data-testid="stAlert"] {
+        border-radius: 8px !important;
+        font-size: 0.9rem !important;
+    }
+
+    /* ===== Radio buttons (navigation) ===== */
+    .stRadio > div { gap: 2px !important; }
+    .stRadio label > div:first-child { display: none; }
+    .stRadio label {
+        padding: 8px 12px !important;
+        border-radius: 6px !important;
+        cursor: pointer !important;
+    }
+    .stRadio label:hover {
+        background-color: #1A1F2B !important;
+    }
+
+    /* ===== Plotly chart backgrounds ===== */
+    .js-plotly-plot .plotly .main-svg { background: transparent !important; }
+
+    /* ===== Compact vertical spacing ===== */
+    .block-container { padding-top: 1rem !important; padding-bottom: 0 !important; }
+    [data-testid="stVerticalBlock"] > div { gap: 0.4rem !important; }
+    [data-testid="stMetric"] { padding: 4px 0 !important; }
+    [data-testid="stExpander"] {
+        border: 1px solid #1E2530 !important;
+        border-radius: 8px !important;
+        background-color: #0A0D12 !important;
+    }
+    [data-testid="stExpander"] summary {
+        color: #94A3B8 !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
     }
     </style>""",
     unsafe_allow_html=True,
@@ -229,10 +372,15 @@ def page_spy():
     flow_alerts = state.get("flow_alerts", [])
     updated_at = state.get("updated_at", "")
 
-    st.title("📈 SPY/SPX Predictor")
-    if st.button("📉 View in Grafana", key="spy_to_grafana"):
-        st.session_state["_nav_target"] = "📉 Grafana Monitoring"
-        st.rerun()
+    # --- Compact header: title + Grafana button on one line ---
+    _hdr1, _hdr2 = st.columns([5, 1])
+    with _hdr1:
+        st.markdown('<h2 style="margin:0;padding:0;color:#F1F5F9;">📈 SPY/SPX Predictor</h2>',
+                    unsafe_allow_html=True)
+    with _hdr2:
+        if st.button("📉 Grafana", key="spy_to_grafana"):
+            st.session_state["_nav_target"] = "📉 Grafana Monitoring"
+            st.rerun()
 
     direction = prediction.get("direction", "NEUTRAL")
     scale_label = prediction.get("scale_label", "NEUTRAL")
@@ -246,77 +394,63 @@ def page_spy():
     }
     banner_color = color_map.get(scale_label, "#FFC107")
 
+    # --- Compact prediction banner ---
     if prediction:
         st.markdown(
-            f"""<div style="background-color:{banner_color}; padding:20px; border-radius:10px;
-            text-align:center; margin-bottom:20px;">
-            <h1 style="color:white; margin:0;">{scale_label.replace('_', ' ')}</h1>
-            <h2 style="color:white; margin:5px 0;">{confidence:.0f}% confidence</h2>
-            <p style="color:rgba(255,255,255,0.8); margin:0;">
-            ↑ {probs.get('up', 0):.0f}% | — {probs.get('neutral', 0):.0f}% | ↓ {probs.get('down', 0):.0f}%
-            </p></div>""",
+            f"""<div style="background:{banner_color}; padding:10px 20px; border-radius:10px;
+            text-align:center; margin-bottom:8px; display:flex; align-items:center; justify-content:center; gap:24px;">
+            <span style="color:#fff; font-size:1.4rem; font-weight:700;">{scale_label.replace('_', ' ')}</span>
+            <span style="color:#fff; font-size:1.2rem; font-weight:600;">{confidence:.0f}%</span>
+            <span style="color:rgba(255,255,255,0.85); font-size:0.95rem;">
+            ↑{probs.get('up', 0):.0f}% · —{probs.get('neutral', 0):.0f}% · ↓{probs.get('down', 0):.0f}%
+            </span></div>""",
             unsafe_allow_html=True,
         )
     else:
         st.info("Waiting for prediction data...")
 
-    # P2: Regime + Conformal prediction info row
-    p2_col1, p2_col2, p2_col3 = st.columns(3)
-    with p2_col1:
-        # Regime display
+    # --- Combined info row: Regime + Model + Live Macro (merged P2 + Macro into one row) ---
+    macro = _fetch_live_macro()
+    r1, r2, r3, r4, r5, r6, r7, r8 = st.columns(8)
+    with r1:
         regime = prediction.get("regime", "")
-        if regime:
-            regime_labels = {
-                "bull_trend": "🟢 Bull Trend",
-                "bear_trend": "🔴 Bear Trend",
-                "high_vol_choppy": "🟡 High-Vol Choppy",
-                "low_vol_range": "🔵 Low-Vol Range",
-            }
-            st.metric("Market Regime", regime_labels.get(regime, regime))
-    with p2_col2:
-        # Conformal prediction set
+        regime_labels = {
+            "bull_trend": "🟢 Bull", "bear_trend": "🔴 Bear",
+            "high_vol_choppy": "🟡 Choppy", "low_vol_range": "🔵 Range",
+        }
+        st.metric("Regime", regime_labels.get(regime, regime or "—"))
+    with r2:
+        if prediction.get("ensemble_used"):
+            st.metric("Model", "🔗 Ensemble")
+        else:
+            st.metric("Model", "🌲 XGB")
+    with r3:
         pred_set = prediction.get("prediction_set", [])
         is_low_conv = prediction.get("is_low_conviction", False)
         if pred_set:
-            set_str = " / ".join(pred_set)
-            if is_low_conv:
-                st.metric("Prediction Set", f"⚠️ {set_str}")
-                st.caption("LOW CONVICTION — multiple classes in set")
-            else:
-                st.metric("Prediction Set", f"✅ {set_str}")
-    with p2_col3:
-        # Ensemble info
-        if prediction.get("ensemble_used"):
-            st.metric("Model", "🔗 Ensemble")
-            st.caption("XGB + BiLSTM + LightGBM")
+            set_str = "/".join(pred_set)
+            st.metric("Conf. Set", f"{'⚠️' if is_low_conv else '✅'} {set_str}")
         else:
-            st.metric("Model", "🌲 XGBoost")
+            st.metric("Conf. Set", "—")
+    with r4:
+        v = macro.get("vix") if macro else None
+        vc = macro.get("vix_change") if macro else None
+        st.metric("VIX", f"{v:.1f}" if v else "—",
+                  delta=f"{vc:+.1f}" if vc else None, delta_color="inverse")
+    with r5:
+        v = macro.get("us10y_yield") if macro else None
+        st.metric("10Y", f"{v:.2f}%" if v else "—")
+    with r6:
+        v = macro.get("dxy") if macro else None
+        st.metric("DXY", f"{v:.1f}" if v else "—")
+    with r7:
+        v = macro.get("gold") if macro else None
+        st.metric("Gold", f"${v:,.0f}" if v else "—")
+    with r8:
+        v = macro.get("crude") if macro else None
+        st.metric("Crude", f"${v:.1f}" if v else "—")
 
-    # Live Macro Data (FRED) — cached 5 min
-    macro = _fetch_live_macro()
-    if macro and any(v is not None for v in macro.values()):
-        st.markdown("**📡 Live Macro (FRED)**")
-        lm1, lm2, lm3, lm4, lm5 = st.columns(5)
-        with lm1:
-            v = macro.get("vix")
-            vc = macro.get("vix_change")
-            st.metric("VIX", f"{v:.2f}" if v else "—",
-                      delta=f"{vc:+.2f}" if vc else None,
-                      delta_color="inverse")
-        with lm2:
-            v = macro.get("us10y_yield")
-            st.metric("10Y Yield", f"{v:.2f}%" if v else "—")
-        with lm3:
-            v = macro.get("dxy")
-            st.metric("DXY", f"{v:.2f}" if v else "—")
-        with lm4:
-            v = macro.get("gold")
-            st.metric("Gold", f"${v:,.0f}" if v else "—")
-        with lm5:
-            v = macro.get("crude")
-            st.metric("Crude", f"${v:.2f}" if v else "—")
-
-    # P3: Earnings + Fed + Extended Options row
+    # --- P3: Earnings + Fed + Options (compact row) ---
     try:
         import sqlite3 as _sql
         _conn = _sql.connect(os.path.join(DATA_DIR, "spy.db"))
@@ -324,30 +458,24 @@ def page_spy():
 
         p3_col1, p3_col2, p3_col3 = st.columns(3)
         with p3_col1:
-            # Earnings calendar
             from src.data.earnings_calendar import get_earnings_features as _get_earn
             earn = _get_earn(_conn, _today)
             density = earn.get("earnings_density", 0)
             days_next = earn.get("days_to_next_mega", 30)
             earn_week = earn.get("earnings_week", 0)
-            st.metric("📅 Earnings Density", f"{density} mega-caps",
+            st.metric("📅 Earnings", f"{density} mega-caps",
                       delta="Earnings Week" if earn_week else None,
                       delta_color="normal" if earn_week else "off")
-            st.caption(f"Next mega-cap in {days_next}d")
+            st.caption(f"Next in {days_next}d")
 
         with p3_col2:
-            # Fed sentiment
             from src.data.fed_comms import get_fed_features as _get_fed
             fed = _get_fed(_conn, _today)
-            fomc = fed.get("fomc_hawkish_score", 0)
-            bb = fed.get("beige_book_score", 0)
             avg = fed.get("fed_sentiment_avg", 0)
             label = "🦅 Hawkish" if avg > 0.2 else "🕊️ Dovish" if avg < -0.2 else "⚖️ Neutral"
-            st.metric("Fed Sentiment", label, delta=f"{avg:+.2f}")
-            st.caption(f"FOMC: {fomc:+.2f} | Beige Book: {bb:+.2f}")
+            st.metric("Fed", label, delta=f"{avg:+.2f}")
 
         with p3_col3:
-            # Extended options greeks
             opt_row = _conn.execute(
                 "SELECT vanna_exposure, charm_exposure, zero_dte_pcr "
                 "FROM options_analytics WHERE date = ? ORDER BY date DESC LIMIT 1",
@@ -357,14 +485,13 @@ def page_spy():
                 st.metric("Vanna", f"{opt_row[0]:,.0f}")
                 st.caption(f"Charm: {opt_row[1]:,.0f} | 0DTE P/C: {opt_row[2]:.2f}" if opt_row[1] else "")
             else:
-                st.metric("Extended Greeks", "—")
-                st.caption("Waiting for options data")
+                st.metric("Greeks", "—")
 
         _conn.close()
     except Exception:
-        pass  # P3 display is non-critical
+        pass
 
-    # Intraday Microstructure row (Enhancement 21)
+    # --- Microstructure (collapsible) ---
     try:
         import sqlite3 as _sql2
         _conn2 = _sql2.connect(os.path.join(DATA_DIR, "spy.db"))
@@ -376,114 +503,126 @@ def page_spy():
         import math
         has_data = any(not (isinstance(v, float) and math.isnan(v)) for v in micro.values())
         if has_data:
-            st.markdown("**🔬 Intraday Microstructure**")
-            mc1, mc2, mc3, mc4 = st.columns(4)
-            with mc1:
-                gap = micro.get("opening_gap_pct", 0) or 0
-                gap_emoji = "🟢" if gap > 0 else "🔴" if gap < 0 else "⚪"
-                st.metric("Opening Gap", f"{gap_emoji} {gap:+.2%}")
-                orb = micro.get("opening_range_breakout", 0) or 0
-                orb_label = "▲ Breakout" if orb > 0 else "▼ Breakdown" if orb < 0 else "— Inside"
-                st.caption(f"30-min range: {orb_label}")
-            with mc2:
-                cvh = micro.get("close_vs_high_pct", 0) or 0
-                cvl = micro.get("close_vs_low_pct", 0) or 0
-                st.metric("Close vs High", f"{cvh:+.2%}")
-                st.caption(f"Close vs Low: {cvl:+.2%}")
-            with mc3:
-                rev = micro.get("afternoon_reversal", 0) or 0
-                rev_label = "⚡ Reversal" if rev else "→ Continuation"
-                st.metric("Afternoon", rev_label)
-                ihv = micro.get("institutional_hour_vol", 0) or 0
-                st.caption(f"AM/PM vol ratio: {ihv:.2f}")
-            with mc4:
-                vrc = micro.get("vwap_reclaim_count", 0) or 0
-                st.metric("VWAP Crosses", f"{int(vrc)}")
-                td = micro.get("tick_divergence", 0) or 0
-                st.caption(f"Tick divergence: {td:.3f}")
+            with st.expander("🔬 Intraday Microstructure", expanded=False):
+                mc1, mc2, mc3, mc4 = st.columns(4)
+                with mc1:
+                    gap = micro.get("opening_gap_pct", 0) or 0
+                    gap_emoji = "🟢" if gap > 0 else "🔴" if gap < 0 else "⚪"
+                    st.metric("Gap", f"{gap_emoji} {gap:+.2%}")
+                    orb = micro.get("opening_range_breakout", 0) or 0
+                    orb_label = "▲ Break" if orb > 0 else "▼ Down" if orb < 0 else "— In"
+                    st.caption(f"30m: {orb_label}")
+                with mc2:
+                    cvh = micro.get("close_vs_high_pct", 0) or 0
+                    cvl = micro.get("close_vs_low_pct", 0) or 0
+                    st.metric("Cls/High", f"{cvh:+.2%}")
+                    st.caption(f"Cls/Low: {cvl:+.2%}")
+                with mc3:
+                    rev = micro.get("afternoon_reversal", 0) or 0
+                    st.metric("PM", "⚡ Rev" if rev else "→ Cont")
+                    ihv = micro.get("institutional_hour_vol", 0) or 0
+                    st.caption(f"AM/PM: {ihv:.2f}")
+                with mc4:
+                    vrc = micro.get("vwap_reclaim_count", 0) or 0
+                    st.metric("VWAP×", f"{int(vrc)}")
+                    td = micro.get("tick_divergence", 0) or 0
+                    st.caption(f"Tick div: {td:.3f}")
     except Exception:
-        pass  # Microstructure display is non-critical
+        pass
 
-    # P1: SHAP prediction drivers
+    # --- SHAP drivers (compact) ---
     shap_drivers = prediction.get("shap_drivers", [])
     if shap_drivers:
-        st.subheader("🔍 Prediction Drivers (SHAP)")
         driver_df = pd.DataFrame(shap_drivers)
         fig_shap = go.Figure()
-        colors = ["#00C853" if v > 0 else "#FF5722" for v in driver_df["shap_value"]]
+        colors = ["#4ADE80" if v > 0 else "#F87171" for v in driver_df["shap_value"]]
         fig_shap.add_trace(go.Bar(
             y=driver_df["feature"], x=driver_df["shap_value"],
             orientation="h", marker_color=colors,
             text=[f"{v:+.3f}" for v in driver_df["shap_value"]],
             textposition="outside",
+            textfont=dict(color="#E2E8F0", size=11),
             hovertemplate="Feature: %{y}<br>SHAP: %{x:.4f}<br>Value: %{customdata:.4f}",
             customdata=driver_df["feature_value"],
         ))
         fig_shap.update_layout(
-            height=200, margin=dict(l=10, r=10, t=10, b=10),
-            xaxis_title="SHAP contribution", yaxis=dict(autorange="reversed"),
+            height=160, margin=dict(l=10, r=10, t=5, b=5),
+            xaxis_title="SHAP", yaxis=dict(autorange="reversed"),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#E2E8F0", size=11),
+            xaxis=dict(gridcolor="#1E2530", zerolinecolor="#2A3040"),
         )
         st.plotly_chart(fig_shap, use_container_width=True)
 
+    # --- Main content: History + Indicators side by side ---
     col1, col2 = st.columns([3, 2])
 
     with col1:
-        st.subheader("Prediction History")
+        st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
+                    unsafe_allow_html=True)
         hist_df = load_prediction_history(20)
         if not hist_df.empty:
             colors = hist_df["direction"].map({
-                "BULLISH": "green", "STRONG_BULLISH": "darkgreen",
-                "BEARISH": "red", "STRONG_BEARISH": "darkred",
-                "NEUTRAL": "gray",
-            }).fillna("gray")
+                "BULLISH": "#4ADE80", "STRONG_BULLISH": "#22C55E",
+                "BEARISH": "#F87171", "STRONG_BEARISH": "#EF4444",
+                "NEUTRAL": "#64748B",
+            }).fillna("#64748B")
             fig = go.Figure()
             fig.add_trace(go.Bar(
                 x=hist_df["date"], y=hist_df["confidence"],
                 marker_color=colors.tolist(),
                 text=hist_df["direction"], textposition="outside",
+                textfont=dict(color="#E2E8F0", size=9),
                 hovertemplate="Date: %{x}<br>Direction: %{text}<br>Confidence: %{y:.0f}%",
             ))
-            fig.update_layout(height=350, margin=dict(l=20, r=20, t=30, b=20),
-                              yaxis_title="Confidence %", yaxis_range=[0, 100])
+            fig.update_layout(
+                height=220, margin=dict(l=10, r=10, t=5, b=25),
+                yaxis_title="Conf %", yaxis_range=[0, 100],
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#94A3B8", size=10),
+                xaxis=dict(gridcolor="#1E2530", tickfont=dict(size=9)),
+                yaxis=dict(gridcolor="#1E2530"),
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.caption("No prediction history yet")
 
+        # Accuracy tracking (collapsible)
         perf_df = load_performance()
         if not perf_df.empty:
-            st.subheader("Accuracy Tracking")
-            latest_acc = perf_df.iloc[0]["cumulative_accuracy"] if len(perf_df) > 0 else 0
-            st.metric("Cumulative Accuracy", f"{latest_acc:.1%}")
+            with st.expander("📊 Accuracy Tracking", expanded=False):
+                latest_acc = perf_df.iloc[0]["cumulative_accuracy"] if len(perf_df) > 0 else 0
+                st.metric("Cumulative Accuracy", f"{latest_acc:.1%}")
 
-            # P1: Stratified accuracy breakdown
-            if "confidence_tier" in perf_df.columns:
-                st.caption("Accuracy by Confidence Tier")
-                for tier in ["high", "medium", "low"]:
-                    tier_df = perf_df[perf_df["confidence_tier"] == tier]
-                    if not tier_df.empty:
-                        tier_acc = tier_df["correct"].mean()
-                        st.markdown(
-                            f'<span style="color:#d8d9da;">'
-                            f'{"🟢" if tier_acc >= 0.55 else "🟡" if tier_acc >= 0.50 else "🔴"} '
-                            f'{tier.title()}: {tier_acc:.1%} ({len(tier_df)} predictions)</span>',
-                            unsafe_allow_html=True,
-                        )
-            if "vix_regime" in perf_df.columns:
-                st.caption("Accuracy by VIX Regime")
-                for regime in ["low", "normal", "high"]:
-                    reg_df = perf_df[perf_df["vix_regime"] == regime]
-                    if not reg_df.empty:
-                        reg_acc = reg_df["correct"].mean()
-                        st.markdown(
-                            f'<span style="color:#d8d9da;">'
-                            f'VIX {regime}: {reg_acc:.1%} ({len(reg_df)})</span>',
-                            unsafe_allow_html=True,
-                        )
+                if "confidence_tier" in perf_df.columns:
+                    st.caption("By Confidence Tier")
+                    for tier in ["high", "medium", "low"]:
+                        tier_df = perf_df[perf_df["confidence_tier"] == tier]
+                        if not tier_df.empty:
+                            tier_acc = tier_df["correct"].mean()
+                            st.markdown(
+                                f'<span style="color:#E2E8F0;">'
+                                f'{"🟢" if tier_acc >= 0.55 else "🟡" if tier_acc >= 0.50 else "🔴"} '
+                                f'{tier.title()}: {tier_acc:.1%} ({len(tier_df)})</span>',
+                                unsafe_allow_html=True,
+                            )
+                if "vix_regime" in perf_df.columns:
+                    st.caption("By VIX Regime")
+                    for regime in ["low", "normal", "high"]:
+                        reg_df = perf_df[perf_df["vix_regime"] == regime]
+                        if not reg_df.empty:
+                            reg_acc = reg_df["correct"].mean()
+                            st.markdown(
+                                f'<span style="color:#E2E8F0;">'
+                                f'VIX {regime}: {reg_acc:.1%} ({len(reg_df)})</span>',
+                                unsafe_allow_html=True,
+                            )
 
-            st.dataframe(perf_df.head(10), use_container_width=True, hide_index=True)
+                st.dataframe(perf_df.head(10), use_container_width=True, hide_index=True)
 
     with col2:
-        st.subheader("Key Indicators")
+        st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
+                    unsafe_allow_html=True)
         if indicators:
             ic1, ic2 = st.columns(2)
             with ic1:
@@ -498,26 +637,26 @@ def page_spy():
         else:
             st.caption("Waiting for indicator data...")
 
-    st.subheader("Options Flow Alerts")
-    if flow_alerts:
-        for alert in flow_alerts[-15:]:
-            direction_emoji = "🔴" if alert.get("direction") == "PUT" else "🟢"
-            notional = alert.get("notional", 0)
-            legs = alert.get("legs", "")
-            legs_str = f" ({legs}×)" if legs else ""
-            st.markdown(
-                f'<span style="color:#d8d9da;">{direction_emoji} '
-                f'<b>{alert.get("timestamp", "")[:19]}</b> '
-                f'{alert.get("direction", "")} {alert.get("type", "")} '
-                f'{alert.get("symbol", "")} ${notional:,.0f}{legs_str}</span>',
-                unsafe_allow_html=True,
-            )
-    else:
-        st.caption("No options flow alerts yet")
+        # Options flow (compact, in expander)
+        with st.expander(f"⚡ Options Flow ({len(flow_alerts)} alerts)", expanded=bool(flow_alerts)):
+            if flow_alerts:
+                for alert in flow_alerts[-8:]:
+                    direction_emoji = "🔴" if alert.get("direction") == "PUT" else "🟢"
+                    notional = alert.get("notional", 0)
+                    legs = alert.get("legs", "")
+                    legs_str = f" ({legs}×)" if legs else ""
+                    st.markdown(
+                        f'<span style="color:#E2E8F0; font-family:monospace; font-size:0.8rem;">'
+                        f'{direction_emoji} {alert.get("timestamp", "")[:16]} '
+                        f'{alert.get("direction", "")} {alert.get("type", "")} '
+                        f'${notional:,.0f}{legs_str}</span>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.caption("No alerts yet")
 
-    st.divider()
-    st.markdown(f'<span style="color:#888;">Last updated: {updated_at or "N/A"}</span>',
-                unsafe_allow_html=True)
+    st.markdown(f'<p style="color:#475569; font-size:0.75rem; text-align:right; margin-top:4px;">'
+                f'Updated: {updated_at or "N/A"}</p>', unsafe_allow_html=True)
 
 
 # ======================================================================
