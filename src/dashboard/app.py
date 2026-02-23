@@ -2189,15 +2189,31 @@ def _grafana_summary_cards():
     pred = spy_state.get("prediction", {})
     indicators = spy_state.get("indicators", {})
 
+    # Get SPY last close from DB (spy_state.json doesn't carry it)
+    spy_close = None
+    try:
+        import sqlite3 as _sql3
+        _c = _sql3.connect(os.path.join(DATA_DIR, "spy.db"))
+        row = _c.execute(
+            "SELECT close FROM prices ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            spy_close = row[0]
+        _c.close()
+    except Exception:
+        pass
+
     with col1:
-        close = indicators.get("last_close", 0)
-        st.metric("SPY", f"${close:.2f}" if close else "—")
+        st.metric("SPY", f"${spy_close:.2f}" if spy_close else "—")
     with col2:
         direction = pred.get("direction", "—")
         conf = pred.get("confidence", 0)
         st.metric("Signal", direction, f"{conf:.0f}%")
     with col3:
-        vix = indicators.get("vix", 0)
+        vix = indicators.get("vix")
+        if vix is None:
+            macro = _fetch_live_macro()
+            vix = macro.get("vix")
         st.metric("VIX", f"{vix:.1f}" if vix else "—")
 
     # ES data
