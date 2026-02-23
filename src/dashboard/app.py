@@ -2239,11 +2239,16 @@ def page_grafana():
             st.session_state["_nav_target"] = "⚙️ Admin"
             st.rerun()
 
-    # --- Grafana dashboard selector ---
-    # Use the DGX LAN IP so the browser (on the user's machine) can reach Grafana
+    # --- Grafana URL resolution ---
+    config = _load_config_cached()
+    grafana_cfg = config.get("grafana", {})
     _dgx_ip = os.environ.get("DGX_IP", "192.168.1.211")
+    grafana_lan = grafana_cfg.get("lan_url", "") or os.environ.get("GRAFANA_HOST", f"http://{_dgx_ip}:3001")
+    grafana_ext = grafana_cfg.get("external_url", "") or os.environ.get("GRAFANA_EXTERNAL_URL", "")
     proxy_host = os.environ.get("GRAFANA_PROXY_HOST", f"http://{_dgx_ip}:9190")
-    grafana_host = os.environ.get("GRAFANA_HOST", f"http://{_dgx_ip}:3001")
+
+    # Use external URL if configured, otherwise fall back to LAN
+    grafana_host = grafana_ext if grafana_ext else grafana_lan
 
     grafana_tab = st.radio(
         "Grafana Dashboard",
@@ -2262,8 +2267,8 @@ def page_grafana():
 
     uid = dashboard_map.get(grafana_tab, "spy-predictor")
 
-    # Build embed URL — go directly to Grafana (anonymous access is enabled).
-    # Only route through the auth proxy when Google OAuth is active.
+    # Build embed URL — anonymous access is enabled in Grafana for kiosk mode.
+    # Route through auth proxy only when Google OAuth is active.
     user_info = get_user()
     use_proxy = (
         user_info
@@ -2289,6 +2294,9 @@ def page_grafana():
     if user_info and user_info.get("email") != "anonymous":
         st.sidebar.caption(f"Grafana user: {user_info['email']}")
 
+    if not grafana_ext:
+        st.sidebar.caption("ℹ️ Set `grafana.external_url` in config.yaml for external access")
+
     # Embed Grafana with JS bridge for intercepting navigation
     st.components.v1.html(
         f"""
@@ -2297,13 +2305,28 @@ def page_grafana():
                 width: 100%; height: {height}px; border: none;
                 border-radius: 8px; background: #181b1f;
             }}
+            .grafana-fallback {{
+                display: none; color: #94A3B8; text-align: center;
+                padding: 60px 20px; font-family: sans-serif;
+            }}
+            .grafana-fallback h3 {{ color: #E2E8F0; }}
+            .grafana-fallback a {{ color: #6C9EFF; }}
         </style>
-        <iframe id="grafana-embed" src="{embed_url}"></iframe>
+        <iframe id="grafana-embed" src="{embed_url}"
+                onload="document.getElementById('grafana-fallback').style.display='none';"
+                onerror="document.getElementById('grafana-fallback').style.display='block'; this.style.display='none';"></iframe>
+        <div id="grafana-fallback" class="grafana-fallback">
+            <h3>📊 Grafana Dashboard</h3>
+            <p>Unable to load embedded dashboard. This may happen when accessing externally.</p>
+            <p><a href="{grafana_host}/d/{uid}" target="_blank">Open Grafana directly ↗</a></p>
+            <p style="font-size:0.85rem; margin-top:16px;">
+                Default credentials: <code>admin</code> / <code>admin</code><br>
+                (Anonymous viewer access is enabled for embedded mode)
+            </p>
+        </div>
         <script>
-            // Intercept clicks inside Grafana that try to navigate away
             window.addEventListener('message', function(e) {{
                 if (e.data && e.data.type === 'navigate') {{
-                    // Could be used to trigger Streamlit navigation in the future
                     console.log('Grafana navigation:', e.data.url);
                 }}
             }});

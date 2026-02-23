@@ -90,6 +90,13 @@ auth:
   allowed_domains: []            # e.g. ["gmail.com"] — empty = any Google account
   allowed_emails: []             # e.g. ["user@gmail.com"] — empty = no whitelist
 
+# Grafana embedded dashboards
+grafana:
+  lan_url: "http://192.168.1.211:3001"           # LAN access URL
+  external_url: ""                                # External URL (e.g. http://trading.aiagenticinternational.org:3001)
+  # Default credentials: admin / admin (change GF_SECURITY_ADMIN_PASSWORD in cloud/.env)
+  # Anonymous access is enabled for embedded kiosk mode
+
 # Real-time AI Confidence API (GAP 2)
 confidence_api:
   host: "0.0.0.0"
