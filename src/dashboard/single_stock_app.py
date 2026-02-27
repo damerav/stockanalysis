@@ -198,7 +198,7 @@ def _build_technical_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
     fig.add_hline(y=30, row=4, col=1, line_dash="dash", line_color=COLORS["green"], opacity=0.4)
 
     fig.update_layout(
-        **{k: v for k, v in DARK_LAYOUT.items() if k not in ("xaxis", "yaxis")},
+        **{k: v for k, v in DARK_LAYOUT.items() if k not in ("xaxis", "yaxis", "legend")},
         height=700, showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
         xaxis_rangeslider_visible=False,
