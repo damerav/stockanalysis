@@ -1894,6 +1894,193 @@ def _admin_actions_tab():
         except Exception as e:
             st.error(f"Alert failed: {e}")
 
+    st.divider()
+
+    # ES Strategy AI Training Controls
+    st.markdown("**ES Strategy — AI Models**")
+    st.caption("Train the entry gate and exit controller for AI-assisted ES futures trading.")
+
+    # Model status indicators
+    entry_path = os.path.join("./models", "es_entry_gate.json")
+    exit_path = os.path.join("./models", "es_exit_cnn.pt")
+    entry_exists = os.path.exists(entry_path)
+    exit_exists = os.path.exists(exit_path)
+
+    mc1, mc2, mc3 = st.columns(3)
+    with mc1:
+        if entry_exists:
+            size_kb = os.path.getsize(entry_path) / 1024
+            mod_time = datetime.fromtimestamp(os.path.getmtime(entry_path)).strftime("%Y-%m-%d %H:%M")
+            st.success(f"✅ Entry Gate — {size_kb:.0f} KB")
+            st.caption(f"Last trained: {mod_time}")
+        else:
+            st.error("❌ Entry Gate — not trained")
+    with mc2:
+        if exit_exists:
+            size_kb = os.path.getsize(exit_path) / 1024
+            mod_time = datetime.fromtimestamp(os.path.getmtime(exit_path)).strftime("%Y-%m-%d %H:%M")
+            st.success(f"✅ Exit Controller — {size_kb:.0f} KB")
+            st.caption(f"Last trained: {mod_time}")
+        else:
+            st.error("❌ Exit Controller — not trained")
+    with mc3:
+        config = _load_config()
+        ai_enabled = config.get("es_strategy", {}).get("ai_enabled", False)
+        new_ai = st.toggle("AI Enabled", value=ai_enabled, key="es_ai_toggle",
+                            help="Toggle es_strategy.ai_enabled in config.yaml")
+        if new_ai != ai_enabled:
+            try:
+                with open("config.yaml") as f:
+                    raw = f.read()
+                if ai_enabled:
+                    raw = raw.replace("ai_enabled: true", "ai_enabled: false")
+                else:
+                    raw = raw.replace("ai_enabled: false", "ai_enabled: true")
+                with open("config.yaml", "w") as f:
+                    f.write(raw)
+                st.success(f"AI {'enabled' if new_ai else 'disabled'} — restart ES strategy to apply")
+                st.cache_data.clear()
+            except Exception as e:
+                st.error(f"Config update failed: {e}")
+
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        if st.button("🎯 Train Entry Gate", key="act_train_entry",
+                      help="Train XGBoost entry gate using triple-barrier labels on intraday data"):
+            with st.spinner("Training ES Entry Gate..."):
+                try:
+                    from src.es_strategy.ai_models import ESEntryGate
+                    from src.es_strategy.labeling import generate_training_dataset
+                    from src.es_strategy.indicators import compute_indicators
+                    config = _load_config()
+
+                    # Load intraday bars for training
+                    conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
+                    bars_df = pd.read_sql_query(
+                        "SELECT timestamp, open, high, low, close, volume, vwap "
+                        "FROM intraday_bars WHERE ticker='SPY' ORDER BY timestamp",
+                        conn,
+                    )
+                    conn.close()
+
+                    if bars_df.empty or len(bars_df) < 100:
+                        st.error(f"Insufficient intraday data ({len(bars_df)} bars). Need 100+.")
+                    else:
+                        # Compute indicators on bars
+                        from src.data.features import compute_atr
+                        bars_df["atr_14"] = compute_atr(bars_df["high"], bars_df["low"],
+                                                         bars_df["close"], 14)
+                        bars_df = bars_df.dropna(subset=["atr_14"])
+
+                        credit_C = config.get("es_strategy", {}).get("credit_C", 10.0)
+                        labels = generate_training_dataset(bars_df, credit_C=credit_C)
+
+                        # Build feature matrix from OHLCV + indicators
+                        feat_cols = ["open", "high", "low", "close", "volume"]
+                        if "vwap" in bars_df.columns:
+                            feat_cols.append("vwap")
+                        feat_cols.append("atr_14")
+                        X = bars_df[feat_cols].values.astype(np.float64)
+                        X = np.nan_to_num(X, nan=0.0)
+                        y = labels["entry_labels"].values
+
+                        gate = ESEntryGate(config)
+                        result = gate.train(X, y)
+                        if "error" in result:
+                            st.error(f"Training failed: {result['error']}")
+                        else:
+                            st.success(f"Entry Gate trained — accuracy: {result['accuracy']:.1%}")
+                            st.json(result)
+                except Exception as e:
+                    st.error(f"Entry Gate training failed: {e}")
+
+    with tc2:
+        if st.button("🛡️ Train Exit Controller", key="act_train_exit",
+                      help="Train CNN exit controller using reversal labels on intraday data"):
+            with st.spinner("Training ES Exit Controller..."):
+                try:
+                    from src.es_strategy.ai_models import ESExitController
+                    from src.es_strategy.labeling import generate_training_dataset
+                    config = _load_config()
+
+                    conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
+                    bars_df = pd.read_sql_query(
+                        "SELECT timestamp, open, high, low, close, volume, vwap "
+                        "FROM intraday_bars WHERE ticker='SPY' ORDER BY timestamp",
+                        conn,
+                    )
+                    conn.close()
+
+                    if bars_df.empty or len(bars_df) < 100:
+                        st.error(f"Insufficient intraday data ({len(bars_df)} bars). Need 100+.")
+                    else:
+                        from src.data.features import compute_atr
+                        bars_df["atr_14"] = compute_atr(bars_df["high"], bars_df["low"],
+                                                         bars_df["close"], 14)
+                        bars_df = bars_df.dropna(subset=["atr_14"])
+
+                        credit_C = config.get("es_strategy", {}).get("credit_C", 10.0)
+                        labels = generate_training_dataset(bars_df, credit_C=credit_C)
+
+                        feat_cols = ["open", "high", "low", "close", "volume"]
+                        if "vwap" in bars_df.columns:
+                            feat_cols.append("vwap")
+                        feat_cols.append("atr_14")
+
+                        # Build windowed sequences for CNN
+                        lookback = 20
+                        n_features = len(feat_cols)
+                        data = bars_df[feat_cols].values.astype(np.float64)
+                        data = np.nan_to_num(data, nan=0.0)
+                        y_exit = labels["exit_labels"].values
+
+                        X_windows = []
+                        y_windows = []
+                        for i in range(lookback, len(data)):
+                            X_windows.append(data[i - lookback:i])
+                            y_windows.append(y_exit[i])
+                        X_windows = np.array(X_windows)
+                        y_windows = np.array(y_windows)
+
+                        if len(X_windows) < 50:
+                            st.error("Not enough windowed samples for training")
+                        else:
+                            import torch
+                            import torch.nn as nn
+
+                            controller = ESExitController(n_features=n_features, lookback=lookback)
+                            controller.build_model()
+
+                            # Simple training loop
+                            X_t = torch.FloatTensor(X_windows).unsqueeze(1)
+                            y_t = torch.FloatTensor(y_windows)
+                            split = int(len(X_t) * 0.8)
+
+                            optimizer = torch.optim.Adam(controller.model.parameters(), lr=0.001)
+                            loss_fn = nn.BCEWithLogitsLoss()
+
+                            controller.model.train()
+                            for epoch in range(30):
+                                optimizer.zero_grad()
+                                out = controller.model(X_t[:split]).squeeze()
+                                loss = loss_fn(out, y_t[:split])
+                                loss.backward()
+                                optimizer.step()
+
+                            # Validation
+                            controller.model.eval()
+                            with torch.no_grad():
+                                val_out = torch.sigmoid(controller.model(X_t[split:]).squeeze())
+                                val_pred = (val_out > 0.5).float()
+                                val_acc = (val_pred == y_t[split:]).float().mean().item()
+
+                            controller.save()
+                            st.success(f"Exit Controller trained — val accuracy: {val_acc:.1%}")
+                            st.json({"val_accuracy": round(val_acc, 3), "samples": len(X_windows),
+                                     "model_path": "./models/es_exit_cnn.pt"})
+                except Exception as e:
+                    st.error(f"Exit Controller training failed: {e}")
+
 
 # --- Database Tab ---
 
