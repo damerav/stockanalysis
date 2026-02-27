@@ -7,7 +7,6 @@ Usage:
 import os
 import sys
 import json
-import time
 import logging
 import urllib.parse
 import requests
@@ -101,10 +100,6 @@ st.markdown(
     .stSidebar, section[data-testid="stSidebar"] {
         background-color: #0A0D12 !important;
         border-right: 1px solid #1E2530 !important;
-    }
-    .stSidebar .stRadio label {
-        color: #E2E8F0 !important;
-        font-size: 0.95rem !important;
     }
 
     /* Dividers — subtle but visible */
@@ -209,23 +204,6 @@ st.markdown(
         background-color: #5A8AE6 !important;
     }
 
-    /* ===== Tabs ===== */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        background-color: #0A0D12 !important;
-        border-radius: 8px;
-        padding: 4px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        color: #8899AA !important;
-        font-weight: 500 !important;
-        border-radius: 6px !important;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #FFFFFF !important;
-        background-color: #1A1F2B !important;
-    }
-
     /* ===== DataFrames / Tables ===== */
     [data-testid="stDataFrame"] {
         border: 1px solid #1E2530 !important;
@@ -250,18 +228,6 @@ st.markdown(
     [data-testid="stAlert"] {
         border-radius: 8px !important;
         font-size: 0.9rem !important;
-    }
-
-    /* ===== Radio buttons (navigation) ===== */
-    .stRadio > div { gap: 2px !important; }
-    .stRadio label > div:first-child { display: none; }
-    .stRadio label {
-        padding: 8px 12px !important;
-        border-radius: 6px !important;
-        cursor: pointer !important;
-    }
-    .stRadio label:hover {
-        background-color: #1A1F2B !important;
     }
 
     /* ===== Plotly chart backgrounds ===== */
@@ -304,24 +270,12 @@ if not is_authenticated():
 # --- User Info in Sidebar ---
 user = get_user()
 
-# --- Sidebar Navigation ---
+# --- Sidebar header ---
 st.sidebar.title("📊 Stock Analysis")
 if user:
     st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
-page = st.sidebar.radio(
-    "Navigate",
-    ["🔮 SPY Predictor", "📈 ES Strategy", "🧪 What-If Analysis",
-     "📊 Forecast", "🔍 Single-Stock",
-     "🖥️ Monitoring", "🔗 Grafana Dashboards", "⚙️ Admin"],
-    label_visibility="collapsed",
-)
-st.sidebar.divider()
-mode_label = "☁️ Cloud" if IS_CLOUD else "🖥️ Local"
-st.sidebar.caption(f"{mode_label} mode")
-if user and user.get("email") != "anonymous":
-    if st.sidebar.button("🚪 Sign Out", use_container_width=True):
-        logout()
-        st.rerun()
+
+# NOTE: st.navigation is called after all page functions are defined (see bottom of file)
 
 
 # ======================================================================
@@ -386,15 +340,9 @@ def page_spy():
     flow_alerts = state.get("flow_alerts", [])
     updated_at = state.get("updated_at", "")
 
-    # --- Compact header: title + Grafana button on one line ---
-    _hdr1, _hdr2 = st.columns([5, 1])
-    with _hdr1:
-        st.markdown('<h2 style="margin:0;padding:0;color:#F1F5F9;">📈 SPY/SPX Predictor</h2>',
-                    unsafe_allow_html=True)
-    with _hdr2:
-        if st.button("📉 Grafana", key="spy_to_grafana"):
-            st.session_state["_nav_target"] = "📉 Grafana Monitoring"
-            st.rerun()
+    # --- Compact header ---
+    st.markdown('<h2 style="margin:0;padding:0;color:#F1F5F9;">📈 SPY/SPX Predictor</h2>',
+                unsafe_allow_html=True)
 
     direction = prediction.get("direction", "NEUTRAL")
     scale_label = prediction.get("scale_label", "NEUTRAL")
@@ -747,9 +695,6 @@ def page_es():
     updated_at = state.get("updated_at", "")
 
     st.title("📊 ES Futures Strategy")
-    if st.button("📉 View in Grafana", key="es_to_grafana"):
-        st.session_state["_nav_target"] = "📉 Grafana Monitoring"
-        st.rerun()
 
     pos_status = position.get("status", "FLAT")
     pos_lots = position.get("lots", 0)
@@ -2446,25 +2391,6 @@ def page_grafana():
     _grafana_summary_cards()
     st.divider()
 
-    # --- Cross-navigation buttons ---
-    nav_cols = st.columns([1, 1, 1, 1, 3])
-    with nav_cols[0]:
-        if st.button("📈 SPY Details", use_container_width=True):
-            st.session_state["_nav_target"] = "📈 SPY Predictor"
-            st.rerun()
-    with nav_cols[1]:
-        if st.button("📊 ES Details", use_container_width=True):
-            st.session_state["_nav_target"] = "📊 ES Strategy"
-            st.rerun()
-    with nav_cols[2]:
-        if st.button("🔬 What-If", use_container_width=True):
-            st.session_state["_nav_target"] = "🔬 What-If Analysis"
-            st.rerun()
-    with nav_cols[3]:
-        if st.button("⚙️ Admin", use_container_width=True):
-            st.session_state["_nav_target"] = "⚙️ Admin"
-            st.rerun()
-
     # --- Mode toggle: Grafana iframe vs native Plotly ---
     if grafana_ok:
         view_mode = st.radio(
@@ -2542,30 +2468,32 @@ def page_grafana():
 
 
 # ======================================================================
-# ROUTER
+# ROUTER — st.navigation handles page dispatch
 # ======================================================================
 
-# Handle cross-page navigation from Grafana page buttons
-if "_nav_target" in st.session_state:
-    page = st.session_state.pop("_nav_target")
+_pages = {
+    "Markets": [
+        st.Page(page_spy, title="SPY Predictor", icon=":material/query_stats:", default=True),
+        st.Page(page_es, title="ES Strategy", icon=":material/candlestick_chart:"),
+        st.Page(page_whatif, title="What-If Analysis", icon=":material/science:"),
+        st.Page(page_forecast, title="Forecast", icon=":material/trending_up:"),
+        st.Page(page_single_stock, title="Single-Stock", icon=":material/search:"),
+    ],
+    "Operations": [
+        st.Page(page_monitoring, title="Monitoring", icon=":material/monitor_heart:"),
+        st.Page(page_grafana, title="Grafana Dashboards", icon=":material/dashboard:"),
+        st.Page(page_admin, title="Admin", icon=":material/settings:"),
+    ],
+}
 
-if page == "🔮 SPY Predictor":
-    page_spy()
-    time.sleep(15)
-    st.rerun()
-elif page == "📈 ES Strategy":
-    page_es()
-    time.sleep(5)
-    st.rerun()
-elif page == "🧪 What-If Analysis":
-    page_whatif()
-elif page == "📊 Forecast":
-    page_forecast()
-elif page == "🔍 Single-Stock":
-    page_single_stock()
-elif page == "🖥️ Monitoring":
-    page_monitoring()
-elif page == "🔗 Grafana Dashboards":
-    page_grafana()
-elif page == "⚙️ Admin":
-    page_admin()
+_pg = st.navigation(_pages)
+
+st.sidebar.divider()
+mode_label = "☁️ Cloud" if IS_CLOUD else "🖥️ Local"
+st.sidebar.caption(f"{mode_label} mode")
+if user and user.get("email") != "anonymous":
+    if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+        logout()
+        st.rerun()
+
+_pg.run()

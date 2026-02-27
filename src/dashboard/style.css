@@ -1,51 +1,58 @@
-/* --- HIDE STREAMLIT DEFAULTS --- */
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
+/* ============================================================
+   Stock Analysis — Unified Styling
+   Pill tabs + st.navigation sidebar + hidden Streamlit defaults
+   ============================================================ */
 
-/* --- SIDEBAR STYLING --- */
+/* --- HIDE STREAMLIT DEFAULTS --- */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+header { visibility: hidden; }
+
+/* --- SIDEBAR STYLING (st.navigation) --- */
 [data-testid="stSidebar"] {
     background-color: #0f1116 !important;
     border-right: 1px solid #1a1f2a !important;
 }
 
-/* Sidebar radio nav items — modern look */
-.stSidebar .stRadio label {
+/* Navigation link list */
+[data-testid="stSidebarNav"] ul {
+    padding-top: 0.75rem;
+}
+
+/* Individual nav links */
+[data-testid="stSidebarNav"] ul li a {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    padding: 0.55rem 0.9rem !important;
-    border-radius: 0.5rem !important;
-    font-size: 0.92rem !important;
-    font-weight: 500 !important;
-    color: #94A3B8 !important;
+    padding: 0.55rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.92rem;
+    font-weight: 500;
+    color: #94A3B8;
     transition: background-color 0.2s ease, color 0.2s ease;
     border-left: 3px solid transparent;
-    cursor: pointer !important;
+    text-decoration: none;
 }
 
-/* Active sidebar item */
-.stSidebar .stRadio label[data-checked="true"],
-.stSidebar .stRadio div[role="radiogroup"] label:has(input:checked) {
-    background-color: rgba(0, 128, 255, 0.12) !important;
+/* Active page link */
+[data-testid="stSidebarNav"] ul li a[aria-current="page"] {
+    background-color: rgba(0, 128, 255, 0.15) !important;
     color: #ffffff !important;
     border-left: 3px solid #0080ff !important;
+    font-weight: 600;
 }
 
-/* Hover effect */
-.stSidebar .stRadio label:hover {
-    background-color: rgba(255, 255, 255, 0.04) !important;
+/* Hover on nav links */
+[data-testid="stSidebarNav"] ul li a:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
     color: #E2E8F0 !important;
 }
-
-/* Hide radio circles */
-.stSidebar .stRadio > div { gap: 2px !important; }
-.stSidebar .stRadio label > div:first-child { display: none !important; }
 
 /* --- PILL-STYLE TAB STYLING --- */
 /* Tab bar container */
 .stTabs [data-baseweb="tab-list"] {
     display: flex;
-    gap: 8px !important;
+    gap: 10px !important;
     border-bottom: none !important;
     background-color: transparent !important;
     padding: 4px 0 !important;
@@ -55,16 +62,19 @@ footer {visibility: hidden;}
 /* Individual tab buttons — pill shape */
 .stTabs [data-baseweb="tab"] {
     background-color: transparent !important;
-    border: 1px solid #2A3040 !important;
+    border: 1px solid #333 !important;
     border-radius: 9999px !important;
-    padding: 6px 18px !important;
-    color: #8899AA !important;
+    padding: 8px 20px !important;
+    color: #a0a0a0 !important;
     font-weight: 500 !important;
     font-size: 0.88rem !important;
     transition: background-color 0.2s, color 0.2s, border-color 0.2s;
     white-space: nowrap;
     height: auto !important;
     min-height: 0 !important;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 /* Active/selected tab — blue pill */
@@ -82,7 +92,7 @@ footer {visibility: hidden;}
     border-color: #3A4050 !important;
 }
 
-/* Remove the orange/blue underline on tab focus */
+/* Remove focus ring / orange underline */
 .stTabs [data-baseweb="tab"]:focus {
     box-shadow: none !important;
     outline: none !important;
@@ -93,7 +103,7 @@ footer {visibility: hidden;}
     display: none !important;
 }
 
-/* Tab panel border — remove default */
+/* Remove tab border line */
 .stTabs [data-baseweb="tab-border"] {
     display: none !important;
 }
