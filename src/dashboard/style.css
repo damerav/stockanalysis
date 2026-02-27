@@ -1,10 +1,8 @@
 /* ============================================================
-   Stock Analysis Platform — TradingView-Inspired Design System
+   Stock Analysis Platform — Shared Layout & Structure CSS
    
-   Color palette derived from professional trading platforms:
-   - TradingView dark theme backgrounds & accent blue
-   - Bloomberg Terminal information density
-   - Modern fintech glassmorphism for cards
+   Theme colors are injected dynamically by theme.py via theme_css().
+   This file handles STRUCTURAL rules only (layout, spacing, shapes).
    ============================================================ */
 
 /* --- HIDE STREAMLIT DEFAULTS --- */
@@ -12,49 +10,35 @@
 footer { visibility: hidden; }
 
 /* ===== COMPACT PAGE LAYOUT — Maximize content real estate ===== */
-/* Tighter block container padding */
 .block-container {
     padding-top: 1rem !important;
     padding-bottom: 0 !important;
 }
-/* Reduce vertical gap between elements */
 [data-testid="stVerticalBlock"] > div {
     gap: 0.35rem !important;
 }
-/* Compact selectbox height inside toolbar rows */
 [data-testid="stSelectbox"] label,
 [data-testid="stSlider"] label {
     min-height: 0 !important;
 }
-/* Tighter columns */
 [data-testid="stHorizontalBlock"] {
     gap: 0.5rem !important;
     align-items: center;
 }
 
-/* ===== SIDEBAR — Deep dark panel ===== */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0C0E14 0%, #0F1118 100%) !important;
-    border-right: 1px solid #1C1F2E !important;
-}
-
-/* Section headers in sidebar (Markets / Operations) */
+/* ===== SIDEBAR — Always dark navy (structural) ===== */
 [data-testid="stSidebarNav"] span[data-testid="stSidebarNavSectionHeader"] {
-    color: #787B86 !important;
     font-size: 0.7rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.1em !important;
     text-transform: uppercase !important;
     padding: 0.5rem 1rem 0.25rem !important;
+    color: #787B86 !important;
 }
-
-/* Navigation link list */
 [data-testid="stSidebarNav"] ul {
     padding-top: 0.5rem;
     gap: 2px;
 }
-
-/* Individual nav links */
 [data-testid="stSidebarNav"] ul li a {
     display: flex;
     align-items: center;
@@ -69,22 +53,16 @@ footer { visibility: hidden; }
     border-left: 2px solid transparent;
     text-decoration: none;
 }
-
-/* Active page link — accent blue indicator */
 [data-testid="stSidebarNav"] ul li a[aria-current="page"] {
     background-color: rgba(41, 98, 255, 0.1) !important;
     color: #D1D4DC !important;
     border-left: 2px solid #2962FF !important;
     font-weight: 500;
 }
-
-/* Hover on nav links */
 [data-testid="stSidebarNav"] ul li a:hover {
     background-color: rgba(255, 255, 255, 0.03) !important;
     color: #D1D4DC !important;
 }
-
-/* Nav link icons */
 [data-testid="stSidebarNav"] ul li a span[data-testid="stIconMaterial"] {
     color: #787B86;
     font-size: 1.1rem;
@@ -93,25 +71,19 @@ footer { visibility: hidden; }
     color: #2962FF !important;
 }
 
-/* ===== PILL-STYLE TABS ===== */
-/* Tab bar container */
+/* ===== PILL-STYLE TABS (structural) ===== */
 .stTabs [data-baseweb="tab-list"] {
     display: flex;
     gap: 6px !important;
     border-bottom: none !important;
-    background-color: rgba(30, 34, 45, 0.5) !important;
     border-radius: 8px !important;
     padding: 4px !important;
     flex-wrap: wrap;
 }
-
-/* Individual tab buttons — pill shape */
 .stTabs [data-baseweb="tab"] {
-    background-color: transparent !important;
     border: none !important;
     border-radius: 6px !important;
     padding: 6px 16px !important;
-    color: #787B86 !important;
     font-weight: 500 !important;
     font-size: 0.82rem !important;
     transition: all 0.15s ease;
@@ -123,88 +95,38 @@ footer { visibility: hidden; }
     gap: 6px;
     letter-spacing: 0.01em;
 }
-
-/* Active/selected tab */
-.stTabs [aria-selected="true"] {
-    background-color: #2962FF !important;
-    color: #ffffff !important;
-    font-weight: 600 !important;
-}
-
-/* Hover on inactive tabs */
-.stTabs [data-baseweb="tab"]:hover {
-    background-color: rgba(255, 255, 255, 0.04) !important;
-    color: #D1D4DC !important;
-}
-
-/* Remove focus ring */
 .stTabs [data-baseweb="tab"]:focus {
     box-shadow: none !important;
     outline: none !important;
 }
-
-/* Remove the tab highlight bar & border */
 .stTabs [data-baseweb="tab-highlight"],
 .stTabs [data-baseweb="tab-border"] {
     display: none !important;
 }
-
-/* Tab panel content area */
 .stTabs [data-baseweb="tab-panel"] {
     padding-top: 1rem !important;
 }
 
-/* ===== GLASSMORPHISM METRIC CARDS ===== */
-/* Wrap st.metric in a frosted-glass card look */
+/* ===== STRUCTURAL — Borders, radius ===== */
 [data-testid="stMetric"] {
-    background: rgba(30, 34, 45, 0.6) !important;
-    backdrop-filter: blur(12px) !important;
-    -webkit-backdrop-filter: blur(12px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.05) !important;
     border-radius: 10px !important;
     padding: 14px 16px !important;
     transition: border-color 0.2s ease;
 }
-[data-testid="stMetric"]:hover {
-    border-color: rgba(41, 98, 255, 0.3) !important;
-}
-
-/* ===== EXPANDERS — Frosted glass ===== */
 [data-testid="stExpander"] {
-    background: rgba(30, 34, 45, 0.4) !important;
-    backdrop-filter: blur(8px) !important;
-    -webkit-backdrop-filter: blur(8px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.05) !important;
     border-radius: 10px !important;
 }
 [data-testid="stExpander"] summary {
-    color: #787B86 !important;
     font-weight: 600 !important;
     font-size: 0.82rem !important;
     letter-spacing: 0.02em;
 }
-[data-testid="stExpander"]:hover {
-    border-color: rgba(255, 255, 255, 0.08) !important;
-}
-
-/* ===== BUTTONS — Subtle, professional ===== */
 .stButton > button {
-    background-color: rgba(30, 34, 45, 0.6) !important;
-    border: 1px solid #2A2E39 !important;
     border-radius: 6px !important;
-    color: #D1D4DC !important;
     font-weight: 500 !important;
     font-size: 0.85rem !important;
     transition: all 0.15s ease !important;
-    backdrop-filter: blur(4px) !important;
 }
-.stButton > button:hover {
-    border-color: #2962FF !important;
-    color: #FFFFFF !important;
-    background-color: rgba(41, 98, 255, 0.1) !important;
-}
-
-/* Primary action buttons (inside forms) */
 [data-testid="stForm"] button,
 [data-testid="stForm"] button[kind="secondaryFormSubmit"] {
     background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%) !important;
@@ -214,27 +136,20 @@ footer { visibility: hidden; }
     padding: 10px 0 !important;
     font-weight: 600 !important;
     font-size: 0.9rem !important;
-    letter-spacing: 0.02em;
 }
 [data-testid="stForm"] button:hover {
     background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%) !important;
 }
-
-/* ===== DATAFRAMES — Clean borders ===== */
 [data-testid="stDataFrame"] {
-    border: 1px solid #2A2E39 !important;
     border-radius: 8px !important;
     overflow: hidden;
 }
-
-/* ===== ALERTS — Rounded, subtle ===== */
 [data-testid="stAlert"] {
     border-radius: 8px !important;
     font-size: 0.85rem !important;
-    backdrop-filter: blur(4px) !important;
 }
 
-/* ===== SCROLLBAR — Thin, dark ===== */
+/* ===== SCROLLBAR — Thin ===== */
 ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -243,9 +158,5 @@ footer { visibility: hidden; }
     background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-    background: #2A2E39;
     border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-    background: #363A45;
 }

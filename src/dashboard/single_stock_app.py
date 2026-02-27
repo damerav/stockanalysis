@@ -20,36 +20,27 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = "./data"
 
-DARK_LAYOUT = dict(
-    template="plotly_dark",
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#D1D4DC", size=12),
-    margin=dict(l=40, r=10, t=36, b=30),
-    xaxis=dict(gridcolor="#1C1F2E", showgrid=True),
-    yaxis=dict(gridcolor="#1C1F2E", showgrid=True),
+# Theme-aware colors and layout
+from src.dashboard.theme import (
+    get_colors as _get_theme_colors,
+    get_plotly_layout as _get_theme_layout,
+    metric_card as _theme_metric_card,
+    page_header, is_dark,
 )
 
-COLORS = {
-    "green": "#26A69A", "red": "#EF5350", "yellow": "#FFAB40",
-    "blue": "#2962FF", "cyan": "#00BCD4", "orange": "#FF7043",
-    "purple": "#AB47BC", "white": "#D1D4DC",
-}
+
+def _refresh_theme():
+    global DARK_LAYOUT, COLORS
+    COLORS = _get_theme_colors()
+    DARK_LAYOUT = _get_theme_layout()
+
+COLORS = _get_theme_colors()
+DARK_LAYOUT = _get_theme_layout()
 
 
 def _metric_card(label: str, value: str, color: str = "white", sub: str = "") -> str:
-    c = COLORS.get(color, color)
-    sub_html = f'<div style="color:#787B86; font-size:0.75em;">{sub}</div>' if sub else ""
-    return (
-        f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); '
-        f'border:1px solid rgba(255,255,255,0.05); '
-        f'border-radius:8px; padding:14px; text-align:center;">'
-        f'<div style="color:#787B86; font-size:0.7em; text-transform:uppercase; '
-        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{c}; font-size:1.4em; font-weight:600; '
-        f'font-variant-numeric:tabular-nums;">{value}</div>'
-        f'{sub_html}</div>'
-    )
+    _refresh_theme()
+    return _theme_metric_card(label, value, color, sub)
 
 
 @st.cache_data(ttl=300)
@@ -213,11 +204,11 @@ def _build_technical_chart(df: pd.DataFrame, ticker: str) -> go.Figure:
         xaxis_rangeslider_visible=False,
     )
     for i in range(1, 5):
-        fig.update_xaxes(gridcolor="#1C1F2E", row=i, col=1)
-        fig.update_yaxes(gridcolor="#1C1F2E", row=i, col=1)
+        fig.update_xaxes(gridcolor=COLORS["grid"], row=i, col=1)
+        fig.update_yaxes(gridcolor=COLORS["grid"], row=i, col=1)
     # Update subplot title colors
     for ann in fig.layout.annotations:
-        ann.font = dict(color="#787B86", size=11)
+        ann.font = dict(color=COLORS["text_secondary"], size=11)
 
     return fig
 
@@ -281,14 +272,11 @@ def _generate_ai_narrative(ticker: str, df: pd.DataFrame, perf: dict) -> str:
 
 def page_single_stock():
     """Render the 🔍 Single-Stock Analysis page."""
+    _refresh_theme()
     # ── Compact toolbar: title + controls on one line ──
     _t, _c1, _c2 = st.columns([4, 1, 1])
     with _t:
-        st.markdown(
-            '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
-            '🔍 Single-Stock Analysis</p>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(page_header('🔍 Single-Stock Analysis'), unsafe_allow_html=True)
     with _c1:
         ticker = st.selectbox("Ticker", ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
                                           "JPM", "V", "UNH", "XOM", "JNJ"],
@@ -459,11 +447,11 @@ def _render_news_tab(ticker: str):
         c1, c2 = st.columns([1, 2])
         with c1:
             st.markdown(
-                f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); border:1px solid rgba(255,255,255,0.05); border-radius:10px; padding:20px; text-align:center;">'
-                f'<div style="color:#787B86; font-size:0.8em;">SENTIMENT</div>'
+                f'<div style="background:{COLORS["card"]}; {"backdrop-filter:blur(12px);" if is_dark() else "box-shadow:0 1px 3px rgba(0,0,0,0.08);"} border:1px solid {COLORS["card_border"]}; border-radius:10px; padding:20px; text-align:center;">'
+                f'<div style="color:{COLORS["text_secondary"]}; font-size:0.8em;">SENTIMENT</div>'
                 f'<div style="color:{sent_color}; font-size:2em; font-weight:bold;">{sent_label}</div>'
-                f'<div style="color:#D1D4DC; font-size:1.1em;">{avg_sent:+.3f}</div>'
-                f'<div style="color:#787B86; font-size:0.8em;">{len(articles)} articles</div>'
+                f'<div style="color:{COLORS["text"]}; font-size:1.1em;">{avg_sent:+.3f}</div>'
+                f'<div style="color:{COLORS["text_secondary"]}; font-size:0.8em;">{len(articles)} articles</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -519,9 +507,9 @@ def _render_news_tab(ticker: str):
             emoji = "🟢" if score > 0.15 else "🔴" if score < -0.15 else "⚪"
             pub = a.get("published_at", "")[:16]
             st.markdown(
-                f'<div style="padding:4px 0; border-bottom:1px solid #1C1F2E;">'
-                f'<span style="color:#787B86; font-size:0.75em;">{pub} {emoji} {a.get("source", "")}</span><br>'
-                f'<span style="color:#D1D4DC; font-size:0.9em;">{a.get("headline", "")}</span>'
+                f'<div style="padding:4px 0; border-bottom:1px solid {COLORS["border"]};">'
+                f'<span style="color:{COLORS["text_secondary"]}; font-size:0.75em;">{pub} {emoji} {a.get("source", "")}</span><br>'
+                f'<span style="color:{COLORS["text"]}; font-size:0.9em;">{a.get("headline", "")}</span>'
                 f'</div>',
                 unsafe_allow_html=True,
             )

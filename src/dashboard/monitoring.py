@@ -37,69 +37,44 @@ MODELS_DIR = "./models"
 PIDS_DIR = "./.pids"
 
 # ── TradingView-inspired dark theme for Plotly ────────────────────────
-DARK_LAYOUT = dict(
-    template="plotly_dark",
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#D1D4DC", size=12),
-    margin=dict(l=40, r=10, t=36, b=30),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    xaxis=dict(gridcolor="#1C1F2E", showgrid=True, zerolinecolor="#2A2E39"),
-    yaxis=dict(gridcolor="#1C1F2E", showgrid=True, zerolinecolor="#2A2E39"),
+# Now theme-aware — imports from shared theme module
+from src.dashboard.theme import (
+    get_colors as _get_theme_colors,
+    get_plotly_layout as _get_theme_layout,
+    get_title_font as _get_theme_title_font,
+    metric_card as _theme_metric_card,
+    badge_html as _theme_badge,
+    is_dark,
 )
 
-# Title style applied separately to avoid duplicate kwarg conflicts
-TITLE_FONT = dict(color="#D1D4DC", size=14)
+def _refresh_theme():
+    """Refresh theme-dependent module globals."""
+    global DARK_LAYOUT, TITLE_FONT, COLORS
+    COLORS = _get_theme_colors()
+    DARK_LAYOUT = _get_theme_layout()
+    TITLE_FONT = _get_theme_title_font()
 
-COLORS = {
-    "green": "#26A69A",
-    "red": "#EF5350",
-    "yellow": "#FFAB40",
-    "blue": "#2962FF",
-    "cyan": "#00BCD4",
-    "orange": "#FF7043",
-    "purple": "#AB47BC",
-    "white": "#D1D4DC",
-    "bg": "#131722",
-    "card_bg": "#1E222D",
-    "border": "#2A2E39",
-}
+# Initialize with defaults
+COLORS = _get_theme_colors()
+DARK_LAYOUT = _get_theme_layout()
+TITLE_FONT = _get_theme_title_font()
 
 
 # ── Helper: status badge HTML ─────────────────────────────────────────
 def _badge(label: str, online: bool) -> str:
-    color = COLORS["green"] if online else COLORS["red"]
-    text = "ONLINE" if online else "OFFLINE"
-    return (
-        f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); '
-        f'border:1px solid rgba(255,255,255,0.05); '
-        f'border-radius:8px; padding:14px; text-align:center;">'
-        f'<div style="color:#787B86; font-size:0.7em; text-transform:uppercase; '
-        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{color}; font-size:1.3em; font-weight:600;">{text}</div>'
-        f'</div>'
-    )
+    _refresh_theme()
+    return _theme_badge(label, online)
 
 
 def _metric_card(label: str, value: str, color: str = "white", sub: str = "") -> str:
-    c = COLORS.get(color, color)
-    sub_html = f'<div style="color:#787B86; font-size:0.7em; margin-top:2px;">{sub}</div>' if sub else ""
-    return (
-        f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); '
-        f'border:1px solid rgba(255,255,255,0.05); '
-        f'border-radius:8px; padding:14px; text-align:center; '
-        f'transition: border-color 0.2s ease;">'
-        f'<div style="color:#787B86; font-size:0.7em; text-transform:uppercase; '
-        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{c}; font-size:1.4em; font-weight:600; '
-        f'font-variant-numeric:tabular-nums;">{value}</div>'
-        f'{sub_html}</div>'
-    )
+    _refresh_theme()
+    return _theme_metric_card(label, value, color, sub)
 
 
 def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
                  thresholds=None, suffix="%", height=170):
     """Create a Plotly gauge chart mimicking Grafana gauges."""
+    _refresh_theme()
     if thresholds is None:
         thresholds = [(0, "red"), (40, "yellow"), (60, "green")]
 
@@ -111,18 +86,18 @@ def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
-        title=dict(text=title, font=dict(size=14, color="#D1D4DC")),
+        title=dict(text=title, font=dict(size=14, color=COLORS["text"])),
         number=dict(suffix=suffix, font=dict(size=24)),
         gauge=dict(
             axis=dict(range=[min_val, max_val], tickcolor="#666"),
             bar=dict(color=COLORS["blue"]),
-            bgcolor=COLORS["card_bg"],
+            bgcolor=COLORS["surface"],
             bordercolor=COLORS["border"],
             steps=steps,
         ),
     ))
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#D1D4DC"),
+        paper_bgcolor="rgba(0,0,0,0)", font=dict(color=COLORS["text"]),
         height=height, margin=dict(l=20, r=20, t=50, b=20),
     )
     return fig
@@ -1297,6 +1272,7 @@ def _ds_all_news_db():
 
 def page_monitoring():
     """Main monitoring page with tabbed sub-dashboards."""
+    _refresh_theme()
 
     # Dark theme CSS (inherits from app.py global CSS, just override tab styling)
     st.markdown(

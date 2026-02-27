@@ -18,15 +18,21 @@ logger = logging.getLogger(__name__)
 DATA_DIR = "./data"
 MODELS_DIR = "./models"
 
-DARK_LAYOUT = dict(
-    template="plotly_dark",
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#D1D4DC", size=12),
-    margin=dict(l=40, r=10, t=36, b=30),
-    xaxis=dict(gridcolor="#1C1F2E", showgrid=True),
-    yaxis=dict(gridcolor="#1C1F2E", showgrid=True),
+# Theme-aware colors and layout
+from src.dashboard.theme import (
+    get_colors as _get_theme_colors,
+    get_plotly_layout as _get_theme_layout,
+    page_header, is_dark,
 )
+
+
+def _refresh_theme():
+    global DARK_LAYOUT, COLORS
+    COLORS = _get_theme_colors()
+    DARK_LAYOUT = _get_theme_layout()
+
+COLORS = _get_theme_colors()
+DARK_LAYOUT = _get_theme_layout()
 
 
 @st.cache_data(ttl=600)
@@ -60,14 +66,11 @@ def _load_prices(ticker: str = "SPY", period: str = "1y") -> pd.DataFrame:
 
 def page_forecast():
     """Render the 🔮 Forecast page."""
+    _refresh_theme()
     # ── Compact toolbar: title + controls on one line ──
     _t, _c1, _c2 = st.columns([4, 1, 1])
     with _t:
-        st.markdown(
-            '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
-            '🔮 Price Forecast</p>',
-            unsafe_allow_html=True,
-        )
+        st.markdown(page_header('🔮 Price Forecast'), unsafe_allow_html=True)
     with _c1:
         ticker = st.selectbox("Ticker", ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"],
                               key="forecast_ticker", label_visibility="collapsed")
@@ -142,13 +145,13 @@ def page_forecast():
 
     with col_insight:
         st.markdown(
-            f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); border:1px solid rgba(255,255,255,0.05); border-radius:10px; padding:20px;">'
-            f'<div style="color:#787B86; font-size:0.8em;">FORECAST INSIGHT</div>'
+            f'<div style="background:{COLORS["card"]}; {"backdrop-filter:blur(12px);" if is_dark() else "box-shadow:0 1px 3px rgba(0,0,0,0.08);"} border:1px solid {COLORS["card_border"]}; border-radius:10px; padding:20px;">'
+            f'<div style="color:{COLORS["text_secondary"]}; font-size:0.8em;">FORECAST INSIGHT</div>'
             f'<div style="color:{dir_color}; font-size:1.8em; font-weight:bold; margin:8px 0;">{direction}</div>'
-            f'<div style="color:#D1D4DC;">Current: <b>${last_close:,.2f}</b></div>'
-            f'<div style="color:#D1D4DC;">Day {forecast_days}: <b>${pred_last:,.2f}</b></div>'
+            f'<div style="color:{COLORS["text"]};">Current: <b>${last_close:,.2f}</b></div>'
+            f'<div style="color:{COLORS["text"]};">Day {forecast_days}: <b>${pred_last:,.2f}</b></div>'
             f'<div style="color:{dir_color}; font-size:1.2em; margin-top:8px;">{pct_change:+.2f}%</div>'
-            f'<div style="color:#787B86; font-size:0.75em; margin-top:12px;">{model_info}</div>'
+            f'<div style="color:{COLORS["text_secondary"]}; font-size:0.75em; margin-top:12px;">{model_info}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -171,7 +174,7 @@ def page_forecast():
     fig.add_annotation(
         x=str(last_date), y=1, yref="paper",
         text="Today", showarrow=False,
-        font=dict(color="#787B86", size=10),
+        font=dict(color=COLORS["text_secondary"], size=10),
         yanchor="bottom",
     )
     fig.add_shape(

@@ -38,6 +38,11 @@ from src.dashboard.forecast_app import page_forecast
 from src.dashboard.single_stock_app import page_single_stock
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
+from src.dashboard.theme import (
+    get_theme, get_colors, get_plotly_layout, get_title_font,
+    metric_card as _theme_metric_card, badge_html as _theme_badge,
+    page_header, render_theme_toggle, theme_css, is_dark,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,125 +95,8 @@ DATA_DIR = "./data"
 
 st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 
-# --- Global dark mode CSS — TradingView-inspired design system ---
-st.markdown(
-    """<style>
-    /* ===== Base — TradingView dark background ===== */
-    .stApp { background-color: #131722 !important; }
-
-    /* Sidebar */
-    .stSidebar, section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0C0E14 0%, #0F1118 100%) !important;
-        border-right: 1px solid #1C1F2E !important;
-    }
-
-    /* Dividers */
-    .stDivider, hr { border-color: #2A2E39 !important; }
-
-    /* ===== Typography ===== */
-    h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        color: #D1D4DC !important;
-        font-weight: 600 !important;
-        letter-spacing: -0.01em;
-    }
-    p, span, label, .stMarkdown, .stText, .stCaption,
-    [data-testid="stMarkdownContainer"] p,
-    [data-testid="stMarkdownContainer"] span {
-        color: #D1D4DC !important;
-    }
-
-    /* Metric values */
-    [data-testid="stMetricValue"] {
-        color: #FFFFFF !important;
-        font-size: 1.6rem !important;
-        font-weight: 700 !important;
-        font-variant-numeric: tabular-nums;
-    }
-    /* Metric labels */
-    [data-testid="stMetricLabel"] {
-        color: #787B86 !important;
-        font-size: 0.75rem !important;
-        font-weight: 500 !important;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-    }
-    /* Metric delta */
-    [data-testid="stMetricDelta"] {
-        font-size: 0.8rem !important;
-        font-weight: 600 !important;
-    }
-    /* Positive delta — TradingView teal */
-    [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] + div,
-    [data-testid="stMetricDelta"][style*="color: green"],
-    [data-testid="stMetricDelta"][data-delta-color="normal"] {
-        color: #26A69A !important;
-    }
-    /* Negative delta — TradingView red */
-    [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Down"] + div,
-    [data-testid="stMetricDelta"][style*="color: red"] {
-        color: #EF5350 !important;
-    }
-
-    /* Captions */
-    .stCaption, [data-testid="stCaptionContainer"] {
-        color: #787B86 !important;
-        font-size: 0.78rem !important;
-    }
-
-    /* ===== Section headers ===== */
-    .stMarkdown h2, .stSubheader {
-        border-bottom: 1px solid #2A2E39;
-        padding-bottom: 8px;
-        margin-bottom: 16px !important;
-    }
-
-    /* ===== Dropdowns ===== */
-    [data-baseweb="popover"] { background-color: #1E222D !important; }
-    [data-baseweb="popover"] li { color: #D1D4DC !important; }
-    [data-baseweb="popover"] li:hover { background-color: #2A2E39 !important; }
-    [role="listbox"] { background-color: #1E222D !important; }
-    [role="option"] { color: #D1D4DC !important; }
-    [role="option"]:hover { background-color: #2A2E39 !important; }
-
-    /* Select boxes */
-    [data-baseweb="select"] > div {
-        background-color: #1E222D !important;
-        border-color: #2A2E39 !important;
-        color: #D1D4DC !important;
-    }
-
-    /* ===== Form containers (login) ===== */
-    [data-testid="stForm"] {
-        background: rgba(30, 34, 45, 0.8) !important;
-        backdrop-filter: blur(16px) !important;
-        -webkit-backdrop-filter: blur(16px) !important;
-        border: 1px solid rgba(255, 255, 255, 0.06) !important;
-        border-radius: 12px;
-        padding: 32px !important;
-    }
-    [data-testid="stForm"] input {
-        background-color: #131722 !important;
-        border: 1px solid #2A2E39 !important;
-        border-radius: 6px !important;
-        color: #D1D4DC !important;
-        padding: 10px 14px !important;
-        font-size: 0.9rem !important;
-    }
-    [data-testid="stForm"] input:focus {
-        border-color: #2962FF !important;
-        box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.2) !important;
-    }
-
-    /* ===== Plotly chart backgrounds ===== */
-    .js-plotly-plot .plotly .main-svg { background: transparent !important; }
-
-    /* Layout spacing handled by style.css */
-    
-
-    /* Columns gap handled by style.css */
-    </style>""",
-    unsafe_allow_html=True,
-)
+# --- Dynamic theme CSS ---
+st.markdown(f"<style>{theme_css()}</style>", unsafe_allow_html=True)
 
 # --- Load external CSS for pill tabs + sidebar styling ---
 _css_path = os.path.join(os.path.dirname(__file__), "style.css")
@@ -233,6 +121,7 @@ user = get_user()
 st.sidebar.title("📊 Stock Analysis")
 if user:
     st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
+render_theme_toggle()
 
 # NOTE: st.navigation is called after all page functions are defined (see bottom of file)
 
@@ -300,11 +189,7 @@ def page_spy():
     updated_at = state.get("updated_at", "")
 
     # --- Compact header ---
-    st.markdown(
-        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
-        '📈 SPY/SPX Predictor</p>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(page_header('📈 SPY/SPX Predictor'), unsafe_allow_html=True)
 
     direction = prediction.get("direction", "NEUTRAL")
     scale_label = prediction.get("scale_label", "NEUTRAL")
@@ -656,11 +541,7 @@ def page_es():
     chart_data = state.get("chart_data", {})
     updated_at = state.get("updated_at", "")
 
-    st.markdown(
-        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
-        '📊 ES Futures Strategy</p>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(page_header('📊 ES Futures Strategy'), unsafe_allow_html=True)
 
     pos_status = position.get("status", "FLAT")
     pos_lots = position.get("lots", 0)
@@ -825,11 +706,7 @@ def get_whatif_engine():
 
 
 def page_whatif():
-    st.markdown(
-        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
-        '🔬 What-If Analysis</p>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(page_header('🔬 What-If Analysis'), unsafe_allow_html=True)
     engine = get_whatif_engine()
 
     tab_es, tab_spy = st.tabs(["📈 ES Strategy", "🔮 SPY Predictor"])
@@ -1165,11 +1042,7 @@ def _run_in_thread(target, status_key: str, args=()):
 
 
 def page_admin():
-    st.markdown(
-        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
-        '⚙️ Admin Console</p>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(page_header('⚙️ Admin Console'), unsafe_allow_html=True)
 
     tab_status, tab_actions, tab_users, tab_db, tab_config, tab_logs = st.tabs([
         "ℹ️ System Status", "▶️ Actions", "👤 Users", "🗃️ Database", "📝 Configuration", "📜 Logs",
