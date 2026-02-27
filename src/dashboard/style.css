@@ -47,10 +47,10 @@ footer { visibility: hidden; }
 }
 /* Metric cards — compact for tighter screens */
 [data-testid="stMetricValue"] {
-    font-size: clamp(1.1rem, 2vw, 1.6rem) !important;
+    font-size: clamp(0.9rem, 1.8vw, 1.3rem) !important;
 }
 [data-testid="stMetricLabel"] {
-    font-size: clamp(0.65rem, 1vw, 0.75rem) !important;
+    font-size: clamp(0.55rem, 0.9vw, 0.7rem) !important;
 }
 /* Plotly charts — always fill container */
 .js-plotly-plot, .plotly {
@@ -146,8 +146,8 @@ footer { visibility: hidden; }
 
 /* ===== STRUCTURAL — Borders, radius ===== */
 [data-testid="stMetric"] {
-    border-radius: 10px !important;
-    padding: 14px 16px !important;
+    border-radius: 8px !important;
+    padding: 8px 10px !important;
     transition: border-color 0.2s ease;
 }
 [data-testid="stExpander"] {
@@ -202,7 +202,7 @@ footer { visibility: hidden; }
 /* ===== RESPONSIVE — Adapt to smaller viewports ===== */
 @media (max-width: 1100px) {
     [data-testid="stMetric"] {
-        padding: 10px 12px !important;
+        padding: 6px 8px !important;
     }
     .stTabs [data-baseweb="tab"] {
         padding: 5px 10px !important;

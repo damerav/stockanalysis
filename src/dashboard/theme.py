@@ -168,7 +168,7 @@ def metric_card(label: str, value: str, color: str = "white", sub: str = "") -> 
     """Render a themed metric card as HTML."""
     c = get_colors()
     val_color = c.get(color, color)
-    sub_html = f'<div style="color:{c["text_secondary"]}; font-size:0.7em; margin-top:2px;">{sub}</div>' if sub else ""
+    sub_html = f'<div style="color:{c["text_secondary"]}; font-size:0.65em; margin-top:1px;">{sub}</div>' if sub else ""
     shadow = "box-shadow:0 1px 3px rgba(0,0,0,0.08);" if not is_dark() else ""
     border = f"1px solid {c['card_border']}"
     bg = c["card"]
@@ -176,11 +176,11 @@ def metric_card(label: str, value: str, color: str = "white", sub: str = "") -> 
     return (
         f'<div style="background:{bg}; {blur} '
         f'border:{border}; '
-        f'border-radius:8px; padding:14px; text-align:center; {shadow} '
+        f'border-radius:6px; padding:8px 10px; text-align:center; {shadow} '
         f'transition: border-color 0.2s ease;">'
-        f'<div style="color:{c["text_secondary"]}; font-size:0.7em; text-transform:uppercase; '
-        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{val_color}; font-size:1.4em; font-weight:600; '
+        f'<div style="color:{c["text_secondary"]}; font-size:0.6em; text-transform:uppercase; '
+        f'letter-spacing:0.05em; margin-bottom:2px;">{label}</div>'
+        f'<div style="color:{val_color}; font-size:1.1em; font-weight:600; '
         f'font-variant-numeric:tabular-nums;">{value}</div>'
         f'{sub_html}</div>'
     )
@@ -196,10 +196,10 @@ def badge_html(label: str, online: bool) -> str:
     return (
         f'<div style="background:{c["card"]}; {blur} '
         f'border:1px solid {c["card_border"]}; '
-        f'border-radius:8px; padding:14px; text-align:center; {shadow}">'
-        f'<div style="color:{c["text_secondary"]}; font-size:0.7em; text-transform:uppercase; '
-        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{color}; font-size:1.3em; font-weight:600;">{text}</div>'
+        f'border-radius:6px; padding:8px 10px; text-align:center; {shadow}">'
+        f'<div style="color:{c["text_secondary"]}; font-size:0.6em; text-transform:uppercase; '
+        f'letter-spacing:0.05em; margin-bottom:2px;">{label}</div>'
+        f'<div style="color:{color}; font-size:1.1em; font-weight:600;">{text}</div>'
         f'</div>'
     )
 
@@ -208,8 +208,8 @@ def page_header(title: str) -> str:
     """Return HTML for a compact page header."""
     c = get_colors()
     return (
-        f'<p style="margin:0;padding:6px 0;color:{c["text_heading"]};'
-        f'font-size:1.3rem;font-weight:600;">{title}</p>'
+        f'<p style="margin:0;padding:4px 0;color:{c["text_heading"]};'
+        f'font-size:1.1rem;font-weight:600;">{title}</p>'
     )
 
 
@@ -273,13 +273,13 @@ def theme_css() -> str:
     /* Metric values */
     [data-testid="stMetricValue"] {{
         color: {'#FFFFFF' if dark else '#1E2329'} !important;
-        font-size: 1.6rem !important;
+        font-size: 1.3rem !important;
         font-weight: 700 !important;
         font-variant-numeric: tabular-nums;
     }}
     [data-testid="stMetricLabel"] {{
         color: {c['text_secondary']} !important;
-        font-size: 0.75rem !important;
+        font-size: 0.65rem !important;
         font-weight: 500 !important;
         text-transform: uppercase;
         letter-spacing: 0.06em;
@@ -344,8 +344,8 @@ def theme_css() -> str:
         background: {c['card']} !important;
         {backdrop}
         border: 1px solid {c['card_border']} !important;
-        border-radius: 10px !important;
-        padding: 14px 16px !important;
+        border-radius: 8px !important;
+        padding: 8px 10px !important;
         transition: border-color 0.2s ease;
         {card_shadow}
     }}

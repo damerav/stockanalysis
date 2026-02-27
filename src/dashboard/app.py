@@ -209,14 +209,14 @@ def page_spy():
         # Confidence interpretation
         conf_interp = "weak" if confidence < 55 else "moderate" if confidence < 70 else "strong" if confidence < 85 else "very strong"
         st.markdown(
-            f"""<div style="background:{banner_color}; padding:10px 20px; border-radius:10px;
-            text-align:center; margin-bottom:8px; display:flex; align-items:center; justify-content:center; gap:24px;">
-            <span style="color:#fff; font-size:1.4rem; font-weight:700;">{scale_label.replace('_', ' ')}</span>
-            <span style="color:#fff; font-size:1.2rem; font-weight:600;">{confidence:.0f}%</span>
-            <span style="color:rgba(255,255,255,0.85); font-size:0.95rem;">
+            f"""<div style="background:{banner_color}; padding:8px 16px; border-radius:8px;
+            text-align:center; margin-bottom:6px; display:flex; align-items:center; justify-content:center; gap:20px;">
+            <span style="color:#fff; font-size:1.2rem; font-weight:700;">{scale_label.replace('_', ' ')}</span>
+            <span style="color:#fff; font-size:1.05rem; font-weight:600;">{confidence:.0f}%</span>
+            <span style="color:rgba(255,255,255,0.85); font-size:0.85rem;">
             ↑{probs.get('up', 0):.0f}% · —{probs.get('neutral', 0):.0f}% · ↓{probs.get('down', 0):.0f}%
             </span>
-            <span style="color:rgba(255,255,255,0.7); font-size:0.8rem; font-style:italic;">
+            <span style="color:rgba(255,255,255,0.7); font-size:0.75rem; font-style:italic;">
             ({conf_interp} signal)
             </span></div>""",
             unsafe_allow_html=True,
@@ -559,13 +559,13 @@ def page_es():
     regime_color = regime_colors.get(regime, c["yellow"])
 
     st.markdown(
-        f"""<div style="background-color:{banner_color}; padding:15px; border-radius:10px;
-        text-align:center; margin-bottom:15px; display:flex; justify-content:space-around; align-items:center;">
-        <div><h2 style="color:white; margin:0;">{pos_status} {pos_lots} lots</h2></div>
-        <div><p style="color:white; margin:0;">Entry: {entry_price}</p></div>
-        <div><p style="color:white; margin:0;">P&L: ${unrealized:+,.0f}</p></div>
-        <div style="background-color:{regime_color}; padding:5px 15px; border-radius:5px;">
-        <p style="color:white; margin:0;">Regime: {regime}</p></div>
+        f"""<div style="background-color:{banner_color}; padding:10px; border-radius:8px;
+        text-align:center; margin-bottom:10px; display:flex; justify-content:space-around; align-items:center;">
+        <div><h2 style="color:white; margin:0; font-size:1.1rem;">{pos_status} {pos_lots} lots</h2></div>
+        <div><p style="color:white; margin:0; font-size:0.9rem;">Entry: {entry_price}</p></div>
+        <div><p style="color:white; margin:0; font-size:0.9rem;">P&L: ${unrealized:+,.0f}</p></div>
+        <div style="background-color:{regime_color}; padding:4px 12px; border-radius:5px;">
+        <p style="color:white; margin:0; font-size:0.9rem;">Regime: {regime}</p></div>
         </div>""",
         unsafe_allow_html=True,
     )

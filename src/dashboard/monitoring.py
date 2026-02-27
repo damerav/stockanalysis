@@ -72,7 +72,7 @@ def _metric_card(label: str, value: str, color: str = "white", sub: str = "") ->
 
 
 def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
-                 thresholds=None, suffix="%", height=170):
+                 thresholds=None, suffix="%", height=140):
     """Create a Plotly gauge chart mimicking Grafana gauges."""
     _refresh_theme()
     if thresholds is None:
@@ -710,8 +710,8 @@ def tab_confidence_api():
         if not entry_loaded or not exit_loaded:
             st.markdown(
                 f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
-                f'border-radius:8px; padding:20px;">'
-                f'<div style="color:{COLORS["yellow"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
+                f'border-radius:8px; padding:10px 12px;">'
+                f'<div style="color:{COLORS["yellow"]}; font-size:0.95em; font-weight:bold; margin-bottom:6px;">'
                 f'⚠️ Models Not Loaded</div>'
                 f'<div style="color:{COLORS["text"]}; font-size:0.9em; line-height:1.6;">'
                 f'{"❌ Entry Gate (es_entry_gate.json)" if not entry_loaded else "✅ Entry Gate"}<br>'
@@ -746,8 +746,8 @@ def tab_confidence_api():
             # Show latency stats if we have them, otherwise endpoint info
             st.markdown(
                 f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
-                f'border-radius:8px; padding:20px;">'
-                f'<div style="color:{COLORS["blue"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
+                f'border-radius:8px; padding:10px 12px;">'
+                f'<div style="color:{COLORS["blue"]}; font-size:0.95em; font-weight:bold; margin-bottom:6px;">'
                 f'📡 API Endpoints</div>'
                 f'<div style="color:{COLORS["text"]}; font-size:0.9em; line-height:1.8; font-family:monospace;">'
                 f'GET  /health &nbsp;&nbsp;&nbsp;→ Service health<br>'
@@ -803,9 +803,9 @@ def tab_pipeline_status():
         color = COLORS["green"] if status else COLORS["red"]
         col.markdown(
             f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
-            f'border-radius:8px; padding:20px; text-align:center;">'
-            f'<div style="color:{COLORS["text_secondary"]}; font-size:0.85em; margin-bottom:6px;">{label}</div>'
-            f'<div style="color:{color}; font-size:1.6em; font-weight:bold;">{text}</div>'
+            f'border-radius:6px; padding:10px 12px; text-align:center;">'
+            f'<div style="color:{COLORS["text_secondary"]}; font-size:0.75em; margin-bottom:3px;">{label}</div>'
+            f'<div style="color:{color}; font-size:1.1em; font-weight:bold;">{text}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
