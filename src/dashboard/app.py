@@ -382,7 +382,7 @@ def page_spy():
         st.plotly_chart(fig_shap, use_container_width=True)
 
     # --- Main content: History + Indicators side by side ---
-    col1, col2 = st.columns([3, 2])
+    col1, col2 = st.columns([5, 3])
 
     with col1:
         st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
@@ -458,19 +458,22 @@ def page_spy():
             if _vix_val is None:
                 _vix_val = indicators.get("vix")
                 _vix_chg = indicators.get("vix_change")
-            st.metric("RSI(14)", f"{indicators.get('rsi_14', 'N/A')}",
-                      help="Relative Strength Index (14-day). >70 = overbought, <30 = oversold.")
-            st.metric("MACD", f"{indicators.get('macd', 'N/A')}",
-                      help="Moving Average Convergence Divergence. Positive = bullish momentum, negative = bearish.")
-            st.metric("VIX", f"{_vix_val:.1f}" if _vix_val else "N/A",
-                      delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse",
-                      help="CBOE Volatility Index — same source as top row for consistency.")
-            st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}",
-                      help="Average True Range (14-day). Measures daily volatility in dollar terms.")
-            st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}",
-                      help="Today's volume vs 20-day average. >1.5 = unusually high activity.")
-            st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}",
-                      help="Aggregated news sentiment. Range -1 (bearish) to +1 (bullish).")
+            ic1, ic2 = st.columns(2)
+            with ic1:
+                st.metric("RSI(14)", f"{indicators.get('rsi_14', 'N/A')}",
+                          help="RSI 14-day. >70 overbought, <30 oversold.")
+                st.metric("MACD", f"{indicators.get('macd', 'N/A')}",
+                          help="MACD. Positive = bullish, negative = bearish.")
+                st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}",
+                          help="Average True Range 14-day volatility.")
+            with ic2:
+                st.metric("VIX", f"{_vix_val:.1f}" if _vix_val else "N/A",
+                          delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse",
+                          help="CBOE Volatility Index.")
+                st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}",
+                          help="Volume vs 20-day avg. >1.5 = high.")
+                st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}",
+                          help="News sentiment -1 to +1.")
         else:
             st.caption("Waiting for indicator data...")
 
