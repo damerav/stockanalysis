@@ -6,7 +6,6 @@
 /* --- HIDE STREAMLIT DEFAULTS --- */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
-header { visibility: hidden; }
 
 /* --- SIDEBAR STYLING (st.navigation) --- */
 [data-testid="stSidebar"] {
