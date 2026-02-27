@@ -391,7 +391,7 @@ def page_single_stock():
                             orientation="h", marker_color=COLORS["blue"],
                         ))
                         fig_imp.update_layout(**DARK_LAYOUT, height=300,
-                                              title=dict(text="Feature Importance (XGBoost)", font=dict(color="#FFF", size=13)),
+                                              title=dict(text="Feature Importance (XGBoost)", font=dict(color=COLORS["text"], size=13)),
                                               yaxis=dict(autorange="reversed"))
                         st.plotly_chart(fig_imp, use_container_width=True)
             except Exception:
@@ -464,9 +464,9 @@ def _render_news_tab(ticker: str):
                 colors = [COLORS["green"] if v > 0 else COLORS["red"] for v in daily["sentiment_compound"]]
                 fig.add_trace(go.Bar(x=daily["date"], y=daily["sentiment_compound"],
                                       marker_color=colors, name="Sentiment"))
-                fig.add_hline(y=0, line_color="#363A45", line_dash="dash")
+                fig.add_hline(y=0, line_color=COLORS["border"], line_dash="dash")
                 fig.update_layout(**DARK_LAYOUT, height=200,
-                                  title=dict(text="Daily Sentiment", font=dict(color="#FFF", size=12)))
+                                  title=dict(text="Daily Sentiment", font=dict(color=COLORS["text"], size=12)))
                 st.plotly_chart(fig, use_container_width=True)
 
         # News predictor output
