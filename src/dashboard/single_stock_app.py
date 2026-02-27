@@ -305,7 +305,6 @@ def page_single_stock():
     mcap = info.get("market_cap", 0)
     mcap_str = f"${mcap / 1e9:.1f}B" if mcap > 1e9 else f"${mcap / 1e6:.0f}M" if mcap > 1e6 else "—"
 
-    cols = st.columns(6)
     kpis = [
         ("Price", f"${last_close:,.2f}", "green" if day_change >= 0 else "red", f"{day_change:+.2f} ({day_pct:+.1f}%)"),
         ("Market Cap", mcap_str, "blue", ""),
@@ -314,13 +313,16 @@ def page_single_stock():
         ("52W Low", f"${low_52w:,.2f}" if low_52w else "—", "red", ""),
         ("Avg Volume", f"{info.get('avg_volume', 0):,.0f}" if info.get("avg_volume") else "—", "yellow", ""),
     ]
-    for col, (label, val, color, sub) in zip(cols, kpis):
-        col.markdown(_metric_card(label, val, color, sub), unsafe_allow_html=True)
+    # Split into two rows of 3 to avoid overflow on smaller screens
+    for row_start in range(0, len(kpis), 3):
+        row_kpis = kpis[row_start:row_start + 3]
+        cols = st.columns(len(row_kpis))
+        for col, (label, val, color, sub) in zip(cols, row_kpis):
+            col.markdown(_metric_card(label, val, color, sub), unsafe_allow_html=True)
 
     # ── Performance Panel ──
     if perf:
         with st.expander("📊 Performance Metrics", expanded=True):
-            pc = st.columns(5)
             metrics = [
                 ("Total Return", f"{perf['total_return']:+.1f}%", "green" if perf["total_return"] > 0 else "red"),
                 ("Sharpe Ratio", f"{perf['sharpe']:.2f}", "green" if perf["sharpe"] > 1 else "yellow"),
@@ -328,8 +330,11 @@ def page_single_stock():
                 ("Max Drawdown", f"-{perf['max_drawdown']:.1f}%", "red"),
                 ("Best Day", f"{perf['best_day']:+.1f}%", "green"),
             ]
-            for col, (label, val, color) in zip(pc, metrics):
-                col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+            for row_start in range(0, len(metrics), 3):
+                row_metrics = metrics[row_start:row_start + 3]
+                pc = st.columns(len(row_metrics))
+                for col, (label, val, color) in zip(pc, row_metrics):
+                    col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
 
     # ── Tabbed Interface ──
     tabs = st.tabs(["📋 Company Info", "📊 Raw Data", "🔧 Technical Chart",

@@ -10,9 +10,23 @@
 footer { visibility: hidden; }
 
 /* ===== COMPACT PAGE LAYOUT — Maximize content real estate ===== */
-.block-container {
-    padding-top: 1rem !important;
+.block-container,
+[data-testid="stMainBlockContainer"] {
+    padding-top: 0.5rem !important;
     padding-bottom: 0 !important;
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    max-width: none !important;
+    margin: 0 !important;
+}
+/* Kill any extra wrapper margins */
+[data-testid="stMain"] {
+    padding: 0 !important;
+    margin: 0 !important;
+}
+[data-testid="stAppViewBlockContainer"] {
+    padding: 0 !important;
+    max-width: none !important;
 }
 [data-testid="stVerticalBlock"] > div {
     gap: 0.35rem !important;
@@ -24,6 +38,29 @@ footer { visibility: hidden; }
 [data-testid="stHorizontalBlock"] {
     gap: 0.5rem !important;
     align-items: center;
+    flex-wrap: wrap;
+}
+/* Ensure columns don't overflow */
+[data-testid="stColumn"] {
+    min-width: 0 !important;
+    overflow: hidden;
+}
+/* Metric cards — compact for tighter screens */
+[data-testid="stMetricValue"] {
+    font-size: clamp(1.1rem, 2vw, 1.6rem) !important;
+}
+[data-testid="stMetricLabel"] {
+    font-size: clamp(0.65rem, 1vw, 0.75rem) !important;
+}
+/* Plotly charts — always fill container */
+.js-plotly-plot, .plotly {
+    width: 100% !important;
+}
+/* HTML cards injected via st.markdown — prevent overflow */
+[data-testid="stMarkdownContainer"] > div {
+    max-width: 100%;
+    overflow: hidden;
+    word-wrap: break-word;
 }
 
 /* ===== SIDEBAR — Always dark navy (structural) ===== */
@@ -159,4 +196,16 @@ footer { visibility: hidden; }
 }
 ::-webkit-scrollbar-thumb {
     border-radius: 3px;
+}
+
+
+/* ===== RESPONSIVE — Adapt to smaller viewports ===== */
+@media (max-width: 1100px) {
+    [data-testid="stMetric"] {
+        padding: 10px 12px !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 5px 10px !important;
+        font-size: 0.78rem !important;
+    }
 }

@@ -2174,7 +2174,6 @@ def _admin_logs_tab():
 
 def _grafana_summary_cards():
     """Show quick-glance summary cards above Grafana for seamless context."""
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     # SPY data
     spy_state = load_spy_state()
@@ -2195,6 +2194,10 @@ def _grafana_summary_cards():
     except Exception:
         pass
 
+    # ES data
+    es_state = load_es_state()
+
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("SPY", f"${spy_close:.2f}" if spy_close else "—")
     with col2:
@@ -2208,8 +2211,7 @@ def _grafana_summary_cards():
             vix = macro.get("vix")
         st.metric("VIX", f"{vix:.1f}" if vix else "—")
 
-    # ES data
-    es_state = load_es_state()
+    col4, col5, col6 = st.columns(3)
     with col4:
         pnl = es_state.get("daily_pnl", 0)
         st.metric("ES Daily P&L", f"${pnl:+,.0f}" if pnl else "$0")

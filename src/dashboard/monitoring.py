@@ -238,7 +238,6 @@ def tab_spy_predictor(days: int = 90):
     dir_color = "green" if "BULL" in direction_str.upper() else "red" if "BEAR" in direction_str.upper() else "yellow"
     vix_color = "green" if vix_val < 20 else "yellow" if vix_val < 30 else "red"
 
-    cols = st.columns(6)
     cards = [
         ("SPY Last Close", f"${close_val:,.2f}", "white"),
         ("Prediction", direction_str, dir_color),
@@ -247,8 +246,11 @@ def tab_spy_predictor(days: int = 90):
         ("RSI (14)", f"{rsi_val:.1f}", "blue"),
         ("ATR", f"{atr_val:.2f}", "cyan"),
     ]
-    for col, (label, val, color) in zip(cols, cards):
-        col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+    for row_start in range(0, len(cards), 3):
+        row_cards = cards[row_start:row_start + 3]
+        cols = st.columns(len(row_cards))
+        for col, (label, val, color) in zip(cols, row_cards):
+            col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
 
     # Staleness indicator (same logic as SPY Predictor page)
     updated_at = spy_state.get("updated_at", "")
@@ -420,7 +422,6 @@ def tab_es_strategy():
     regime_str = state.get("vol_regime", "Med")
 
     # ── Row 1: Stat cards ──
-    cols = st.columns(7)
     pnl_color = "green" if daily_pnl >= 0 else "red"
     total_color = "green" if total_pnl >= 0 else "red"
     regime_color = {"Low": "green", "Med": "yellow", "High": "red"}.get(regime_str, "yellow")
@@ -435,8 +436,11 @@ def tab_es_strategy():
         ("Vol Regime", regime_str.upper(), regime_color),
         ("Sharpe", f"{sharpe:.2f}", sharpe_color),
     ]
-    for col, (label, val, color) in zip(cols, card_data):
-        col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+    for row_start in range(0, len(card_data), 4):
+        row_cards = card_data[row_start:row_start + 4]
+        cols = st.columns(len(row_cards))
+        for col, (label, val, color) in zip(cols, row_cards):
+            col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -553,7 +557,6 @@ def tab_system_health():
         except Exception:
             pass
 
-    cols = st.columns(6)
     badges = [
         ("Database", db_online),
         ("Ollama LLM", ollama_online),
@@ -562,8 +565,11 @@ def tab_system_health():
         ("Dashboard", dashboard_online),
         ("Target LLM", target_loaded),
     ]
-    for col, (label, status) in zip(cols, badges):
-        col.markdown(_badge(label, status), unsafe_allow_html=True)
+    for row_start in range(0, len(badges), 3):
+        row_badges = badges[row_start:row_start + 3]
+        cols = st.columns(len(row_badges))
+        for col, (label, status) in zip(cols, row_badges):
+            col.markdown(_badge(label, status), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -681,7 +687,6 @@ def tab_confidence_api():
         uptime_str = f"{uptime:.0f} sec"
 
     # ── Row 1: Stat cards ──
-    cols = st.columns(6)
     card_data = [
         ("API Status", "ONLINE" if api_online else "OFFLINE", "green" if api_online else "red"),
         ("Uptime", uptime_str if api_online else "—", "blue" if api_online else "red"),
@@ -690,8 +695,11 @@ def tab_confidence_api():
         ("Recent Allows", str(allows), "green"),
         ("Recent Blocks", str(blocks), "orange"),
     ]
-    for col, (label, val, color) in zip(cols, card_data):
-        col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
+    for row_start in range(0, len(card_data), 3):
+        row_cards = card_data[row_start:row_start + 3]
+        cols = st.columns(len(row_cards))
+        for col, (label, val, color) in zip(cols, row_cards):
+            col.markdown(_metric_card(label, val, color), unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1046,7 +1054,7 @@ def _ds_fred(fetcher):
 
     # Show current values
     if macro:
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1, m2, m3 = st.columns(3)
         with m1:
             v = macro.get("vix")
             st.metric("VIX", f"{v:.2f}" if v else "—")
@@ -1056,6 +1064,7 @@ def _ds_fred(fetcher):
         with m3:
             v = macro.get("dxy")
             st.metric("DXY", f"{v:.2f}" if v else "—")
+        m4, m5, m6 = st.columns(3)
         with m4:
             v = macro.get("fed_funds")
             st.metric("Fed Funds", f"{v:.2f}%" if v else "—")
