@@ -229,7 +229,7 @@ def _generate_ai_narrative(ticker: str, df: pd.DataFrame, perf: dict) -> str:
     signals = []
     # Trend
     if close > sma20 > sma50:
-        signals.append(("🟢 Uptrend", f"{ticker} is trading above both SMA 20 (${sma20:,.2f}) and SMA 50 (${sma50:,.2f}), confirming a bullish trend."))
+        signals.append(("🟢 Uptrend", f"{ticker} is trading above both SMA 20 (\\${sma20:,.2f}) and SMA 50 (\\${sma50:,.2f}), confirming a bullish trend."))
     elif close < sma20 < sma50:
         signals.append(("🔴 Downtrend", f"{ticker} is below both moving averages, indicating bearish momentum."))
     else:
