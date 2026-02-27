@@ -36,33 +36,33 @@ LOGS_DIR = "./logs"
 MODELS_DIR = "./models"
 PIDS_DIR = "./.pids"
 
-# ── Grafana-inspired dark theme for Plotly ────────────────────────────
+# ── TradingView-inspired dark theme for Plotly ────────────────────────
 DARK_LAYOUT = dict(
     template="plotly_dark",
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#E2E8F0", size=12),
+    font=dict(color="#D1D4DC", size=12),
     margin=dict(l=40, r=10, t=36, b=30),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    xaxis=dict(gridcolor="#1E2530", showgrid=True, zerolinecolor="#2A3040"),
-    yaxis=dict(gridcolor="#1E2530", showgrid=True, zerolinecolor="#2A3040"),
+    xaxis=dict(gridcolor="#1C1F2E", showgrid=True, zerolinecolor="#2A2E39"),
+    yaxis=dict(gridcolor="#1C1F2E", showgrid=True, zerolinecolor="#2A2E39"),
 )
 
 # Title style applied separately to avoid duplicate kwarg conflicts
-TITLE_FONT = dict(color="#FFFFFF", size=14)
+TITLE_FONT = dict(color="#D1D4DC", size=14)
 
 COLORS = {
-    "green": "#4ADE80",
-    "red": "#F87171",
-    "yellow": "#FBBF24",
-    "blue": "#6C9EFF",
-    "cyan": "#67E8F9",
-    "orange": "#FB923C",
-    "purple": "#C084FC",
-    "white": "#FFFFFF",
-    "bg": "#0E1117",
-    "card_bg": "#151A24",
-    "border": "#1E2530",
+    "green": "#26A69A",
+    "red": "#EF5350",
+    "yellow": "#FFAB40",
+    "blue": "#2962FF",
+    "cyan": "#00BCD4",
+    "orange": "#FF7043",
+    "purple": "#AB47BC",
+    "white": "#D1D4DC",
+    "bg": "#131722",
+    "card_bg": "#1E222D",
+    "border": "#2A2E39",
 }
 
 
@@ -71,22 +71,28 @@ def _badge(label: str, online: bool) -> str:
     color = COLORS["green"] if online else COLORS["red"]
     text = "ONLINE" if online else "OFFLINE"
     return (
-        f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
-        f'border-radius:8px; padding:16px; text-align:center;">'
-        f'<div style="color:#94A3B8; font-size:0.8em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{color}; font-size:1.4em; font-weight:bold;">{text}</div>'
+        f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); '
+        f'border:1px solid rgba(255,255,255,0.05); '
+        f'border-radius:8px; padding:14px; text-align:center;">'
+        f'<div style="color:#787B86; font-size:0.7em; text-transform:uppercase; '
+        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
+        f'<div style="color:{color}; font-size:1.3em; font-weight:600;">{text}</div>'
         f'</div>'
     )
 
 
 def _metric_card(label: str, value: str, color: str = "white", sub: str = "") -> str:
     c = COLORS.get(color, color)
-    sub_html = f'<div style="color:#94A3B8; font-size:0.75em;">{sub}</div>' if sub else ""
+    sub_html = f'<div style="color:#787B86; font-size:0.7em; margin-top:2px;">{sub}</div>' if sub else ""
     return (
-        f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
-        f'border-radius:8px; padding:16px; text-align:center;">'
-        f'<div style="color:#94A3B8; font-size:0.8em; margin-bottom:4px;">{label}</div>'
-        f'<div style="color:{c}; font-size:1.5em; font-weight:bold;">{value}</div>'
+        f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); '
+        f'border:1px solid rgba(255,255,255,0.05); '
+        f'border-radius:8px; padding:14px; text-align:center; '
+        f'transition: border-color 0.2s ease;">'
+        f'<div style="color:#787B86; font-size:0.7em; text-transform:uppercase; '
+        f'letter-spacing:0.06em; margin-bottom:4px;">{label}</div>'
+        f'<div style="color:{c}; font-size:1.4em; font-weight:600; '
+        f'font-variant-numeric:tabular-nums;">{value}</div>'
         f'{sub_html}</div>'
     )
 
@@ -105,7 +111,7 @@ def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
-        title=dict(text=title, font=dict(size=14, color="#d8d9da")),
+        title=dict(text=title, font=dict(size=14, color="#D1D4DC")),
         number=dict(suffix=suffix, font=dict(size=24)),
         gauge=dict(
             axis=dict(range=[min_val, max_val], tickcolor="#666"),
@@ -116,7 +122,7 @@ def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
         ),
     ))
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#E2E8F0"),
+        paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#D1D4DC"),
         height=height, margin=dict(l=20, r=20, t=50, b=20),
     )
     return fig
@@ -361,7 +367,7 @@ def tab_spy_predictor(days: int = 90):
             fig.add_hrect(y0=0, y1=30, fillcolor="rgba(115,191,105,0.1)", line_width=0)
             fig.add_hline(y=70, line_dash="dash", line_color=COLORS["red"], opacity=0.5)
             fig.add_hline(y=30, line_dash="dash", line_color=COLORS["green"], opacity=0.5)
-        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor="#1E2530", showgrid=True)}
+        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor="#2A2E39", showgrid=True)}
         fig.update_layout(**rsi_layout, title=dict(text="RSI (14)", font=TITLE_FONT), height=220)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -415,7 +421,7 @@ def tab_spy_predictor(days: int = 90):
                 x=df["Rows"], y=df["Table"], orientation="h",
                 marker=dict(color=COLORS["blue"], line=dict(width=0)),
             ))
-            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor="#1E2530", showgrid=True)}
+            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor="#2A2E39", showgrid=True)}
             fig.update_layout(**inv_layout, title=dict(text="Data Inventory", font=TITLE_FONT), height=220,
                               xaxis_title="Row Count")
             st.plotly_chart(fig, use_container_width=True)
@@ -724,7 +730,7 @@ def tab_confidence_api():
                 f'border-radius:8px; padding:20px;">'
                 f'<div style="color:{COLORS["yellow"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
                 f'⚠️ Models Not Loaded</div>'
-                f'<div style="color:#E2E8F0; font-size:0.9em; line-height:1.6;">'
+                f'<div style="color:#D1D4DC; font-size:0.9em; line-height:1.6;">'
                 f'{"❌ Entry Gate (es_entry_gate.json)" if not entry_loaded else "✅ Entry Gate"}<br>'
                 f'{"❌ Exit Controller (es_exit_cnn.pt)" if not exit_loaded else "✅ Exit Controller"}<br><br>'
                 f'The ES strategy models need to be trained first.<br>'
@@ -760,13 +766,13 @@ def tab_confidence_api():
                 f'border-radius:8px; padding:20px;">'
                 f'<div style="color:{COLORS["blue"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
                 f'📡 API Endpoints</div>'
-                f'<div style="color:#E2E8F0; font-size:0.9em; line-height:1.8; font-family:monospace;">'
+                f'<div style="color:#D1D4DC; font-size:0.9em; line-height:1.8; font-family:monospace;">'
                 f'GET  /health &nbsp;&nbsp;&nbsp;→ Service health<br>'
                 f'POST /confidence → Entry gate score<br>'
                 f'POST /exit &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Exit signal<br>'
                 f'POST /spread &nbsp;&nbsp;&nbsp;→ Update spread<br>'
                 f'</div>'
-                f'<div style="color:#94A3B8; font-size:0.8em; margin-top:10px;">'
+                f'<div style="color:#787B86; font-size:0.8em; margin-top:10px;">'
                 f'Base URL: http://localhost:8100</div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -815,7 +821,7 @@ def tab_pipeline_status():
         col.markdown(
             f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
             f'border-radius:8px; padding:20px; text-align:center;">'
-            f'<div style="color:#94A3B8; font-size:0.85em; margin-bottom:6px;">{label}</div>'
+            f'<div style="color:#787B86; font-size:0.85em; margin-bottom:6px;">{label}</div>'
             f'<div style="color:{color}; font-size:1.6em; font-weight:bold;">{text}</div>'
             f'</div>',
             unsafe_allow_html=True,
@@ -952,7 +958,7 @@ def tab_data_sources():
 
 def _ds_finnhub(fetcher):
     """Finnhub news sub-tab."""
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">FINNHUB NEWS API</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">FINNHUB NEWS API</p>',
                 unsafe_allow_html=True)
 
     c1, c2 = st.columns([1, 3])
@@ -985,7 +991,7 @@ def _ds_finnhub(fetcher):
 
     # Historical from DB
     st.markdown("---")
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df(
         "SELECT date, source, headline, url FROM news WHERE source = 'finnhub' "
@@ -1003,7 +1009,7 @@ def _ds_rss_source(fetcher, source_name: str, feed_url: str):
     import feedparser
 
     label = source_name.upper()
-    st.markdown(f'<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">{label} RSS FEED</p>',
+    st.markdown(f'<p style="color:#787B86;font-weight:600;font-size:0.85rem;">{label} RSS FEED</p>',
                 unsafe_allow_html=True)
 
     # Live fetch
@@ -1031,7 +1037,7 @@ def _ds_rss_source(fetcher, source_name: str, feed_url: str):
 
     # Historical from DB
     st.markdown("---")
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df(
         "SELECT date, headline, url FROM news WHERE source = ? ORDER BY id DESC LIMIT 50",
@@ -1046,7 +1052,7 @@ def _ds_rss_source(fetcher, source_name: str, feed_url: str):
 
 def _ds_fred(fetcher):
     """FRED macro data sub-tab."""
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">FRED MACRO DATA</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">FRED MACRO DATA</p>',
                 unsafe_allow_html=True)
 
     c1, c2 = st.columns([1, 3])
@@ -1087,7 +1093,7 @@ def _ds_fred(fetcher):
 
     # Historical chart from DB
     st.markdown("---")
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df("SELECT date, vix, us10y_yield, dxy, gold, crude FROM macro ORDER BY date DESC LIMIT 90")
     if not hist.empty:
@@ -1112,7 +1118,7 @@ def _ds_fred(fetcher):
 
 def _ds_yfinance():
     """yfinance data sub-tab."""
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">YFINANCE (SPY PRICES)</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">YFINANCE (SPY PRICES)</p>',
                 unsafe_allow_html=True)
 
     # Live check
@@ -1132,7 +1138,7 @@ def _ds_yfinance():
 
     # Historical from DB
     st.markdown("---")
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">PRICE HISTORY (from DB)</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">PRICE HISTORY (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df("SELECT date, open, high, low, close, volume FROM prices ORDER BY date DESC LIMIT 60")
     if not hist.empty:
@@ -1153,7 +1159,7 @@ def _ds_yfinance():
 
 def _ds_earnings():
     """Earnings calendar sub-tab."""
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">EARNINGS CALENDAR</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">EARNINGS CALENDAR</p>',
                 unsafe_allow_html=True)
 
     conn = _get_db()
@@ -1170,7 +1176,7 @@ def _ds_earnings():
             "WHERE date >= date('now') ORDER BY date ASC LIMIT 30", conn
         )
         if not upcoming.empty:
-            st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">UPCOMING</p>',
+            st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">UPCOMING</p>',
                         unsafe_allow_html=True)
             st.dataframe(upcoming, use_container_width=True, hide_index=True)
 
@@ -1179,7 +1185,7 @@ def _ds_earnings():
             "WHERE date < date('now') ORDER BY date DESC LIMIT 30", conn
         )
         if not recent.empty:
-            st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">RECENT</p>',
+            st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">RECENT</p>',
                         unsafe_allow_html=True)
             st.dataframe(recent, use_container_width=True, hide_index=True)
     except Exception as e:
@@ -1190,7 +1196,7 @@ def _ds_earnings():
 
 def _ds_fed_comms():
     """Fed communications sub-tab."""
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">FED COMMUNICATIONS</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">FED COMMUNICATIONS</p>',
                 unsafe_allow_html=True)
 
     conn = _get_db()
@@ -1229,7 +1235,7 @@ def _ds_fed_comms():
 
 def _ds_all_news_db():
     """All news from database — filterable by source."""
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">ALL NEWS (DATABASE)</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">ALL NEWS (DATABASE)</p>',
                 unsafe_allow_html=True)
 
     conn = _get_db()
@@ -1248,7 +1254,7 @@ def _ds_all_news_db():
                 marker_color=COLORS["blue"],
                 text=sources["count"].apply(lambda x: f"{x:,}"),
                 textposition="auto",
-                textfont=dict(color="#E2E8F0"),
+                textfont=dict(color="#D1D4DC"),
             ))
             fig.update_layout(**DARK_LAYOUT, height=180,
                               title=dict(text="Articles by Source", font=TITLE_FONT),
@@ -1296,12 +1302,12 @@ def page_monitoring():
     st.markdown(
         f"""
         <style>
-        .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background-color: #0A0D12; border-radius: 8px; padding: 4px; }}
+        .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background-color: #0C0E14; border-radius: 8px; padding: 4px; }}
         .stTabs [data-baseweb="tab"] {{
             background-color: transparent;
             border-radius: 6px;
             padding: 8px 16px;
-            color: #94A3B8;
+            color: #787B86;
             font-weight: 500;
         }}
         .stTabs [aria-selected="true"] {{

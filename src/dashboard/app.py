@@ -90,163 +90,124 @@ DATA_DIR = "./data"
 
 st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 
-# --- Global dark mode CSS — modern high-contrast theme ---
+# --- Global dark mode CSS — TradingView-inspired design system ---
 st.markdown(
     """<style>
-    /* ===== Base overrides ===== */
-    .stApp { background-color: #0E1117 !important; }
+    /* ===== Base — TradingView dark background ===== */
+    .stApp { background-color: #131722 !important; }
 
     /* Sidebar */
     .stSidebar, section[data-testid="stSidebar"] {
-        background-color: #0A0D12 !important;
-        border-right: 1px solid #1E2530 !important;
+        background: linear-gradient(180deg, #0C0E14 0%, #0F1118 100%) !important;
+        border-right: 1px solid #1C1F2E !important;
     }
 
-    /* Dividers — subtle but visible */
-    .stDivider, hr { border-color: #2A3040 !important; }
+    /* Dividers */
+    .stDivider, hr { border-color: #2A2E39 !important; }
 
-    /* ===== Typography — bright and readable ===== */
+    /* ===== Typography ===== */
     h1, h2, h3, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
-        color: #F1F5F9 !important;
-        font-weight: 700 !important;
+        color: #D1D4DC !important;
+        font-weight: 600 !important;
+        letter-spacing: -0.01em;
     }
     p, span, label, .stMarkdown, .stText, .stCaption,
     [data-testid="stMarkdownContainer"] p,
     [data-testid="stMarkdownContainer"] span {
-        color: #E2E8F0 !important;
+        color: #D1D4DC !important;
     }
 
-    /* Metric values — large, white, crisp */
+    /* Metric values */
     [data-testid="stMetricValue"] {
         color: #FFFFFF !important;
-        font-size: 1.8rem !important;
+        font-size: 1.6rem !important;
         font-weight: 700 !important;
+        font-variant-numeric: tabular-nums;
     }
-    /* Metric labels — visible, not washed out */
+    /* Metric labels */
     [data-testid="stMetricLabel"] {
-        color: #94A3B8 !important;
-        font-size: 0.85rem !important;
+        color: #787B86 !important;
+        font-size: 0.75rem !important;
         font-weight: 500 !important;
         text-transform: uppercase;
-        letter-spacing: 0.03em;
+        letter-spacing: 0.06em;
     }
     /* Metric delta */
     [data-testid="stMetricDelta"] {
-        font-size: 0.85rem !important;
+        font-size: 0.8rem !important;
         font-weight: 600 !important;
     }
+    /* Positive delta — TradingView teal */
+    [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] + div,
+    [data-testid="stMetricDelta"][style*="color: green"],
+    [data-testid="stMetricDelta"][data-delta-color="normal"] {
+        color: #26A69A !important;
+    }
+    /* Negative delta — TradingView red */
+    [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Down"] + div,
+    [data-testid="stMetricDelta"][style*="color: red"] {
+        color: #EF5350 !important;
+    }
 
-    /* Captions — lighter gray, still readable */
+    /* Captions */
     .stCaption, [data-testid="stCaptionContainer"] {
-        color: #8899AA !important;
-        font-size: 0.8rem !important;
+        color: #787B86 !important;
+        font-size: 0.78rem !important;
     }
 
-    /* ===== Cards / Containers ===== */
-    [data-testid="stMetric"],
-    [data-testid="stMetricValue"],
-    [data-testid="column"] {
-        background-color: transparent !important;
-    }
-
-    /* Section headers with accent underline */
+    /* ===== Section headers ===== */
     .stMarkdown h2, .stSubheader {
-        border-bottom: 2px solid #6C9EFF33;
-        padding-bottom: 6px;
-        margin-bottom: 12px !important;
+        border-bottom: 1px solid #2A2E39;
+        padding-bottom: 8px;
+        margin-bottom: 16px !important;
     }
 
     /* ===== Dropdowns ===== */
-    [data-baseweb="popover"] { background-color: #151A24 !important; }
-    [data-baseweb="popover"] li { color: #E2E8F0 !important; }
-    [data-baseweb="popover"] li:hover { background-color: #1E2530 !important; }
-    [role="listbox"] { background-color: #151A24 !important; }
-    [role="option"] { color: #E2E8F0 !important; }
-    [role="option"]:hover { background-color: #1E2530 !important; }
+    [data-baseweb="popover"] { background-color: #1E222D !important; }
+    [data-baseweb="popover"] li { color: #D1D4DC !important; }
+    [data-baseweb="popover"] li:hover { background-color: #2A2E39 !important; }
+    [role="listbox"] { background-color: #1E222D !important; }
+    [role="option"] { color: #D1D4DC !important; }
+    [role="option"]:hover { background-color: #2A2E39 !important; }
 
     /* Select boxes */
     [data-baseweb="select"] > div {
-        background-color: #151A24 !important;
-        border-color: #2A3040 !important;
-        color: #E2E8F0 !important;
+        background-color: #1E222D !important;
+        border-color: #2A2E39 !important;
+        color: #D1D4DC !important;
     }
 
     /* ===== Form containers (login) ===== */
     [data-testid="stForm"] {
-        background-color: #151A24 !important;
-        border: 1px solid #2A3040 !important;
+        background: rgba(30, 34, 45, 0.8) !important;
+        backdrop-filter: blur(16px) !important;
+        -webkit-backdrop-filter: blur(16px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.06) !important;
         border-radius: 12px;
-        padding: 28px !important;
+        padding: 32px !important;
     }
     [data-testid="stForm"] input {
-        background-color: #1A1F2B !important;
-        border: 1px solid #2A3040 !important;
-        border-radius: 8px !important;
-        color: #F1F5F9 !important;
+        background-color: #131722 !important;
+        border: 1px solid #2A2E39 !important;
+        border-radius: 6px !important;
+        color: #D1D4DC !important;
         padding: 10px 14px !important;
-        font-size: 0.95rem !important;
+        font-size: 0.9rem !important;
     }
     [data-testid="stForm"] input:focus {
-        border-color: #6C9EFF !important;
-        box-shadow: 0 0 0 2px rgba(108, 158, 255, 0.25) !important;
-    }
-    [data-testid="stForm"] button[kind="secondaryFormSubmit"],
-    [data-testid="stForm"] button {
-        background-color: #6C9EFF !important;
-        color: #fff !important;
-        border: none !important;
-        border-radius: 8px !important;
-        padding: 10px 0 !important;
-        font-weight: 600 !important;
-        font-size: 0.95rem !important;
-    }
-    [data-testid="stForm"] button:hover {
-        background-color: #5A8AE6 !important;
-    }
-
-    /* ===== DataFrames / Tables ===== */
-    [data-testid="stDataFrame"] {
-        border: 1px solid #1E2530 !important;
-        border-radius: 8px !important;
-    }
-
-    /* ===== Buttons ===== */
-    .stButton > button {
-        border: 1px solid #2A3040 !important;
-        border-radius: 8px !important;
-        color: #E2E8F0 !important;
-        font-weight: 500 !important;
-        transition: all 0.15s ease !important;
-    }
-    .stButton > button:hover {
-        border-color: #6C9EFF !important;
-        color: #FFFFFF !important;
-        background-color: #1A1F2B !important;
-    }
-
-    /* ===== Success/Warning/Error alerts ===== */
-    [data-testid="stAlert"] {
-        border-radius: 8px !important;
-        font-size: 0.9rem !important;
+        border-color: #2962FF !important;
+        box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.2) !important;
     }
 
     /* ===== Plotly chart backgrounds ===== */
     .js-plotly-plot .plotly .main-svg { background: transparent !important; }
 
-    /* ===== Compact vertical spacing ===== */
-    .block-container { padding-top: 2.5rem !important; padding-bottom: 0 !important; }
-    [data-testid="stVerticalBlock"] > div { gap: 0.4rem !important; }
-    [data-testid="stMetric"] { padding: 4px 0 !important; }
-    [data-testid="stExpander"] {
-        border: 1px solid #1E2530 !important;
-        border-radius: 8px !important;
-        background-color: #0A0D12 !important;
-    }
-    [data-testid="stExpander"] summary {
-        color: #94A3B8 !important;
-        font-weight: 600 !important;
-        font-size: 0.85rem !important;
-    }
+    /* ===== Layout spacing ===== */
+    .block-container { padding-top: 2rem !important; padding-bottom: 0 !important; }
+    [data-testid="stVerticalBlock"] > div { gap: 0.5rem !important; }
+
+    /* ===== Columns — subtle gap ===== */
+    [data-testid="stHorizontalBlock"] { gap: 0.75rem !important; }
     </style>""",
     unsafe_allow_html=True,
 )
@@ -341,7 +302,7 @@ def page_spy():
     updated_at = state.get("updated_at", "")
 
     # --- Compact header ---
-    st.markdown('<h2 style="margin:0;padding:0;color:#F1F5F9;">📈 SPY/SPX Predictor</h2>',
+    st.markdown('<h2 style="margin:0;padding:0;color:#D1D4DC;">📈 SPY/SPX Predictor</h2>',
                 unsafe_allow_html=True)
 
     direction = prediction.get("direction", "NEUTRAL")
@@ -350,9 +311,9 @@ def page_spy():
     probs = prediction.get("probabilities", {})
 
     color_map = {
-        "STRONG_BULLISH": "#00C853", "BULLISH": "#4CAF50",
-        "NEUTRAL": "#FFC107",
-        "BEARISH": "#FF5722", "STRONG_BEARISH": "#D50000",
+        "STRONG_BULLISH": "#26A69A", "BULLISH": "#26A69A",
+        "NEUTRAL": "#FFAB40",
+        "BEARISH": "#EF5350", "STRONG_BEARISH": "#EF5350",
     }
     banner_color = color_map.get(scale_label, "#FFC107")
 
@@ -512,13 +473,13 @@ def page_spy():
     if shap_drivers:
         driver_df = pd.DataFrame(shap_drivers)
         fig_shap = go.Figure()
-        colors = ["#4ADE80" if v > 0 else "#F87171" for v in driver_df["shap_value"]]
+        colors = ["#26A69A" if v > 0 else "#EF5350" for v in driver_df["shap_value"]]
         fig_shap.add_trace(go.Bar(
             y=driver_df["feature"], x=driver_df["shap_value"],
             orientation="h", marker_color=colors,
             text=[f"{v:+.3f}" for v in driver_df["shap_value"]],
             textposition="outside",
-            textfont=dict(color="#E2E8F0", size=11),
+            textfont=dict(color="#D1D4DC", size=11),
             hovertemplate="Feature: %{y}<br>SHAP: %{x:.4f}<br>Value: %{customdata:.4f}",
             customdata=driver_df["feature_value"],
         ))
@@ -526,8 +487,8 @@ def page_spy():
             height=160, margin=dict(l=10, r=10, t=5, b=5),
             xaxis_title="SHAP", yaxis=dict(autorange="reversed"),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#E2E8F0", size=11),
-            xaxis=dict(gridcolor="#1E2530", zerolinecolor="#2A3040"),
+            font=dict(color="#D1D4DC", size=11),
+            xaxis=dict(gridcolor="#1C1F2E", zerolinecolor="#2A2E39"),
         )
         st.plotly_chart(fig_shap, use_container_width=True)
 
@@ -535,31 +496,31 @@ def page_spy():
     col1, col2 = st.columns([3, 2])
 
     with col1:
-        st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
+        st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
                     unsafe_allow_html=True)
         hist_df = load_prediction_history(30)
         if not hist_df.empty:
             colors = hist_df["direction"].map({
-                "BULLISH": "#4ADE80", "STRONG_BULLISH": "#22C55E",
-                "BEARISH": "#F87171", "STRONG_BEARISH": "#EF4444",
-                "NEUTRAL": "#64748B",
+                "BULLISH": "#26A69A", "STRONG_BULLISH": "#26A69A",
+                "BEARISH": "#EF5350", "STRONG_BEARISH": "#EF5350",
+                "NEUTRAL": "#787B86",
             }).fillna("#64748B")
             fig = go.Figure()
             fig.add_trace(go.Bar(
                 x=hist_df["date"], y=hist_df["confidence"],
                 marker_color=colors.tolist(),
                 text=hist_df["direction"], textposition="outside",
-                textfont=dict(color="#E2E8F0", size=9),
+                textfont=dict(color="#D1D4DC", size=9),
                 hovertemplate="Date: %{x}<br>Direction: %{text}<br>Confidence: %{y:.0f}%",
             ))
             fig.update_layout(
                 height=220, margin=dict(l=10, r=10, t=5, b=25),
                 yaxis_title="Conf %", yaxis_range=[0, 100],
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94A3B8", size=10),
-                xaxis=dict(gridcolor="#1E2530", tickfont=dict(size=9),
+                font=dict(color="#787B86", size=10),
+                xaxis=dict(gridcolor="#1C1F2E", tickfont=dict(size=9),
                            tickformat="%b %d", dtick="D1"),
-                yaxis=dict(gridcolor="#1E2530"),
+                yaxis=dict(gridcolor="#1C1F2E"),
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -579,7 +540,7 @@ def page_spy():
                         if not tier_df.empty:
                             tier_acc = tier_df["correct"].mean()
                             st.markdown(
-                                f'<span style="color:#E2E8F0;">'
+                                f'<span style="color:#D1D4DC;">'
                                 f'{"🟢" if tier_acc >= 0.55 else "🟡" if tier_acc >= 0.50 else "🔴"} '
                                 f'{tier.title()}: {tier_acc:.1%} ({len(tier_df)})</span>',
                                 unsafe_allow_html=True,
@@ -591,7 +552,7 @@ def page_spy():
                         if not reg_df.empty:
                             reg_acc = reg_df["correct"].mean()
                             st.markdown(
-                                f'<span style="color:#E2E8F0;">'
+                                f'<span style="color:#D1D4DC;">'
                                 f'VIX {regime}: {reg_acc:.1%} ({len(reg_df)})</span>',
                                 unsafe_allow_html=True,
                             )
@@ -599,7 +560,7 @@ def page_spy():
                 st.dataframe(perf_df.head(10), use_container_width=True, hide_index=True)
 
     with col2:
-        st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
+        st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
                     unsafe_allow_html=True)
         if indicators:
             ic1, ic2 = st.columns(2)
@@ -636,7 +597,7 @@ def page_spy():
                     legs = alert.get("legs", "")
                     legs_str = f" ({legs}×)" if legs else ""
                     st.markdown(
-                        f'<span style="color:#E2E8F0; font-family:monospace; font-size:0.8rem;">'
+                        f'<span style="color:#D1D4DC; font-family:monospace; font-size:0.8rem;">'
                         f'{direction_emoji} {alert.get("timestamp", "")[:16]} '
                         f'{alert.get("direction", "")} {alert.get("type", "")} '
                         f'${notional:,.0f}{legs_str}</span>',
@@ -702,8 +663,8 @@ def page_es():
     unrealized = pnl.get("unrealized", 0)
     daily_pnl = pnl.get("daily", 0)
 
-    regime_colors = {"Low": "#4CAF50", "Med": "#FFC107", "High": "#FF5722"}
-    pos_colors = {"LONG": "#00C853", "SHORT": "#D50000", "FLAT": "#9E9E9E"}
+    regime_colors = {"Low": "#26A69A", "Med": "#FFAB40", "High": "#EF5350"}
+    pos_colors = {"LONG": "#26A69A", "SHORT": "#EF5350", "FLAT": "#787B86"}
     banner_color = pos_colors.get(pos_status, "#9E9E9E")
     regime_color = regime_colors.get(regime, "#FFC107")
 
@@ -783,9 +744,9 @@ def page_es():
                               xaxis_rangeslider_visible=False, showlegend=True,
                               legend=dict(orientation="h", yanchor="bottom", y=1.02),
                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              font=dict(color="#E2E8F0", size=11))
-            fig.update_xaxes(gridcolor="#1E2530")
-            fig.update_yaxes(gridcolor="#1E2530")
+                              font=dict(color="#D1D4DC", size=11))
+            fig.update_xaxes(gridcolor="#1C1F2E")
+            fig.update_yaxes(gridcolor="#1C1F2E")
             fig.update_yaxes(title_text="Price", row=1, col=1)
             fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
             st.plotly_chart(fig, use_container_width=True)
@@ -1467,7 +1428,7 @@ def _admin_users_tab():
     current_role = current_user.get("role", "viewer") if current_user else "viewer"
     is_admin = current_role == "admin"
 
-    st.markdown(f'<p style="color:#94A3B8;font-size:0.85rem;">Auth mode: <b>{mode}</b> · '
+    st.markdown(f'<p style="color:#787B86;font-size:0.85rem;">Auth mode: <b>{mode}</b> · '
                 f'Logged in as: <b>{current_user.get("name", "—")}</b> ({current_role}) · '
                 f'Storage: <b>Database (bcrypt)</b></p>',
                 unsafe_allow_html=True)
@@ -1482,7 +1443,7 @@ def _admin_users_tab():
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         return
 
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">CURRENT USERS</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">CURRENT USERS</p>',
                 unsafe_allow_html=True)
 
     if users:
@@ -1501,7 +1462,7 @@ def _admin_users_tab():
     st.divider()
 
     # --- Add new user ---
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">ADD USER</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">ADD USER</p>',
                 unsafe_allow_html=True)
 
     with st.form("add_user_form", clear_on_submit=True):
@@ -1529,7 +1490,7 @@ def _admin_users_tab():
     st.divider()
 
     # --- Edit / Delete existing users ---
-    st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">EDIT / DELETE USER</p>',
+    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">EDIT / DELETE USER</p>',
                 unsafe_allow_html=True)
 
     usernames = [u["username"] for u in users]
@@ -1578,7 +1539,7 @@ def _admin_users_tab():
     # --- Google OAuth settings (if mode is google) ---
     if mode == "google":
         st.divider()
-        st.markdown('<p style="color:#94A3B8;font-weight:600;font-size:0.85rem;">GOOGLE OAUTH SETTINGS</p>',
+        st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">GOOGLE OAUTH SETTINGS</p>',
                     unsafe_allow_html=True)
         st.caption("These are read from config.yaml or environment variables.")
         gc1, gc2 = st.columns(2)

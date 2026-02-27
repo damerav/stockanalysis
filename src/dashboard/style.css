@@ -1,21 +1,36 @@
 /* ============================================================
-   Stock Analysis — Unified Styling
-   Pill tabs + st.navigation sidebar + hidden Streamlit defaults
+   Stock Analysis Platform — TradingView-Inspired Design System
+   
+   Color palette derived from professional trading platforms:
+   - TradingView dark theme backgrounds & accent blue
+   - Bloomberg Terminal information density
+   - Modern fintech glassmorphism for cards
    ============================================================ */
 
 /* --- HIDE STREAMLIT DEFAULTS --- */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 
-/* --- SIDEBAR STYLING (st.navigation) --- */
+/* ===== SIDEBAR — Deep dark panel ===== */
 [data-testid="stSidebar"] {
-    background-color: #0f1116 !important;
-    border-right: 1px solid #1a1f2a !important;
+    background: linear-gradient(180deg, #0C0E14 0%, #0F1118 100%) !important;
+    border-right: 1px solid #1C1F2E !important;
+}
+
+/* Section headers in sidebar (Markets / Operations) */
+[data-testid="stSidebarNav"] span[data-testid="stSidebarNavSectionHeader"] {
+    color: #787B86 !important;
+    font-size: 0.7rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
+    padding: 0.5rem 1rem 0.25rem !important;
 }
 
 /* Navigation link list */
 [data-testid="stSidebarNav"] ul {
-    padding-top: 0.75rem;
+    padding-top: 0.5rem;
+    gap: 2px;
 }
 
 /* Individual nav links */
@@ -23,91 +38,193 @@ footer { visibility: hidden; }
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    padding: 0.55rem 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.92rem;
-    font-weight: 500;
-    color: #94A3B8;
-    transition: background-color 0.2s ease, color 0.2s ease;
-    border-left: 3px solid transparent;
+    padding: 0.5rem 1rem;
+    margin: 1px 0.5rem;
+    border-radius: 6px;
+    font-size: 0.88rem;
+    font-weight: 400;
+    color: #787B86;
+    transition: all 0.15s ease;
+    border-left: 2px solid transparent;
     text-decoration: none;
 }
 
-/* Active page link */
+/* Active page link — accent blue indicator */
 [data-testid="stSidebarNav"] ul li a[aria-current="page"] {
-    background-color: rgba(0, 128, 255, 0.15) !important;
-    color: #ffffff !important;
-    border-left: 3px solid #0080ff !important;
-    font-weight: 600;
+    background-color: rgba(41, 98, 255, 0.1) !important;
+    color: #D1D4DC !important;
+    border-left: 2px solid #2962FF !important;
+    font-weight: 500;
 }
 
 /* Hover on nav links */
 [data-testid="stSidebarNav"] ul li a:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-    color: #E2E8F0 !important;
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    color: #D1D4DC !important;
 }
 
-/* --- PILL-STYLE TAB STYLING --- */
+/* Nav link icons */
+[data-testid="stSidebarNav"] ul li a span[data-testid="stIconMaterial"] {
+    color: #787B86;
+    font-size: 1.1rem;
+}
+[data-testid="stSidebarNav"] ul li a[aria-current="page"] span[data-testid="stIconMaterial"] {
+    color: #2962FF !important;
+}
+
+/* ===== PILL-STYLE TABS ===== */
 /* Tab bar container */
 .stTabs [data-baseweb="tab-list"] {
     display: flex;
-    gap: 10px !important;
+    gap: 6px !important;
     border-bottom: none !important;
-    background-color: transparent !important;
-    padding: 4px 0 !important;
+    background-color: rgba(30, 34, 45, 0.5) !important;
+    border-radius: 8px !important;
+    padding: 4px !important;
     flex-wrap: wrap;
 }
 
 /* Individual tab buttons — pill shape */
 .stTabs [data-baseweb="tab"] {
     background-color: transparent !important;
-    border: 1px solid #333 !important;
-    border-radius: 9999px !important;
-    padding: 8px 20px !important;
-    color: #a0a0a0 !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 6px 16px !important;
+    color: #787B86 !important;
     font-weight: 500 !important;
-    font-size: 0.88rem !important;
-    transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+    font-size: 0.82rem !important;
+    transition: all 0.15s ease;
     white-space: nowrap;
     height: auto !important;
     min-height: 0 !important;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    letter-spacing: 0.01em;
 }
 
-/* Active/selected tab — blue pill */
+/* Active/selected tab */
 .stTabs [aria-selected="true"] {
-    background-color: #0080ff !important;
+    background-color: #2962FF !important;
     color: #ffffff !important;
-    border-color: #0080ff !important;
     font-weight: 600 !important;
 }
 
 /* Hover on inactive tabs */
 .stTabs [data-baseweb="tab"]:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-    color: #E2E8F0 !important;
-    border-color: #3A4050 !important;
+    background-color: rgba(255, 255, 255, 0.04) !important;
+    color: #D1D4DC !important;
 }
 
-/* Remove focus ring / orange underline */
+/* Remove focus ring */
 .stTabs [data-baseweb="tab"]:focus {
     box-shadow: none !important;
     outline: none !important;
 }
 
-/* Remove the tab highlight bar */
-.stTabs [data-baseweb="tab-highlight"] {
-    display: none !important;
-}
-
-/* Remove tab border line */
+/* Remove the tab highlight bar & border */
+.stTabs [data-baseweb="tab-highlight"],
 .stTabs [data-baseweb="tab-border"] {
     display: none !important;
 }
 
 /* Tab panel content area */
 .stTabs [data-baseweb="tab-panel"] {
-    padding-top: 0.8rem !important;
+    padding-top: 1rem !important;
+}
+
+/* ===== GLASSMORPHISM METRIC CARDS ===== */
+/* Wrap st.metric in a frosted-glass card look */
+[data-testid="stMetric"] {
+    background: rgba(30, 34, 45, 0.6) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+    border-radius: 10px !important;
+    padding: 14px 16px !important;
+    transition: border-color 0.2s ease;
+}
+[data-testid="stMetric"]:hover {
+    border-color: rgba(41, 98, 255, 0.3) !important;
+}
+
+/* ===== EXPANDERS — Frosted glass ===== */
+[data-testid="stExpander"] {
+    background: rgba(30, 34, 45, 0.4) !important;
+    backdrop-filter: blur(8px) !important;
+    -webkit-backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.05) !important;
+    border-radius: 10px !important;
+}
+[data-testid="stExpander"] summary {
+    color: #787B86 !important;
+    font-weight: 600 !important;
+    font-size: 0.82rem !important;
+    letter-spacing: 0.02em;
+}
+[data-testid="stExpander"]:hover {
+    border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* ===== BUTTONS — Subtle, professional ===== */
+.stButton > button {
+    background-color: rgba(30, 34, 45, 0.6) !important;
+    border: 1px solid #2A2E39 !important;
+    border-radius: 6px !important;
+    color: #D1D4DC !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    transition: all 0.15s ease !important;
+    backdrop-filter: blur(4px) !important;
+}
+.stButton > button:hover {
+    border-color: #2962FF !important;
+    color: #FFFFFF !important;
+    background-color: rgba(41, 98, 255, 0.1) !important;
+}
+
+/* Primary action buttons (inside forms) */
+[data-testid="stForm"] button,
+[data-testid="stForm"] button[kind="secondaryFormSubmit"] {
+    background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 10px 0 !important;
+    font-weight: 600 !important;
+    font-size: 0.9rem !important;
+    letter-spacing: 0.02em;
+}
+[data-testid="stForm"] button:hover {
+    background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%) !important;
+}
+
+/* ===== DATAFRAMES — Clean borders ===== */
+[data-testid="stDataFrame"] {
+    border: 1px solid #2A2E39 !important;
+    border-radius: 8px !important;
+    overflow: hidden;
+}
+
+/* ===== ALERTS — Rounded, subtle ===== */
+[data-testid="stAlert"] {
+    border-radius: 8px !important;
+    font-size: 0.85rem !important;
+    backdrop-filter: blur(4px) !important;
+}
+
+/* ===== SCROLLBAR — Thin, dark ===== */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: #2A2E39;
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #363A45;
 }
