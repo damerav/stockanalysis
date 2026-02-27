@@ -285,6 +285,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# --- Load external CSS for pill tabs + sidebar styling ---
+_css_path = os.path.join(os.path.dirname(__file__), "style.css")
+if os.path.exists(_css_path):
+    with open(_css_path) as _css_f:
+        st.markdown(f"<style>{_css_f.read()}</style>", unsafe_allow_html=True)
+
 # --- OAuth Callback Handling ---
 if "code" in st.query_params and not is_authenticated():
     handle_oauth_callback()
@@ -304,9 +310,9 @@ if user:
     st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
 page = st.sidebar.radio(
     "Navigate",
-    ["📈 SPY Predictor", "📊 ES Strategy", "🔬 What-If Analysis",
-     "🔮 Forecast", "🔍 Single-Stock",
-     "📉 Monitoring", "📊 Grafana Dashboards", "⚙️ Admin"],
+    ["🔮 SPY Predictor", "📈 ES Strategy", "🧪 What-If Analysis",
+     "📊 Forecast", "🔍 Single-Stock",
+     "🖥️ Monitoring", "🔗 Grafana Dashboards", "⚙️ Admin"],
     label_visibility="collapsed",
 )
 st.sidebar.divider()
@@ -911,7 +917,7 @@ def page_whatif():
     st.title("🔬 What-If Analysis")
     engine = get_whatif_engine()
 
-    tab_es, tab_spy = st.tabs(["ES Strategy", "SPY Predictor"])
+    tab_es, tab_spy = st.tabs(["📈 ES Strategy", "🔮 SPY Predictor"])
 
     with tab_es:
         _whatif_es_tab(engine)
@@ -1247,7 +1253,7 @@ def page_admin():
     st.title("⚙️ Admin Console")
 
     tab_status, tab_actions, tab_users, tab_db, tab_config, tab_logs = st.tabs([
-        "System Status", "Actions", "👤 Users", "Database", "Configuration", "Logs",
+        "ℹ️ System Status", "▶️ Actions", "👤 Users", "🗃️ Database", "📝 Configuration", "📜 Logs",
     ])
 
     with tab_status:
@@ -2543,23 +2549,23 @@ def page_grafana():
 if "_nav_target" in st.session_state:
     page = st.session_state.pop("_nav_target")
 
-if page == "📈 SPY Predictor":
+if page == "🔮 SPY Predictor":
     page_spy()
     time.sleep(15)
     st.rerun()
-elif page == "📊 ES Strategy":
+elif page == "📈 ES Strategy":
     page_es()
     time.sleep(5)
     st.rerun()
-elif page == "🔬 What-If Analysis":
+elif page == "🧪 What-If Analysis":
     page_whatif()
-elif page == "🔮 Forecast":
+elif page == "📊 Forecast":
     page_forecast()
 elif page == "🔍 Single-Stock":
     page_single_stock()
-elif page == "📉 Monitoring":
+elif page == "🖥️ Monitoring":
     page_monitoring()
-elif page == "📊 Grafana Dashboards":
+elif page == "🔗 Grafana Dashboards":
     page_grafana()
 elif page == "⚙️ Admin":
     page_admin()

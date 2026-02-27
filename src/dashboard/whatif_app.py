@@ -36,7 +36,7 @@ def main():
 
     engine = get_engine()
 
-    tab_es, tab_spy = st.tabs(["ES Strategy", "SPY Predictor"])
+    tab_es, tab_spy = st.tabs(["📈 ES Strategy", "🔮 SPY Predictor"])
 
     with tab_es:
         render_es_tab(engine)

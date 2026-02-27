@@ -899,15 +899,15 @@ def tab_data_sources():
 
     # Sub-tabs for each data source category
     src_tabs = st.tabs([
-        "📰 Finnhub News",
-        "📡 Yahoo RSS",
-        "📡 CNBC RSS",
-        "📡 MarketWatch RSS",
-        "📊 FRED Macro",
+        "📰 Finnhub",
+        "📡 Yahoo",
+        "📡 CNBC",
+        "📡 MarketWatch",
+        "📊 FRED",
         "💹 yfinance",
         "📅 Earnings",
         "🏛️ Fed Comms",
-        "🗄️ All News (DB)",
+        "🗄️ All News",
     ])
 
     # ── Finnhub News ──
@@ -1368,12 +1368,12 @@ def page_monitoring():
 
     # Tabs
     tabs = st.tabs([
-        "📈 SPY Predictor",
-        "📊 ES Strategy",
-        "🖥️ System Health",
-        "🤖 Confidence API",
-        "⚙️ Pipeline Status",
-        "📡 Data Sources",
+        "📈 SPY",
+        "📊 ES",
+        "🖥️ Health",
+        "🤖 API",
+        "⚙️ Pipeline",
+        "📡 Sources",
     ])
 
     with tabs[0]:

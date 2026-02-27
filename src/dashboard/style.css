@@ -1,0 +1,104 @@
+/* --- HIDE STREAMLIT DEFAULTS --- */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* --- SIDEBAR STYLING --- */
+[data-testid="stSidebar"] {
+    background-color: #0f1116 !important;
+    border-right: 1px solid #1a1f2a !important;
+}
+
+/* Sidebar radio nav items — modern look */
+.stSidebar .stRadio label {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.55rem 0.9rem !important;
+    border-radius: 0.5rem !important;
+    font-size: 0.92rem !important;
+    font-weight: 500 !important;
+    color: #94A3B8 !important;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    border-left: 3px solid transparent;
+    cursor: pointer !important;
+}
+
+/* Active sidebar item */
+.stSidebar .stRadio label[data-checked="true"],
+.stSidebar .stRadio div[role="radiogroup"] label:has(input:checked) {
+    background-color: rgba(0, 128, 255, 0.12) !important;
+    color: #ffffff !important;
+    border-left: 3px solid #0080ff !important;
+}
+
+/* Hover effect */
+.stSidebar .stRadio label:hover {
+    background-color: rgba(255, 255, 255, 0.04) !important;
+    color: #E2E8F0 !important;
+}
+
+/* Hide radio circles */
+.stSidebar .stRadio > div { gap: 2px !important; }
+.stSidebar .stRadio label > div:first-child { display: none !important; }
+
+/* --- PILL-STYLE TAB STYLING --- */
+/* Tab bar container */
+.stTabs [data-baseweb="tab-list"] {
+    display: flex;
+    gap: 8px !important;
+    border-bottom: none !important;
+    background-color: transparent !important;
+    padding: 4px 0 !important;
+    flex-wrap: wrap;
+}
+
+/* Individual tab buttons — pill shape */
+.stTabs [data-baseweb="tab"] {
+    background-color: transparent !important;
+    border: 1px solid #2A3040 !important;
+    border-radius: 9999px !important;
+    padding: 6px 18px !important;
+    color: #8899AA !important;
+    font-weight: 500 !important;
+    font-size: 0.88rem !important;
+    transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+    white-space: nowrap;
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* Active/selected tab — blue pill */
+.stTabs [aria-selected="true"] {
+    background-color: #0080ff !important;
+    color: #ffffff !important;
+    border-color: #0080ff !important;
+    font-weight: 600 !important;
+}
+
+/* Hover on inactive tabs */
+.stTabs [data-baseweb="tab"]:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    color: #E2E8F0 !important;
+    border-color: #3A4050 !important;
+}
+
+/* Remove the orange/blue underline on tab focus */
+.stTabs [data-baseweb="tab"]:focus {
+    box-shadow: none !important;
+    outline: none !important;
+}
+
+/* Remove the tab highlight bar */
+.stTabs [data-baseweb="tab-highlight"] {
+    display: none !important;
+}
+
+/* Tab panel border — remove default */
+.stTabs [data-baseweb="tab-border"] {
+    display: none !important;
+}
+
+/* Tab panel content area */
+.stTabs [data-baseweb="tab-panel"] {
+    padding-top: 0.8rem !important;
+}
