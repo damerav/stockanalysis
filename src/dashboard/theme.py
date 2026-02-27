@@ -23,6 +23,7 @@ DARK = {
     "bg": "#131722",
     "surface": "#1E222D",
     "card": "rgba(30,34,45,0.6)",
+    "card_bg": "#1E222D",          # backward-compat alias for surface
     "card_border": "rgba(255,255,255,0.05)",
     "card_hover": "rgba(41,98,255,0.3)",
     "border": "#2A2E39",
@@ -68,6 +69,7 @@ LIGHT = {
     "bg": "#F0F2F5",
     "surface": "#FFFFFF",
     "card": "#FFFFFF",
+    "card_bg": "#FFFFFF",          # backward-compat alias for surface
     "card_border": "#E6E8EC",
     "card_hover": "rgba(41,98,255,0.15)",
     "border": "#E6E8EC",

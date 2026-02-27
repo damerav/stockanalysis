@@ -342,7 +342,7 @@ def tab_spy_predictor(days: int = 90):
             fig.add_hrect(y0=0, y1=30, fillcolor="rgba(115,191,105,0.1)", line_width=0)
             fig.add_hline(y=70, line_dash="dash", line_color=COLORS["red"], opacity=0.5)
             fig.add_hline(y=30, line_dash="dash", line_color=COLORS["green"], opacity=0.5)
-        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor="#2A2E39", showgrid=True)}
+        rsi_layout = {**DARK_LAYOUT, "yaxis": dict(range=[0, 100], gridcolor=COLORS["border"], showgrid=True)}
         fig.update_layout(**rsi_layout, title=dict(text="RSI (14)", font=TITLE_FONT), height=220)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -396,7 +396,7 @@ def tab_spy_predictor(days: int = 90):
                 x=df["Rows"], y=df["Table"], orientation="h",
                 marker=dict(color=COLORS["blue"], line=dict(width=0)),
             ))
-            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor="#2A2E39", showgrid=True)}
+            inv_layout = {**DARK_LAYOUT, "yaxis": dict(autorange="reversed", gridcolor=COLORS["border"], showgrid=True)}
             fig.update_layout(**inv_layout, title=dict(text="Data Inventory", font=TITLE_FONT), height=220,
                               xaxis_title="Row Count")
             st.plotly_chart(fig, use_container_width=True)
@@ -705,7 +705,7 @@ def tab_confidence_api():
                 f'border-radius:8px; padding:20px;">'
                 f'<div style="color:{COLORS["yellow"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
                 f'⚠️ Models Not Loaded</div>'
-                f'<div style="color:#D1D4DC; font-size:0.9em; line-height:1.6;">'
+                f'<div style="color:{COLORS["text"]}; font-size:0.9em; line-height:1.6;">'
                 f'{"❌ Entry Gate (es_entry_gate.json)" if not entry_loaded else "✅ Entry Gate"}<br>'
                 f'{"❌ Exit Controller (es_exit_cnn.pt)" if not exit_loaded else "✅ Exit Controller"}<br><br>'
                 f'The ES strategy models need to be trained first.<br>'
@@ -741,13 +741,13 @@ def tab_confidence_api():
                 f'border-radius:8px; padding:20px;">'
                 f'<div style="color:{COLORS["blue"]}; font-size:1.1em; font-weight:bold; margin-bottom:8px;">'
                 f'📡 API Endpoints</div>'
-                f'<div style="color:#D1D4DC; font-size:0.9em; line-height:1.8; font-family:monospace;">'
+                f'<div style="color:{COLORS["text"]}; font-size:0.9em; line-height:1.8; font-family:monospace;">'
                 f'GET  /health &nbsp;&nbsp;&nbsp;→ Service health<br>'
                 f'POST /confidence → Entry gate score<br>'
                 f'POST /exit &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ Exit signal<br>'
                 f'POST /spread &nbsp;&nbsp;&nbsp;→ Update spread<br>'
                 f'</div>'
-                f'<div style="color:#787B86; font-size:0.8em; margin-top:10px;">'
+                f'<div style="color:{COLORS["text_secondary"]}; font-size:0.8em; margin-top:10px;">'
                 f'Base URL: http://localhost:8100</div>'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -796,7 +796,7 @@ def tab_pipeline_status():
         col.markdown(
             f'<div style="background:{COLORS["card_bg"]}; border:1px solid {COLORS["border"]}; '
             f'border-radius:8px; padding:20px; text-align:center;">'
-            f'<div style="color:#787B86; font-size:0.85em; margin-bottom:6px;">{label}</div>'
+            f'<div style="color:{COLORS["text_secondary"]}; font-size:0.85em; margin-bottom:6px;">{label}</div>'
             f'<div style="color:{color}; font-size:1.6em; font-weight:bold;">{text}</div>'
             f'</div>',
             unsafe_allow_html=True,
@@ -933,7 +933,7 @@ def tab_data_sources():
 
 def _ds_finnhub(fetcher):
     """Finnhub news sub-tab."""
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">FINNHUB NEWS API</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">FINNHUB NEWS API</p>',
                 unsafe_allow_html=True)
 
     c1, c2 = st.columns([1, 3])
@@ -966,7 +966,7 @@ def _ds_finnhub(fetcher):
 
     # Historical from DB
     st.markdown("---")
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df(
         "SELECT date, source, headline, url FROM news WHERE source = 'finnhub' "
@@ -984,7 +984,7 @@ def _ds_rss_source(fetcher, source_name: str, feed_url: str):
     import feedparser
 
     label = source_name.upper()
-    st.markdown(f'<p style="color:#787B86;font-weight:600;font-size:0.85rem;">{label} RSS FEED</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">{label} RSS FEED</p>',
                 unsafe_allow_html=True)
 
     # Live fetch
@@ -1012,7 +1012,7 @@ def _ds_rss_source(fetcher, source_name: str, feed_url: str):
 
     # Historical from DB
     st.markdown("---")
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df(
         "SELECT date, headline, url FROM news WHERE source = ? ORDER BY id DESC LIMIT 50",
@@ -1027,7 +1027,7 @@ def _ds_rss_source(fetcher, source_name: str, feed_url: str):
 
 def _ds_fred(fetcher):
     """FRED macro data sub-tab."""
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">FRED MACRO DATA</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">FRED MACRO DATA</p>',
                 unsafe_allow_html=True)
 
     c1, c2 = st.columns([1, 3])
@@ -1068,7 +1068,7 @@ def _ds_fred(fetcher):
 
     # Historical chart from DB
     st.markdown("---")
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">HISTORICAL (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df("SELECT date, vix, us10y_yield, dxy, gold, crude FROM macro ORDER BY date DESC LIMIT 90")
     if not hist.empty:
@@ -1093,7 +1093,7 @@ def _ds_fred(fetcher):
 
 def _ds_yfinance():
     """yfinance data sub-tab."""
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">YFINANCE (SPY PRICES)</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">YFINANCE (SPY PRICES)</p>',
                 unsafe_allow_html=True)
 
     # Live check
@@ -1113,7 +1113,7 @@ def _ds_yfinance():
 
     # Historical from DB
     st.markdown("---")
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">PRICE HISTORY (from DB)</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">PRICE HISTORY (from DB)</p>',
                 unsafe_allow_html=True)
     hist = _query_df("SELECT date, open, high, low, close, volume FROM prices ORDER BY date DESC LIMIT 60")
     if not hist.empty:
@@ -1134,7 +1134,7 @@ def _ds_yfinance():
 
 def _ds_earnings():
     """Earnings calendar sub-tab."""
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">EARNINGS CALENDAR</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">EARNINGS CALENDAR</p>',
                 unsafe_allow_html=True)
 
     conn = _get_db()
@@ -1151,7 +1151,7 @@ def _ds_earnings():
             "WHERE date >= date('now') ORDER BY date ASC LIMIT 30", conn
         )
         if not upcoming.empty:
-            st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">UPCOMING</p>',
+            st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">UPCOMING</p>',
                         unsafe_allow_html=True)
             st.dataframe(upcoming, use_container_width=True, hide_index=True)
 
@@ -1160,7 +1160,7 @@ def _ds_earnings():
             "WHERE date < date('now') ORDER BY date DESC LIMIT 30", conn
         )
         if not recent.empty:
-            st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">RECENT</p>',
+            st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">RECENT</p>',
                         unsafe_allow_html=True)
             st.dataframe(recent, use_container_width=True, hide_index=True)
     except Exception as e:
@@ -1171,7 +1171,7 @@ def _ds_earnings():
 
 def _ds_fed_comms():
     """Fed communications sub-tab."""
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">FED COMMUNICATIONS</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">FED COMMUNICATIONS</p>',
                 unsafe_allow_html=True)
 
     conn = _get_db()
@@ -1210,7 +1210,7 @@ def _ds_fed_comms():
 
 def _ds_all_news_db():
     """All news from database — filterable by source."""
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">ALL NEWS (DATABASE)</p>',
+    st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">ALL NEWS (DATABASE)</p>',
                 unsafe_allow_html=True)
 
     conn = _get_db()
@@ -1229,7 +1229,7 @@ def _ds_all_news_db():
                 marker_color=COLORS["blue"],
                 text=sources["count"].apply(lambda x: f"{x:,}"),
                 textposition="auto",
-                textfont=dict(color="#D1D4DC"),
+                textfont=dict(color=COLORS["text"]),
             ))
             fig.update_layout(**DARK_LAYOUT, height=180,
                               title=dict(text="Articles by Source", font=TITLE_FONT),
@@ -1274,20 +1274,20 @@ def page_monitoring():
     """Main monitoring page with tabbed sub-dashboards."""
     _refresh_theme()
 
-    # Dark theme CSS (inherits from app.py global CSS, just override tab styling)
+    # Theme-aware tab styling (inherits from app.py global CSS, just override tab styling)
     st.markdown(
         f"""
         <style>
-        .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background-color: #0C0E14; border-radius: 8px; padding: 4px; }}
+        .stTabs [data-baseweb="tab-list"] {{ gap: 4px; background-color: {COLORS["tab_bg"]}; border-radius: 8px; padding: 4px; }}
         .stTabs [data-baseweb="tab"] {{
             background-color: transparent;
             border-radius: 6px;
             padding: 8px 16px;
-            color: #787B86;
+            color: {COLORS["tab_text"]};
             font-weight: 500;
         }}
         .stTabs [aria-selected="true"] {{
-            background-color: {COLORS["card_bg"]} !important;
+            background-color: {COLORS["tab_active"]} !important;
             color: #FFFFFF !important;
         }}
         </style>

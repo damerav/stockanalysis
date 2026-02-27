@@ -182,6 +182,7 @@ def load_performance() -> pd.DataFrame:
 
 
 def page_spy():
+    c = get_colors()
     state = load_spy_state()
     prediction = state.get("prediction", {})
     indicators = state.get("indicators", {})
@@ -197,11 +198,11 @@ def page_spy():
     probs = prediction.get("probabilities", {})
 
     color_map = {
-        "STRONG_BULLISH": "#26A69A", "BULLISH": "#26A69A",
-        "NEUTRAL": "#FFAB40",
-        "BEARISH": "#EF5350", "STRONG_BEARISH": "#EF5350",
+        "STRONG_BULLISH": c["green"], "BULLISH": c["green"],
+        "NEUTRAL": c["yellow"],
+        "BEARISH": c["red"], "STRONG_BEARISH": c["red"],
     }
-    banner_color = color_map.get(scale_label, "#FFC107")
+    banner_color = color_map.get(scale_label, c["yellow"])
 
     # --- Compact prediction banner ---
     if prediction:
@@ -359,13 +360,13 @@ def page_spy():
     if shap_drivers:
         driver_df = pd.DataFrame(shap_drivers)
         fig_shap = go.Figure()
-        colors = ["#26A69A" if v > 0 else "#EF5350" for v in driver_df["shap_value"]]
+        colors = [c["green"] if v > 0 else c["red"] for v in driver_df["shap_value"]]
         fig_shap.add_trace(go.Bar(
             y=driver_df["feature"], x=driver_df["shap_value"],
             orientation="h", marker_color=colors,
             text=[f"{v:+.3f}" for v in driver_df["shap_value"]],
             textposition="outside",
-            textfont=dict(color="#D1D4DC", size=11),
+            textfont=dict(color=c["text"], size=11),
             hovertemplate="Feature: %{y}<br>SHAP: %{x:.4f}<br>Value: %{customdata:.4f}",
             customdata=driver_df["feature_value"],
         ))
@@ -373,8 +374,8 @@ def page_spy():
             height=160, margin=dict(l=10, r=10, t=5, b=5),
             xaxis_title="SHAP", yaxis=dict(autorange="reversed"),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#D1D4DC", size=11),
-            xaxis=dict(gridcolor="#1C1F2E", zerolinecolor="#2A2E39"),
+            font=dict(color=c["text"], size=11),
+            xaxis=dict(gridcolor=c["grid"], zerolinecolor=c["zeroline"]),
         )
         st.plotly_chart(fig_shap, use_container_width=True)
 
@@ -382,31 +383,31 @@ def page_spy():
     col1, col2 = st.columns([3, 2])
 
     with col1:
-        st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
+        st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.9rem;margin-bottom:4px;">PREDICTION HISTORY</p>',
                     unsafe_allow_html=True)
         hist_df = load_prediction_history(30)
         if not hist_df.empty:
             colors = hist_df["direction"].map({
-                "BULLISH": "#26A69A", "STRONG_BULLISH": "#26A69A",
-                "BEARISH": "#EF5350", "STRONG_BEARISH": "#EF5350",
-                "NEUTRAL": "#787B86",
-            }).fillna("#64748B")
+                "BULLISH": c["green"], "STRONG_BULLISH": c["green"],
+                "BEARISH": c["red"], "STRONG_BEARISH": c["red"],
+                "NEUTRAL": c["text_secondary"],
+            }).fillna(c["text_muted"])
             fig = go.Figure()
             fig.add_trace(go.Bar(
                 x=hist_df["date"], y=hist_df["confidence"],
                 marker_color=colors.tolist(),
                 text=hist_df["direction"], textposition="outside",
-                textfont=dict(color="#D1D4DC", size=9),
+                textfont=dict(color=c["text"], size=9),
                 hovertemplate="Date: %{x}<br>Direction: %{text}<br>Confidence: %{y:.0f}%",
             ))
             fig.update_layout(
                 height=220, margin=dict(l=10, r=10, t=5, b=25),
                 yaxis_title="Conf %", yaxis_range=[0, 100],
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#787B86", size=10),
-                xaxis=dict(gridcolor="#1C1F2E", tickfont=dict(size=9),
+                font=dict(color=c["text_secondary"], size=10),
+                xaxis=dict(gridcolor=c["grid"], tickfont=dict(size=9),
                            tickformat="%b %d", dtick="D1"),
-                yaxis=dict(gridcolor="#1C1F2E"),
+                yaxis=dict(gridcolor=c["grid"]),
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -426,7 +427,7 @@ def page_spy():
                         if not tier_df.empty:
                             tier_acc = tier_df["correct"].mean()
                             st.markdown(
-                                f'<span style="color:#D1D4DC;">'
+                                f'<span style="color:{c["text"]};">'
                                 f'{"🟢" if tier_acc >= 0.55 else "🟡" if tier_acc >= 0.50 else "🔴"} '
                                 f'{tier.title()}: {tier_acc:.1%} ({len(tier_df)})</span>',
                                 unsafe_allow_html=True,
@@ -438,7 +439,7 @@ def page_spy():
                         if not reg_df.empty:
                             reg_acc = reg_df["correct"].mean()
                             st.markdown(
-                                f'<span style="color:#D1D4DC;">'
+                                f'<span style="color:{c["text"]};">'
                                 f'VIX {regime}: {reg_acc:.1%} ({len(reg_df)})</span>',
                                 unsafe_allow_html=True,
                             )
@@ -446,7 +447,7 @@ def page_spy():
                 st.dataframe(perf_df.head(10), use_container_width=True, hide_index=True)
 
     with col2:
-        st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
+        st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
                     unsafe_allow_html=True)
         if indicators:
             ic1, ic2 = st.columns(2)
@@ -483,7 +484,7 @@ def page_spy():
                     legs = alert.get("legs", "")
                     legs_str = f" ({legs}×)" if legs else ""
                     st.markdown(
-                        f'<span style="color:#D1D4DC; font-family:monospace; font-size:0.8rem;">'
+                        f'<span style="color:{c["text"]}; font-family:monospace; font-size:0.8rem;">'
                         f'{direction_emoji} {alert.get("timestamp", "")[:16]} '
                         f'{alert.get("direction", "")} {alert.get("type", "")} '
                         f'${notional:,.0f}{legs_str}</span>',
@@ -533,6 +534,7 @@ def load_es_state() -> dict:
 
 
 def page_es():
+    c = get_colors()
     state = load_es_state()
     position = state.get("position", {"status": "FLAT", "lots": 0})
     signals = state.get("signals", [])
@@ -549,10 +551,10 @@ def page_es():
     unrealized = pnl.get("unrealized", 0)
     daily_pnl = pnl.get("daily", 0)
 
-    regime_colors = {"Low": "#26A69A", "Med": "#FFAB40", "High": "#EF5350"}
-    pos_colors = {"LONG": "#26A69A", "SHORT": "#EF5350", "FLAT": "#787B86"}
-    banner_color = pos_colors.get(pos_status, "#9E9E9E")
-    regime_color = regime_colors.get(regime, "#FFC107")
+    regime_colors = {"Low": c["green"], "Med": c["yellow"], "High": c["red"]}
+    pos_colors = {"LONG": c["green"], "SHORT": c["red"], "FLAT": c["text_secondary"]}
+    banner_color = pos_colors.get(pos_status, c["text_secondary"])
+    regime_color = regime_colors.get(regime, c["yellow"])
 
     st.markdown(
         f"""<div style="background-color:{banner_color}; padding:15px; border-radius:10px;
@@ -630,9 +632,9 @@ def page_es():
                               xaxis_rangeslider_visible=False, showlegend=True,
                               legend=dict(orientation="h", yanchor="bottom", y=1.02),
                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              font=dict(color="#D1D4DC", size=11))
-            fig.update_xaxes(gridcolor="#1C1F2E")
-            fig.update_yaxes(gridcolor="#1C1F2E")
+                              font=dict(color=c["text"], size=11))
+            fig.update_xaxes(gridcolor=c["grid"])
+            fig.update_yaxes(gridcolor=c["grid"])
             fig.update_yaxes(title_text="Price", row=1, col=1)
             fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
             st.plotly_chart(fig, use_container_width=True)
@@ -1303,6 +1305,7 @@ def _admin_status_tab():
 # --- Users Tab ---
 
 def _admin_users_tab():
+    c = get_colors()
     st.subheader("User Management")
 
     config = _load_config()
@@ -1314,7 +1317,7 @@ def _admin_users_tab():
     current_role = current_user.get("role", "viewer") if current_user else "viewer"
     is_admin = current_role == "admin"
 
-    st.markdown(f'<p style="color:#787B86;font-size:0.85rem;">Auth mode: <b>{mode}</b> · '
+    st.markdown(f'<p style="color:{c["text_secondary"]};font-size:0.85rem;">Auth mode: <b>{mode}</b> · '
                 f'Logged in as: <b>{current_user.get("name", "—")}</b> ({current_role}) · '
                 f'Storage: <b>Database (bcrypt)</b></p>',
                 unsafe_allow_html=True)
@@ -1329,7 +1332,7 @@ def _admin_users_tab():
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         return
 
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">CURRENT USERS</p>',
+    st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.85rem;">CURRENT USERS</p>',
                 unsafe_allow_html=True)
 
     if users:
@@ -1348,7 +1351,7 @@ def _admin_users_tab():
     st.divider()
 
     # --- Add new user ---
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">ADD USER</p>',
+    st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.85rem;">ADD USER</p>',
                 unsafe_allow_html=True)
 
     with st.form("add_user_form", clear_on_submit=True):
@@ -1376,7 +1379,7 @@ def _admin_users_tab():
     st.divider()
 
     # --- Edit / Delete existing users ---
-    st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">EDIT / DELETE USER</p>',
+    st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.85rem;">EDIT / DELETE USER</p>',
                 unsafe_allow_html=True)
 
     usernames = [u["username"] for u in users]
@@ -1425,7 +1428,7 @@ def _admin_users_tab():
     # --- Google OAuth settings (if mode is google) ---
     if mode == "google":
         st.divider()
-        st.markdown('<p style="color:#787B86;font-weight:600;font-size:0.85rem;">GOOGLE OAUTH SETTINGS</p>',
+        st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.85rem;">GOOGLE OAUTH SETTINGS</p>',
                     unsafe_allow_html=True)
         st.caption("These are read from config.yaml or environment variables.")
         gc1, gc2 = st.columns(2)
