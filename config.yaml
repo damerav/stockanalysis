@@ -50,7 +50,7 @@ es_strategy:
   circuit_breaker_usd: -2000.0
   session_close_ct: "15:55"
   session_reset_ct: "17:00"
-  ai_enabled: false
+  ai_enabled: true
   ai_fail_closed: true          # GAP 16: block trades if AI unavailable
   entry_conf_threshold: 0.70    # GAP 3: entry gate threshold per spec
   regime_lookback: 10080
