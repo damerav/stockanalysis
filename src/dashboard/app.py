@@ -1951,7 +1951,6 @@ def _admin_actions_tab():
                 try:
                     from src.es_strategy.ai_models import ESEntryGate
                     from src.es_strategy.labeling import generate_training_dataset
-                    from src.es_strategy.indicators import compute_indicators
                     config = _load_config()
 
                     # Load intraday bars for training
