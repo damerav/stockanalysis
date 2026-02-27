@@ -60,15 +60,20 @@ def _load_prices(ticker: str = "SPY", period: str = "1y") -> pd.DataFrame:
 
 def page_forecast():
     """Render the 🔮 Forecast page."""
-    st.markdown('<h2 style="margin:0;padding:0;color:#D1D4DC;">🔮 Price Forecast</h2>',
-                unsafe_allow_html=True)
-    st.caption("LSTM-based multi-day price prediction")
-
-    c1, c2 = st.columns([1, 3])
-    with c1:
+    # ── Compact toolbar: title + controls on one line ──
+    _t, _c1, _c2 = st.columns([4, 1, 1])
+    with _t:
+        st.markdown(
+            '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
+            '🔮 Price Forecast</p>',
+            unsafe_allow_html=True,
+        )
+    with _c1:
         ticker = st.selectbox("Ticker", ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"],
-                              key="forecast_ticker")
-        forecast_days = st.slider("Forecast days", 3, 10, 5, key="forecast_days")
+                              key="forecast_ticker", label_visibility="collapsed")
+    with _c2:
+        forecast_days = st.select_slider("Days", options=list(range(3, 11)), value=5,
+                                         key="forecast_days", label_visibility="collapsed")
 
     prices = _load_prices(ticker)
     if prices.empty:

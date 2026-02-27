@@ -281,17 +281,21 @@ def _generate_ai_narrative(ticker: str, df: pd.DataFrame, perf: dict) -> str:
 
 def page_single_stock():
     """Render the 🔍 Single-Stock Analysis page."""
-    st.markdown('<h2 style="margin:0;padding:0;color:#D1D4DC;">🔍 Single-Stock Analysis</h2>',
-                unsafe_allow_html=True)
-
-    # Sidebar controls
-    col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([1, 1, 2])
-    with col_ctrl1:
+    # ── Compact toolbar: title + controls on one line ──
+    _t, _c1, _c2 = st.columns([4, 1, 1])
+    with _t:
+        st.markdown(
+            '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
+            '🔍 Single-Stock Analysis</p>',
+            unsafe_allow_html=True,
+        )
+    with _c1:
         ticker = st.selectbox("Ticker", ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
                                           "JPM", "V", "UNH", "XOM", "JNJ"],
-                              key="ss_ticker")
-    with col_ctrl2:
-        period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y", "5y"], index=2, key="ss_period")
+                              key="ss_ticker", label_visibility="collapsed")
+    with _c2:
+        period = st.selectbox("Period", ["3mo", "6mo", "1y", "2y", "5y"], index=2,
+                              key="ss_period", label_visibility="collapsed")
 
     # Fetch data
     df = _fetch_stock_data(ticker, period)
@@ -324,8 +328,6 @@ def page_single_stock():
     ]
     for col, (label, val, color, sub) in zip(cols, kpis):
         col.markdown(_metric_card(label, val, color, sub), unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Performance Panel ──
     if perf:

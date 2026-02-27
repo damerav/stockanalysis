@@ -11,6 +11,27 @@
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 
+/* ===== COMPACT PAGE LAYOUT — Maximize content real estate ===== */
+/* Tighter block container padding */
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 0 !important;
+}
+/* Reduce vertical gap between elements */
+[data-testid="stVerticalBlock"] > div {
+    gap: 0.35rem !important;
+}
+/* Compact selectbox height inside toolbar rows */
+[data-testid="stSelectbox"] label,
+[data-testid="stSlider"] label {
+    min-height: 0 !important;
+}
+/* Tighter columns */
+[data-testid="stHorizontalBlock"] {
+    gap: 0.5rem !important;
+    align-items: center;
+}
+
 /* ===== SIDEBAR — Deep dark panel ===== */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #0C0E14 0%, #0F1118 100%) !important;

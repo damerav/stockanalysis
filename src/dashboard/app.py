@@ -202,12 +202,10 @@ st.markdown(
     /* ===== Plotly chart backgrounds ===== */
     .js-plotly-plot .plotly .main-svg { background: transparent !important; }
 
-    /* ===== Layout spacing ===== */
-    .block-container { padding-top: 2rem !important; padding-bottom: 0 !important; }
-    [data-testid="stVerticalBlock"] > div { gap: 0.5rem !important; }
+    /* Layout spacing handled by style.css */
+    
 
-    /* ===== Columns — subtle gap ===== */
-    [data-testid="stHorizontalBlock"] { gap: 0.75rem !important; }
+    /* Columns gap handled by style.css */
     </style>""",
     unsafe_allow_html=True,
 )
@@ -302,8 +300,11 @@ def page_spy():
     updated_at = state.get("updated_at", "")
 
     # --- Compact header ---
-    st.markdown('<h2 style="margin:0;padding:0;color:#D1D4DC;">📈 SPY/SPX Predictor</h2>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
+        '📈 SPY/SPX Predictor</p>',
+        unsafe_allow_html=True,
+    )
 
     direction = prediction.get("direction", "NEUTRAL")
     scale_label = prediction.get("scale_label", "NEUTRAL")
@@ -655,7 +656,11 @@ def page_es():
     chart_data = state.get("chart_data", {})
     updated_at = state.get("updated_at", "")
 
-    st.title("📊 ES Futures Strategy")
+    st.markdown(
+        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
+        '📊 ES Futures Strategy</p>',
+        unsafe_allow_html=True,
+    )
 
     pos_status = position.get("status", "FLAT")
     pos_lots = position.get("lots", 0)
@@ -820,7 +825,11 @@ def get_whatif_engine():
 
 
 def page_whatif():
-    st.title("🔬 What-If Analysis")
+    st.markdown(
+        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
+        '🔬 What-If Analysis</p>',
+        unsafe_allow_html=True,
+    )
     engine = get_whatif_engine()
 
     tab_es, tab_spy = st.tabs(["📈 ES Strategy", "🔮 SPY Predictor"])
@@ -1156,7 +1165,11 @@ def _run_in_thread(target, status_key: str, args=()):
 
 
 def page_admin():
-    st.title("⚙️ Admin Console")
+    st.markdown(
+        '<p style="margin:0;padding:6px 0;color:#D1D4DC;font-size:1.3rem;font-weight:600;">'
+        '⚙️ Admin Console</p>',
+        unsafe_allow_html=True,
+    )
 
     tab_status, tab_actions, tab_users, tab_db, tab_config, tab_logs = st.tabs([
         "ℹ️ System Status", "▶️ Actions", "👤 Users", "🗃️ Database", "📝 Configuration", "📜 Logs",
