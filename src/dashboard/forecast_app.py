@@ -22,10 +22,10 @@ DARK_LAYOUT = dict(
     template="plotly_dark",
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(color="#E2E8F0", size=12),
+    font=dict(color="#D1D4DC", size=12),
     margin=dict(l=40, r=10, t=36, b=30),
-    xaxis=dict(gridcolor="#1E2530", showgrid=True),
-    yaxis=dict(gridcolor="#1E2530", showgrid=True),
+    xaxis=dict(gridcolor="#1C1F2E", showgrid=True),
+    yaxis=dict(gridcolor="#1C1F2E", showgrid=True),
 )
 
 
@@ -60,7 +60,7 @@ def _load_prices(ticker: str = "SPY", period: str = "1y") -> pd.DataFrame:
 
 def page_forecast():
     """Render the 🔮 Forecast page."""
-    st.markdown('<h2 style="margin:0;padding:0;color:#F1F5F9;">🔮 Price Forecast</h2>',
+    st.markdown('<h2 style="margin:0;padding:0;color:#D1D4DC;">🔮 Price Forecast</h2>',
                 unsafe_allow_html=True)
     st.caption("LSTM-based multi-day price prediction")
 
@@ -114,7 +114,7 @@ def page_forecast():
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=prices["date"].tail(90), y=prices["close"].tail(90),
-            name=f"{ticker} Close", line=dict(color="#6C9EFF", width=2),
+            name=f"{ticker} Close", line=dict(color="#2962FF", width=2),
         ))
         fig.update_layout(**DARK_LAYOUT, title=dict(text=f"{ticker} Price History", font=dict(color="#FFF", size=14)),
                           height=400, yaxis_title="USD")
@@ -125,7 +125,7 @@ def page_forecast():
     pred_last = float(forecast_df["predicted_close"].iloc[-1])
     pct_change = (pred_last - last_close) / last_close * 100
     direction = "📈 UP" if pct_change > 0.3 else "📉 DOWN" if pct_change < -0.3 else "➡️ FLAT"
-    dir_color = "#4ADE80" if pct_change > 0 else "#F87171" if pct_change < 0 else "#FBBF24"
+    dir_color = "#26A69A" if pct_change > 0 else "#EF5350" if pct_change < 0 else "#FFAB40"
 
     col_table, col_insight = st.columns([2, 1])
 
@@ -137,13 +137,13 @@ def page_forecast():
 
     with col_insight:
         st.markdown(
-            f'<div style="background:#151A24; border:1px solid #1E2530; border-radius:10px; padding:20px;">'
-            f'<div style="color:#94A3B8; font-size:0.8em;">FORECAST INSIGHT</div>'
+            f'<div style="background:rgba(30,34,45,0.6); backdrop-filter:blur(12px); border:1px solid rgba(255,255,255,0.05); border-radius:10px; padding:20px;">'
+            f'<div style="color:#787B86; font-size:0.8em;">FORECAST INSIGHT</div>'
             f'<div style="color:{dir_color}; font-size:1.8em; font-weight:bold; margin:8px 0;">{direction}</div>'
-            f'<div style="color:#E2E8F0;">Current: <b>${last_close:,.2f}</b></div>'
-            f'<div style="color:#E2E8F0;">Day {forecast_days}: <b>${pred_last:,.2f}</b></div>'
+            f'<div style="color:#D1D4DC;">Current: <b>${last_close:,.2f}</b></div>'
+            f'<div style="color:#D1D4DC;">Day {forecast_days}: <b>${pred_last:,.2f}</b></div>'
             f'<div style="color:{dir_color}; font-size:1.2em; margin-top:8px;">{pct_change:+.2f}%</div>'
-            f'<div style="color:#64748B; font-size:0.75em; margin-top:12px;">{model_info}</div>'
+            f'<div style="color:#787B86; font-size:0.75em; margin-top:12px;">{model_info}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -153,26 +153,26 @@ def page_forecast():
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=hist_tail["date"], y=hist_tail["close"],
-        name=f"{ticker} Historical", line=dict(color="#6C9EFF", width=2),
+        name=f"{ticker} Historical", line=dict(color="#2962FF", width=2),
     ))
     fig.add_trace(go.Scatter(
         x=[hist_tail["date"].iloc[-1]] + forecast_df["date"].tolist(),
         y=[last_close] + forecast_df["predicted_close"].tolist(),
-        name="Forecast", line=dict(color="#FBBF24", width=2, dash="dash"),
+        name="Forecast", line=dict(color="#FFAB40", width=2, dash="dash"),
         mode="lines+markers",
-        marker=dict(size=6, color="#FBBF24"),
+        marker=dict(size=6, color="#FFAB40"),
     ))
     # "Today" divider — use annotation instead of add_vline to avoid type mismatch
     fig.add_annotation(
         x=str(last_date), y=1, yref="paper",
         text="Today", showarrow=False,
-        font=dict(color="#94A3B8", size=10),
+        font=dict(color="#787B86", size=10),
         yanchor="bottom",
     )
     fig.add_shape(
         type="line", x0=str(last_date), x1=str(last_date),
         y0=0, y1=1, yref="paper",
-        line=dict(color="#475569", width=1, dash="dot"),
+        line=dict(color="#363A45", width=1, dash="dot"),
     )
     fig.update_layout(**DARK_LAYOUT,
                       title=dict(text=f"{ticker} — {forecast_days}-Day Forecast", font=dict(color="#FFF", size=14)),
