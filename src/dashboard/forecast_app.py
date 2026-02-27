@@ -162,8 +162,18 @@ def page_forecast():
         mode="lines+markers",
         marker=dict(size=6, color="#FBBF24"),
     ))
-    fig.add_vline(x=last_date, line_dash="dot", line_color="#475569",
-                  annotation_text="Today", annotation_font_color="#94A3B8")
+    # "Today" divider — use annotation instead of add_vline to avoid type mismatch
+    fig.add_annotation(
+        x=str(last_date), y=1, yref="paper",
+        text="Today", showarrow=False,
+        font=dict(color="#94A3B8", size=10),
+        yanchor="bottom",
+    )
+    fig.add_shape(
+        type="line", x0=str(last_date), x1=str(last_date),
+        y0=0, y1=1, yref="paper",
+        line=dict(color="#475569", width=1, dash="dot"),
+    )
     fig.update_layout(**DARK_LAYOUT,
                       title=dict(text=f"{ticker} — {forecast_days}-Day Forecast", font=dict(color="#FFF", size=14)),
                       height=350, yaxis_title="USD",
