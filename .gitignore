@@ -32,3 +32,5 @@ test_*.py
 .pids/
 Kiro_Enhancement_Prompt.md
 SPY_SPX_Enhancement_Report.md
+*.png
+Kiro Prompt*
