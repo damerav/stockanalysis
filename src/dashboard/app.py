@@ -224,9 +224,9 @@ def page_spy():
     else:
         st.info("Waiting for prediction data...")
 
-    # --- Combined info row: Regime + Model + Live Macro (merged P2 + Macro into one row) ---
+    # --- Combined info row: Regime + Model + Conf Set + Macro (2 rows of 4) ---
     macro = _fetch_live_macro()
-    r1, r2, r3, r4, r5, r6, r7, r8 = st.columns(8)
+    r1, r2, r3, r4 = st.columns(4)
     with r1:
         regime = prediction.get("regime", "")
         regime_labels = {
@@ -258,19 +258,21 @@ def page_spy():
         st.metric("VIX", f"{v:.1f}" if v else "—",
                   delta=f"{vc:+.1f}" if vc else None, delta_color="inverse",
                   help="CBOE Volatility Index. <15 = low vol (range-bound), 15-25 = normal, >25 = high vol (trending). Inversely correlated with SPY.")
-    with r5:
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
         v = macro.get("us10y_yield") if macro else None
-        st.metric("10Y", f"{v:.2f}%" if v else "—",
+        st.metric("10Y Yield", f"{v:.2f}%" if v else "—",
                   help="US 10-Year Treasury yield. Rising yields = tighter financial conditions, typically bearish for equities.")
-    with r6:
+    with m2:
         v = macro.get("dxy") if macro else None
         st.metric("DXY", f"{v:.1f}" if v else "—",
                   help="US Dollar Index. Strong dollar = headwind for multinational earnings and risk assets.")
-    with r7:
+    with m3:
         v = macro.get("gold") if macro else None
         st.metric("Gold", f"${v:,.0f}" if v else "—",
                   help="Gold spot price. Safe-haven asset — rising gold often signals risk-off sentiment.")
-    with r8:
+    with m4:
         v = macro.get("crude") if macro else None
         st.metric("Crude", f"${v:.1f}" if v else "—",
                   help="WTI Crude Oil. Impacts energy sector and inflation expectations.")
@@ -450,28 +452,25 @@ def page_spy():
         st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
                     unsafe_allow_html=True)
         if indicators:
-            ic1, ic2 = st.columns(2)
-            with ic1:
-                st.metric("RSI(14)", f"{indicators.get('rsi_14', 'N/A')}",
-                          help="Relative Strength Index (14-day). >70 = overbought, <30 = oversold. Mean-reversion signal.")
-                st.metric("MACD", f"{indicators.get('macd', 'N/A')}",
-                          help="Moving Average Convergence Divergence. Positive = bullish momentum, negative = bearish.")
-                st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}",
-                          help="Average True Range (14-day). Measures daily volatility in dollar terms. Higher = wider expected range.")
-            with ic2:
-                # Use macro data for VIX to stay consistent with the top row
-                _vix_val = macro.get("vix") if macro else None
-                _vix_chg = macro.get("vix_change") if macro else None
-                if _vix_val is None:
-                    _vix_val = indicators.get("vix")
-                    _vix_chg = indicators.get("vix_change")
-                st.metric("VIX", f"{_vix_val:.1f}" if _vix_val else "N/A",
-                          delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse",
-                          help="CBOE Volatility Index — same source as top row for consistency.")
-                st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}",
-                          help="Today's volume vs 20-day average. >1.5 = unusually high activity, often precedes large moves.")
-                st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}",
-                          help="Aggregated news sentiment from Finnhub + RSS. Range -1 (bearish) to +1 (bullish). Computed via LLM analysis.")
+            # Use macro data for VIX to stay consistent with the top row
+            _vix_val = macro.get("vix") if macro else None
+            _vix_chg = macro.get("vix_change") if macro else None
+            if _vix_val is None:
+                _vix_val = indicators.get("vix")
+                _vix_chg = indicators.get("vix_change")
+            st.metric("RSI(14)", f"{indicators.get('rsi_14', 'N/A')}",
+                      help="Relative Strength Index (14-day). >70 = overbought, <30 = oversold.")
+            st.metric("MACD", f"{indicators.get('macd', 'N/A')}",
+                      help="Moving Average Convergence Divergence. Positive = bullish momentum, negative = bearish.")
+            st.metric("VIX", f"{_vix_val:.1f}" if _vix_val else "N/A",
+                      delta=f"{_vix_chg:+.1f}" if _vix_chg else None, delta_color="inverse",
+                      help="CBOE Volatility Index — same source as top row for consistency.")
+            st.metric("ATR(14)", f"{indicators.get('atr_14', 'N/A')}",
+                      help="Average True Range (14-day). Measures daily volatility in dollar terms.")
+            st.metric("Vol Ratio", f"{indicators.get('volume_ratio', 'N/A')}",
+                      help="Today's volume vs 20-day average. >1.5 = unusually high activity.")
+            st.metric("Sentiment", f"{indicators.get('sentiment_score', 'N/A')}",
+                      help="Aggregated news sentiment. Range -1 (bearish) to +1 (bullish).")
         else:
             st.caption("Waiting for indicator data...")
 
