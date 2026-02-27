@@ -26,3 +26,6 @@ hmmlearn>=0.3
 lightgbm>=4.3
 # P3/Enhancement 26: DuckDB analytics layer
 duckdb>=1.1
+# LSTM forecaster + news pipeline
+tensorflow>=2.15; platform_machine != "aarch64"
+nltk>=3.8

@@ -35,6 +35,8 @@ from src.auth.google_oauth import (
     db_user_count,
 )
 from src.dashboard.monitoring import page_monitoring
+from src.dashboard.forecast_app import page_forecast
+from src.dashboard.single_stock_app import page_single_stock
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
 
@@ -303,6 +305,7 @@ if user:
 page = st.sidebar.radio(
     "Navigate",
     ["📈 SPY Predictor", "📊 ES Strategy", "🔬 What-If Analysis",
+     "🔮 Forecast", "🔍 Single-Stock",
      "📉 Monitoring", "📊 Grafana Dashboards", "⚙️ Admin"],
     label_visibility="collapsed",
 )
@@ -2364,6 +2367,10 @@ elif page == "📊 ES Strategy":
     st.rerun()
 elif page == "🔬 What-If Analysis":
     page_whatif()
+elif page == "🔮 Forecast":
+    page_forecast()
+elif page == "🔍 Single-Stock":
+    page_single_stock()
 elif page == "📉 Monitoring":
     page_monitoring()
 elif page == "📊 Grafana Dashboards":

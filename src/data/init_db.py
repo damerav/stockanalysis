@@ -18,10 +18,13 @@ CREATE TABLE IF NOT EXISTS prices (
 -- Technical indicators
 CREATE TABLE IF NOT EXISTS technicals (
     date TEXT PRIMARY KEY,
-    sma_20 REAL, sma_50 REAL, rsi_14 REAL,
+    sma_20 REAL, sma_50 REAL, sma_200 REAL,
+    rsi_14 REAL,
     macd REAL, macd_signal REAL, macd_hist REAL,
     bb_upper REAL, bb_lower REAL, bb_mid REAL,
-    atr_14 REAL
+    atr_14 REAL,
+    obv REAL, garman_klass_vol REAL,
+    stoch_k REAL, stoch_d REAL
 );
 
 -- News headlines
@@ -190,6 +193,13 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("sentiment_dispersion", "REAL"), ("sentiment_velocity", "REAL"),
     ]
     _add_columns_if_missing(conn, "daily_sentiment", sentiment_new_cols)
+
+    # New technical indicator columns
+    tech_new_cols = [
+        ("sma_200", "REAL"), ("obv", "REAL"), ("garman_klass_vol", "REAL"),
+        ("stoch_k", "REAL"), ("stoch_d", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "technicals", tech_new_cols)
 
     # P3: Earnings calendar table
     conn.execute("""

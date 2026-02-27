@@ -62,6 +62,32 @@ def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series,
     return tr.rolling(window=period).mean()
 
 
+def compute_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    """On-Balance Volume — cumulative volume weighted by price direction."""
+    direction = np.sign(close.diff()).fillna(0)
+    return (volume * direction).cumsum()
+
+
+def compute_garman_klass_volatility(high: pd.Series, low: pd.Series,
+                                     open_: pd.Series, close: pd.Series,
+                                     window: int = 20) -> pd.Series:
+    """Garman-Klass volatility estimator — more efficient than close-to-close."""
+    log_hl = (np.log(high / low)) ** 2
+    log_co = (np.log(close / open_)) ** 2
+    gk = 0.5 * log_hl - (2 * np.log(2) - 1) * log_co
+    return gk.rolling(window=window).mean().apply(np.sqrt)
+
+
+def compute_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
+                       k_period: int = 14, d_period: int = 3) -> tuple[pd.Series, pd.Series]:
+    """Stochastic Oscillator (%K and %D)."""
+    lowest_low = low.rolling(window=k_period).min()
+    highest_high = high.rolling(window=k_period).max()
+    stoch_k = 100 * (close - lowest_low) / (highest_high - lowest_low).replace(0, np.nan)
+    stoch_d = stoch_k.rolling(window=d_period).mean()
+    return stoch_k, stoch_d
+
+
 def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFrame:
     """Compute all technical indicators for a price DataFrame.
 
@@ -86,8 +112,16 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
     close = df["close"]
 
     result = pd.DataFrame({"date": df["date"]})
-    result["sma_20"] = compute_sma(close, sma_periods[0])
-    result["sma_50"] = compute_sma(close, sma_periods[1]) if len(sma_periods) > 1 else np.nan
+
+    # Dynamic SMA computation for all configured periods
+    for period in sma_periods:
+        result[f"sma_{period}"] = compute_sma(close, period)
+    # Ensure sma_20 and sma_50 always exist (backward compat)
+    if "sma_20" not in result.columns:
+        result["sma_20"] = compute_sma(close, 20)
+    if "sma_50" not in result.columns:
+        result["sma_50"] = compute_sma(close, 50)
+
     result["rsi_14"] = compute_rsi(close, rsi_period)
 
     macd, macd_sig, macd_hist = compute_macd(close, macd_fast, macd_slow, macd_signal)
@@ -102,42 +136,48 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
 
     result["atr_14"] = compute_atr(df["high"], df["low"], close, atr_period)
 
+    # New indicators
+    result["obv"] = compute_obv(close, df["volume"].astype(float))
+    result["garman_klass_vol"] = compute_garman_klass_volatility(
+        df["high"], df["low"], df["open"], close
+    )
+    stoch_k, stoch_d = compute_stochastic(df["high"], df["low"], close)
+    result["stoch_k"] = stoch_k
+    result["stoch_d"] = stoch_d
+
     return result
 
 
 def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: dict = None):
     """Store computed technicals in the database.
     Enhancement 26: Writes to DuckDB analytics if available, falls back to SQLite."""
+    cols = ("date", "sma_20", "sma_50", "rsi_14", "macd", "macd_signal", "macd_hist",
+            "bb_upper", "bb_lower", "bb_mid", "atr_14",
+            "obv", "garman_klass_vol", "stoch_k", "stoch_d")
+    # Also store dynamic SMAs beyond 20/50 (e.g. sma_200)
+    extra_sma_cols = [c for c in tech_df.columns if c.startswith("sma_") and c not in ("sma_20", "sma_50")]
+    all_cols = list(cols) + extra_sma_cols
+    placeholders = ",".join(["?"] * len(all_cols))
+    col_names = ",".join(all_cols)
+    sql = f"INSERT OR REPLACE INTO technicals ({col_names}) VALUES ({placeholders})"
+
+    def _row_vals(row):
+        return tuple(float(row.get(c, 0) or 0) if c != "date" else row["date"] for c in all_cols)
+
     try:
         router = get_router(config)
         duck = router.get_analytics_conn()
         for _, row in tech_df.iterrows():
             if pd.isna(row.get("sma_20")):
                 continue
-            duck.execute(
-                """INSERT OR REPLACE INTO technicals
-                   (date, sma_20, sma_50, rsi_14, macd, macd_signal, macd_hist,
-                    bb_upper, bb_lower, bb_mid, atr_14)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (row["date"], row["sma_20"], row["sma_50"], row["rsi_14"],
-                 row["macd"], row["macd_signal"], row["macd_hist"],
-                 row["bb_upper"], row["bb_lower"], row["bb_mid"], row["atr_14"])
-            )
+            duck.execute(sql, _row_vals(row))
         logger.debug("Technicals stored in DuckDB")
     except Exception as e:
         logger.warning(f"DuckDB write failed, falling back to SQLite: {e}")
         for _, row in tech_df.iterrows():
             if pd.isna(row.get("sma_20")):
                 continue
-            conn.execute(
-                """INSERT OR REPLACE INTO technicals
-                   (date, sma_20, sma_50, rsi_14, macd, macd_signal, macd_hist,
-                    bb_upper, bb_lower, bb_mid, atr_14)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (row["date"], row["sma_20"], row["sma_50"], row["rsi_14"],
-                 row["macd"], row["macd_signal"], row["macd_hist"],
-                 row["bb_upper"], row["bb_lower"], row["bb_mid"], row["atr_14"])
-            )
+            conn.execute(sql, _row_vals(row))
             conn.commit()
 
 

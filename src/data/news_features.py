@@ -1,0 +1,204 @@
+"""News Feature Processor — NLP pipeline for news-driven prediction.
+
+Computes TF-IDF vectors, VADER sentiment, and n-gram features from raw articles.
+Inspired by Finance-And-ML/US-Stock-Prediction-Using-ML-And-Spark.
+"""
+
+import os
+import re
+import sqlite3
+import logging
+import pickle
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+logger = logging.getLogger(__name__)
+
+# VADER sentiment — use nltk if available, else simple keyword fallback
+try:
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer
+    _vader = SentimentIntensityAnalyzer()
+    _HAS_VADER = True
+except ImportError:
+    _HAS_VADER = False
+    _vader = None
+
+
+def _simple_sentiment(text: str) -> float:
+    """Keyword-based sentiment fallback when VADER unavailable."""
+    pos = ["surge", "rally", "gain", "bull", "up", "rise", "profit", "beat", "strong"]
+    neg = ["crash", "drop", "fall", "bear", "down", "loss", "miss", "weak", "fear"]
+    text_lower = text.lower()
+    p = sum(1 for w in pos if w in text_lower)
+    n = sum(1 for w in neg if w in text_lower)
+    total = p + n
+    if total == 0:
+        return 0.0
+    return (p - n) / total
+
+
+class NewsFeatureProcessor:
+    """Processes raw news articles into ML-ready features."""
+
+    def __init__(self, config: dict = None, max_features: int = 5000):
+        import yaml
+        if config is None:
+            with open("config.yaml") as f:
+                config = yaml.safe_load(f) or {}
+        self.config = config
+        self.max_features = config.get("news_pipeline", {}).get("tfidf_max_features", max_features)
+        self.vectorizer = TfidfVectorizer(
+            max_features=self.max_features,
+            stop_words="english",
+            ngram_range=(1, 2),
+            min_df=2,
+            max_df=0.95,
+        )
+        self._fitted = False
+        db_path = config.get("news_pipeline", {}).get("db_path", "./data/news.db")
+        self.news_conn = sqlite3.connect(db_path)
+
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize article text."""
+        if not text:
+            return ""
+        text = re.sub(r"<[^>]+>", "", text)  # strip HTML
+        text = re.sub(r"http\S+", "", text)   # strip URLs
+        text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
+        text = re.sub(r"\s+", " ", text).strip().lower()
+        return text
+
+    def _get_sentiment(self, text: str) -> dict:
+        """Get VADER sentiment scores (or fallback)."""
+        if _HAS_VADER and _vader:
+            scores = _vader.polarity_scores(text)
+            return {
+                "compound": scores["compound"],
+                "positive": scores["pos"],
+                "negative": scores["neg"],
+                "neutral": scores["neu"],
+            }
+        compound = _simple_sentiment(text)
+        return {
+            "compound": compound,
+            "positive": max(0, compound),
+            "negative": abs(min(0, compound)),
+            "neutral": 1.0 - abs(compound),
+        }
+
+    def process_articles(self, articles: list[dict] = None) -> pd.DataFrame:
+        """Process raw articles into feature DataFrame.
+
+        Returns DataFrame with columns: date, ticker, headline, sentiment_compound,
+        sentiment_positive, sentiment_negative, clean_text
+        """
+        if articles is None:
+            rows = self.news_conn.execute(
+                "SELECT * FROM raw_articles ORDER BY published_at DESC"
+            ).fetchall()
+            cols = [d[0] for d in self.news_conn.execute(
+                "SELECT * FROM raw_articles LIMIT 0"
+            ).description]
+            articles = [dict(zip(cols, r)) for r in rows]
+
+        if not articles:
+            return pd.DataFrame()
+
+        records = []
+        for a in articles:
+            text = (a.get("headline", "") + " " + a.get("summary", "")).strip()
+            clean = self._clean_text(text)
+            sent = self._get_sentiment(text)
+            pub = a.get("published_at", "")
+            date_str = pub[:10] if pub else datetime.now().strftime("%Y-%m-%d")
+            records.append({
+                "date": date_str,
+                "ticker": a.get("ticker", "MARKET"),
+                "headline": a.get("headline", ""),
+                "clean_text": clean,
+                "sentiment_compound": sent["compound"],
+                "sentiment_positive": sent["positive"],
+                "sentiment_negative": sent["negative"],
+                "source": a.get("source", "unknown"),
+            })
+        return pd.DataFrame(records)
+
+    def fit_tfidf(self, texts: list[str]):
+        """Fit TF-IDF vectorizer on corpus."""
+        clean = [self._clean_text(t) for t in texts]
+        self.vectorizer.fit(clean)
+        self._fitted = True
+
+    def transform_tfidf(self, texts: list[str]) -> np.ndarray:
+        """Transform texts to TF-IDF vectors. Fits if not already fitted."""
+        clean = [self._clean_text(t) for t in texts]
+        if not self._fitted:
+            self.fit_tfidf(texts)
+        return self.vectorizer.transform(clean).toarray()
+
+    def build_daily_features(self) -> pd.DataFrame:
+        """Aggregate article-level features into daily features.
+
+        Returns DataFrame with: date, article_count, avg_sentiment, max_sentiment,
+        min_sentiment, sentiment_std, positive_ratio, negative_ratio
+        """
+        df = self.process_articles()
+        if df.empty:
+            return pd.DataFrame()
+
+        daily = df.groupby("date").agg(
+            article_count=("sentiment_compound", "count"),
+            avg_sentiment=("sentiment_compound", "mean"),
+            max_sentiment=("sentiment_compound", "max"),
+            min_sentiment=("sentiment_compound", "min"),
+            sentiment_std=("sentiment_compound", "std"),
+            positive_ratio=("sentiment_positive", "mean"),
+            negative_ratio=("sentiment_negative", "mean"),
+        ).reset_index()
+        daily["sentiment_std"] = daily["sentiment_std"].fillna(0)
+        return daily
+
+    def save_vectorizer(self, path: str = "./models/news_tfidf.pkl"):
+        """Save fitted TF-IDF vectorizer."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self.vectorizer, f)
+
+    def load_vectorizer(self, path: str = "./models/news_tfidf.pkl"):
+        """Load a previously fitted TF-IDF vectorizer."""
+        with open(path, "rb") as f:
+            self.vectorizer = pickle.load(f)
+            self._fitted = True
+
+    def store_features(self, daily_df: pd.DataFrame):
+        """Store daily news features in DuckDB analytics (or SQLite fallback)."""
+        if daily_df.empty:
+            return
+        try:
+            from src.data.db_router import get_router
+            router = get_router(self.config)
+            duck = router.get_analytics_conn()
+            duck.execute("""
+                CREATE TABLE IF NOT EXISTS news_features (
+                    date TEXT PRIMARY KEY,
+                    article_count INTEGER,
+                    avg_sentiment REAL, max_sentiment REAL, min_sentiment REAL,
+                    sentiment_std REAL, positive_ratio REAL, negative_ratio REAL
+                )
+            """)
+            for _, row in daily_df.iterrows():
+                duck.execute(
+                    "INSERT OR REPLACE INTO news_features VALUES (?,?,?,?,?,?,?,?)",
+                    (row["date"], int(row["article_count"]),
+                     row["avg_sentiment"], row["max_sentiment"], row["min_sentiment"],
+                     row["sentiment_std"], row["positive_ratio"], row["negative_ratio"]),
+                )
+            logger.info(f"Stored {len(daily_df)} daily news feature rows")
+        except Exception as e:
+            logger.warning(f"Failed to store news features: {e}")
+
+    def close(self):
+        self.news_conn.close()
