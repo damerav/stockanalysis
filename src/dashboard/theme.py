@@ -70,7 +70,7 @@ LIGHT = {
     "surface": "#FFFFFF",
     "card": "#FFFFFF",
     "card_bg": "#FFFFFF",          # backward-compat alias for surface
-    "card_border": "#E6E8EC",
+    "card_border": "#D1D4DC",
     "card_hover": "rgba(41,98,255,0.15)",
     "border": "#E6E8EC",
     # Text

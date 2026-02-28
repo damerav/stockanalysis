@@ -372,10 +372,11 @@ def page_spy():
             hovertemplate="Feature: %{y}<br>SHAP: %{x:.4f}<br>Value: %{customdata:.4f}",
             customdata=driver_df["feature_value"],
         ))
+        _shap_bg = "rgba(0,0,0,0)" if is_dark() else c["surface"]
         fig_shap.update_layout(
             height=160, margin=dict(l=10, r=10, t=5, b=5),
             xaxis_title="SHAP", yaxis=dict(autorange="reversed"),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=_shap_bg,
             font=dict(color=c["text"], size=11),
             xaxis=dict(gridcolor=c["grid"], zerolinecolor=c["zeroline"]),
         )
@@ -402,10 +403,11 @@ def page_spy():
                 textfont=dict(color=c["text"], size=9),
                 hovertemplate="Date: %{x}<br>Direction: %{text}<br>Confidence: %{y:.0f}%",
             ))
+            _hist_bg = "rgba(0,0,0,0)" if is_dark() else c["surface"]
             fig.update_layout(
                 height=220, margin=dict(l=10, r=10, t=5, b=25),
                 yaxis_title="Conf %", yaxis_range=[0, 100],
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=_hist_bg,
                 font=dict(color=c["text_secondary"], size=10),
                 xaxis=dict(gridcolor=c["grid"], tickfont=dict(size=9),
                            tickformat="%b %d", dtick="D1"),
@@ -496,7 +498,7 @@ def page_spy():
                 st.caption("No alerts yet")
 
     # Staleness indicator
-    _stale_color = "#475569"
+    _stale_color = c["text_secondary"]
     _stale_label = ""
     if updated_at:
         try:
@@ -557,6 +559,8 @@ def page_es():
     pos_colors = {"LONG": c["green"], "SHORT": c["red"], "FLAT": c["text_secondary"]}
     banner_color = pos_colors.get(pos_status, c["text_secondary"])
     regime_color = regime_colors.get(regime, c["yellow"])
+    # Use dark text on yellow/green badges for WCAG contrast
+    regime_text = "#1E2329" if regime in ("Low", "Med") else "#FFFFFF"
 
     st.markdown(
         f"""<div style="background-color:{banner_color}; padding:10px; border-radius:8px;
@@ -565,7 +569,7 @@ def page_es():
         <div><p style="color:white; margin:0; font-size:0.9rem;">Entry: {entry_price}</p></div>
         <div><p style="color:white; margin:0; font-size:0.9rem;">P&L: ${unrealized:+,.0f}</p></div>
         <div style="background-color:{regime_color}; padding:4px 12px; border-radius:5px;">
-        <p style="color:white; margin:0; font-size:0.9rem;">Regime: {regime}</p></div>
+        <p style="color:{regime_text}; margin:0; font-size:0.9rem;">Regime: {regime}</p></div>
         </div>""",
         unsafe_allow_html=True,
     )
@@ -630,10 +634,11 @@ def page_es():
                 fig.add_hline(y=70, line_dash="dot", line_color="red", opacity=0.3, row=2, col=1)
                 fig.add_hline(y=30, line_dash="dot", line_color="green", opacity=0.3, row=2, col=1)
 
+            _bg = "rgba(0,0,0,0)" if is_dark() else c["surface"]
             fig.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20),
                               xaxis_rangeslider_visible=False, showlegend=True,
                               legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=_bg,
                               font=dict(color=c["text"], size=11))
             fig.update_xaxes(gridcolor=c["grid"])
             fig.update_yaxes(gridcolor=c["grid"])
@@ -656,12 +661,35 @@ def page_es():
                 "STOP_HIT": "🛑", "STOP_UPDATE": "📍",
                 "AI_REJECT": "🤖", "CIRCUIT_BREAKER": "⚡", "SESSION_FLATTEN": "🕐",
             }
+            type_labels = {
+                "ENTRY_LONG": "Entered Long",
+                "ENTRY_SHORT": "Entered Short",
+                "EXIT_TP1": "Take-Profit 1 Hit",
+                "EXIT_TP2": "Take-Profit 2 Hit",
+                "EXIT_RUNNER": "Runner Exited",
+                "STOP_HIT": "Stop-Loss Hit",
+                "STOP_UPDATE": "Stop Updated",
+                "AI_REJECT": "AI Rejected Signal",
+                "CIRCUIT_BREAKER": "Circuit Breaker",
+                "SESSION_FLATTEN": "Session Flattened",
+            }
             for sig in reversed(signals[-20:]):
-                emoji = type_emojis.get(sig.get("type", ""), "📌")
+                sig_type = sig.get("type", "")
+                emoji = type_emojis.get(sig_type, "📌")
+                label = type_labels.get(sig_type, sig_type)
+                detail = sig.get("detail", "")
+                # Make detail human-readable
+                if sig_type == "AI_REJECT" and "p_enter=" in detail:
+                    import re as _re
+                    m = _re.search(r"p_enter=([\d.]+)\s*<\s*([\d.]+)", detail)
+                    if m:
+                        detail = f"confidence {float(m.group(1)):.0%} below {float(m.group(2)):.0%} threshold"
+                elif sig_type in ("ENTRY_LONG", "ENTRY_SHORT") and "@" in detail:
+                    detail = detail.replace("@", "at")
                 st.markdown(
-                    f'<span style="color:#d8d9da; font-family:monospace; font-size:0.85em;">'
-                    f'{emoji} {sig.get("timestamp", "")[:8]} {sig.get("type", "")} '
-                    f'{sig.get("detail", "")}</span>',
+                    f'<span style="color:{c["text"]}; font-family:monospace; font-size:0.85em;">'
+                    f'{emoji} {sig.get("timestamp", "")[:8]} {label} '
+                    f'{detail}</span>',
                     unsafe_allow_html=True,
                 )
         else:
@@ -680,7 +708,7 @@ def page_es():
             st.subheader("Lot Status")
             for lot in lots_detail:
                 st.markdown(
-                    f'<span style="color:#d8d9da; font-family:monospace;">'
+                    f'<span style="color:{c["text"]}; font-family:monospace;">'
                     f'  Lot {lot.get("id", "?")}: {lot.get("status", "?")} '
                     f'(${lot.get("pnl", 0):+,.0f})</span>',
                     unsafe_allow_html=True,
