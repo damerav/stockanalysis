@@ -8,6 +8,12 @@
 /* --- HIDE STREAMLIT DEFAULTS --- */
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
+header[data-testid="stHeader"] {
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
 
 /* ===== COMPACT PAGE LAYOUT — Maximize content real estate ===== */
 .block-container,
@@ -40,10 +46,10 @@ footer { visibility: hidden; }
     align-items: center;
     flex-wrap: wrap;
 }
-/* Ensure columns don't overflow */
+/* Ensure columns don't overflow horizontally */
 [data-testid="stColumn"] {
     min-width: 0 !important;
-    overflow: hidden;
+    overflow: visible !important;
 }
 /* Metric cards — compact for tighter screens */
 [data-testid="stMetricValue"] {
