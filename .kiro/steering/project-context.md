@@ -6,7 +6,7 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v1.3+ (post Phase 3 enhancements)
+- **Current version**: v2.0+ (post Phase 3 + LSTM/News pipeline + TradingView UI redesign + light/dark theme)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
@@ -65,22 +65,26 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 ### Config
 - `config.yaml` — Central config (API keys, model params, auth, grafana, ensemble, etc.)
-- `.streamlit/config.toml` — Streamlit dark theme config
+- `.streamlit/config.toml` — Streamlit theme config (supports dark/light toggle)
 - `grafana/grafana.ini` — Grafana config (anonymous auth enabled, must be chmod 644 after Mutagen sync)
 
 ### Dashboard Source
-- `src/dashboard/app.py` — Main unified dashboard (SPY Predictor, ES Strategy, What-If, Monitoring, Grafana, Admin pages)
+- `src/dashboard/app.py` — Main unified dashboard (~2500+ lines). Uses `st.navigation` with 8 pages across Markets and Operations groups
+- `src/dashboard/theme.py` — Theme system: DARK + LIGHT palettes (TradingView-inspired), dynamic CSS injection, `get_plotly_layout()`, `themed_metric_card()`, `get_theme()` helpers
 - `src/dashboard/monitoring.py` — Native Plotly monitoring (6 tabs: SPY, ES, System Health, Confidence API, Pipeline, Data Sources)
+- `src/dashboard/forecast_app.py` — LSTM + ensemble forecast page with multi-horizon predictions
+- `src/dashboard/single_stock_app.py` — Individual stock analysis with technical indicators
 - `src/dashboard/realtime_app.py` — Real-time streaming dashboard
-- `src/dashboard/es_dashboard.py` — ES strategy dashboard
+- `src/dashboard/es_dashboard.py` — ES strategy dashboard (standalone)
 - `src/dashboard/whatif_app.py` — What-If analysis
+- `src/dashboard/style.css` — Base CSS overrides (pill tabs, compact headers, sidebar styling)
 
 ### Core Modules
 - `src/data/` — Data fetching, features, DB routing, backfill, calendar, drift monitoring
-- `src/model/` — Trainer, registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV
+- `src/model/` — Trainer, registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine, indicators, position management, RL trailing, labeling
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 70B via Ollama)
-- `src/pipeline/` — Daily pipeline orchestration and alerts
+- `src/pipeline/` — Daily pipeline orchestration, alerts, and news pipeline runner
 - `src/api/` — Confidence API server, Prometheus metrics exporter
 - `src/auth/` — Google OAuth + local auth with bcrypt, server-side session files
 - `src/sync/` — Cloud relay publisher/server
@@ -124,6 +128,16 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 - Commit messages: conventional commits (`fix:`, `feat:`, `chore:`, etc.)
 - Testing on DGX: write temp script locally → Mutagen sync → SSH run → delete script
-- Dashboard uses high-contrast dark theme throughout (CSS in app.py)
-- All Plotly charts use `DARK_LAYOUT` template from monitoring.py
+- Dashboard uses TradingView-inspired dual theme (dark/light) managed by `src/dashboard/theme.py`
+- Sidebar always stays dark navy in both themes (by design)
+- All Plotly charts use `get_plotly_layout()` from `theme.py` (theme-aware)
+- All metric cards use `themed_metric_card()` from `theme.py`
 - `use_container_width=True` on all `st.plotly_chart()` calls
+- Navigation: `st.navigation` with 8 pages — Markets group (SPY Predictor, ES Strategy, What-If, Forecast, Single-Stock) and Operations group (Monitoring, Grafana Dashboards, Admin)
+- ES signal feed shows human-readable descriptions (e.g., "AI Rejected Signal" instead of raw `AI_REJECT`)
+- ES regime badges use dark text on yellow/green for WCAG contrast compliance
+
+## Theme Palettes (reference)
+
+- **DARK**: bg `#131722`, surface `#1E222D`, accent `#2962FF`, bull `#26A69A`, bear `#EF5350`, text `#D1D4DC`/`#787B86`, border `#2A2E39`
+- **LIGHT**: bg `#F0F2F5`, surface `#FFFFFF`, green `#0ECB81`, red `#F6465D`, yellow `#F0B90B`, text `#1E2329`/`#707A8A`, border `#E6E8EC`, card_border `#D1D4DC`
