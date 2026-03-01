@@ -248,6 +248,56 @@ class SPYPredictor:
         if low_gain_features:
             logger.info(f"Low-gain features (<1%): {len(low_gain_features)} of {X.shape[1]}")
 
+        # --- Feature selection: keep top features to reduce noise ---
+        # Only apply when we have many features relative to samples
+        n_features = X.shape[1]
+        selected_feature_mask = None
+        if n_features > 25 and n_samples < 500:
+            importances = self.model.feature_importances_
+            # Keep features with above-median importance (at least top 50%)
+            threshold = np.median(importances[importances > 0])
+            keep_mask = importances >= threshold
+            n_kept = keep_mask.sum()
+            # Ensure we keep at least 15 and at most 40 features
+            if n_kept < 15:
+                top_idx = np.argsort(importances)[-15:]
+                keep_mask = np.zeros(n_features, dtype=bool)
+                keep_mask[top_idx] = True
+                n_kept = 15
+            elif n_kept > 40:
+                top_idx = np.argsort(importances)[-40:]
+                keep_mask = np.zeros(n_features, dtype=bool)
+                keep_mask[top_idx] = True
+                n_kept = 40
+
+            selected_feature_mask = keep_mask
+            logger.info(f"Feature selection: keeping {n_kept}/{n_features} features")
+
+            # Update feature names
+            if feature_names:
+                feature_names = [f for f, k in zip(feature_names, keep_mask) if k]
+
+            # Refit with selected features
+            X_train_sel = X_train[:, keep_mask]
+            X_val_sel = X_val[:, keep_mask]
+            X_test_sel = X_test[:, keep_mask] if len(X_test) > 0 else X_test
+            X = X[:, keep_mask]
+
+            self.model = xgb.XGBClassifier(**params)
+            self.model.fit(X_train_sel, y_train,
+                           eval_set=[(X_val_sel, y_val)], verbose=False)
+
+            # Update references for downstream code
+            X_train = X_train_sel
+            X_val = X_val_sel
+            X_test = X_test_sel
+
+            # Update importances
+            self.feature_importances = dict(zip(
+                range(X.shape[1]),
+                self.model.feature_importances_
+            ))
+
         # Validation metrics
         val_pred = self.model.predict(X_val)
         accuracy = np.mean(val_pred == y_val)

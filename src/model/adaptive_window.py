@@ -87,8 +87,15 @@ def select_optimal_window(X: np.ndarray, y: np.ndarray,
     if not scores:
         return {"optimal_window": 252, "scores": scores}
 
-    optimal = max(scores, key=scores.get)
-    logger.info(f"Optimal window: {optimal}d (acc={scores[optimal]:.3f})")
+    # Prefer larger windows when accuracy differences are within noise margin
+    # More data = more stable model, especially with many features
+    best_acc = max(scores.values())
+    noise_margin = 0.03  # 3% margin — differences within this are noise
+    # Among windows within noise margin of best, pick the largest
+    candidates = {w: a for w, a in scores.items() if a >= best_acc - noise_margin}
+    optimal = max(candidates.keys())  # largest window within margin
+    logger.info(f"Optimal window: {optimal}d (acc={scores[optimal]:.3f}, "
+                f"best={best_acc:.3f}, margin={noise_margin})")
 
     return {
         "optimal_window": optimal,

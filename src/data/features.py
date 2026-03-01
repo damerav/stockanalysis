@@ -386,6 +386,28 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
     df["momentum_5d"] = df["close"].pct_change(5)
     df["momentum_10d"] = df["close"].pct_change(10)
 
+    # --- Lagged return features (short-term momentum/mean-reversion signals) ---
+    df["return_1d"] = df["close"].pct_change(1)
+    df["return_2d"] = df["close"].pct_change(2)
+    df["return_3d"] = df["close"].pct_change(3)
+    df["momentum_20d"] = df["close"].pct_change(20)
+    # Overnight gap (open vs previous close)
+    df["overnight_gap"] = (df["open"] - df["close"].shift(1)) / df["close"].shift(1)
+    # Intraday return (close vs open same day)
+    df["intraday_return"] = (df["close"] - df["open"]) / df["open"]
+    # High-low range as % of close
+    df["daily_range_pct"] = (df["high"] - df["low"]) / df["close"]
+    # Close position within daily range (0=low, 1=high)
+    df["close_position"] = (df["close"] - df["low"]) / (df["high"] - df["low"]).replace(0, np.nan)
+    # RSI rate of change
+    df["rsi_roc"] = df["rsi_14"].diff(1)
+    # Volume spike (today vs yesterday)
+    df["volume_spike"] = df["volume"] / df["volume"].shift(1).replace(0, np.nan)
+    # VIX mean reversion signal (distance from 20-day mean)
+    if "vix" in df.columns:
+        vix_ma20 = df["vix"].rolling(20).mean()
+        df["vix_mean_reversion"] = (df["vix"] - vix_ma20) / vix_ma20.replace(0, np.nan)
+
     # Max pain distance (if available)
     df["max_pain_distance"] = (df["close"] - df["max_pain"]) / df["close"]
     df["gex_normalized"] = df["gex"] / df["close"]
@@ -559,6 +581,10 @@ def get_feature_columns() -> list[str]:
         # Derived
         "price_vs_sma20_pct", "price_vs_sma50_pct", "rsi_divergence",
         "volume_trend", "atr_percentile", "momentum_5d", "momentum_10d",
+        # Lagged returns & short-term signals
+        "return_1d", "return_2d", "return_3d", "momentum_20d",
+        "overnight_gap", "intraday_return", "daily_range_pct", "close_position",
+        "rsi_roc", "volume_spike", "vix_mean_reversion",
         # Calendar / event features (P1)
         "days_to_fomc", "is_fomc_week", "is_fomc_day",
         "days_to_cpi", "days_to_nfp", "days_to_opex",
@@ -587,13 +613,13 @@ def get_adaptive_neutral_threshold(vix_level: float, base_threshold: float = 0.0
     return max(0.001, min(0.008, adaptive))
 
 
-def get_target(df: pd.DataFrame, threshold: float = 0.003,
+def get_target(df: pd.DataFrame, threshold: float = 0.005,
                adaptive: bool = True) -> pd.Series:
     """Compute next-day direction target: UP(1), DOWN(-1), NEUTRAL(0).
 
     Args:
         df: DataFrame with 'close' column and optionally 'vix'
-        threshold: Base ±0.3% daily return for neutral zone
+        threshold: Base ±0.5% daily return for neutral zone
         adaptive: If True and 'vix' column exists, scale threshold per regime
     """
     returns = df["close"].pct_change().shift(-1)  # next-day return
