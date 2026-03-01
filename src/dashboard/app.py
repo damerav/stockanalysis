@@ -1568,7 +1568,6 @@ def _admin_actions_tab():
             with st.spinner("Computing technicals..."):
                 try:
                     from src.data.features import compute_all_technicals, store_technicals
-                    import pandas as pd
                     config = _load_config()
                     from src.data.init_db import get_connection
                     conn = get_connection(config)
