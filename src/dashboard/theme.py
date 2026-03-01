@@ -308,14 +308,17 @@ def theme_css() -> str:
     section[data-testid="stSidebar"] .stCaption {{
         color: #D1D4DC !important;
     }}
-    section[data-testid="stSidebar"] button {{
+    section[data-testid="stSidebar"] button,
+    section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {{
         color: #D1D4DC !important;
         background-color: #1E222D !important;
         border-color: #363A45 !important;
     }}
-    section[data-testid="stSidebar"] button:hover {{
+    section[data-testid="stSidebar"] button:hover,
+    section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {{
         border-color: #5A5E69 !important;
         background-color: #2A2E39 !important;
+        color: #D1D4DC !important;
     }}
 
     /* Dividers */
@@ -430,9 +433,9 @@ def theme_css() -> str:
         font-size: 0.82rem !important;
     }}
 
-    /* ===== Buttons — theme-aware colors (CSS overrides config.toml) ===== */
-    /* Regular (secondary) buttons: neutral gray/white palette */
-    [data-testid="stMain"] .stButton > button {{
+    /* ===== Buttons — target data-testid to beat Emotion CSS ===== */
+    /* Secondary buttons in main content */
+    [data-testid="stBaseButton-secondary"] {{
         background-color: {c['btn_bg']} !important;
         color: {c['btn_text']} !important;
         border: 1px solid {c['btn_border']} !important;
@@ -441,41 +444,38 @@ def theme_css() -> str:
         font-size: 0.85rem !important;
         transition: all 0.15s ease !important;
     }}
-    [data-testid="stMain"] .stButton > button:hover {{
+    [data-testid="stBaseButton-secondary"]:hover {{
         background-color: {c['btn_hover_bg']} !important;
         border-color: {c['btn_hover_border']} !important;
         color: {c['btn_text']} !important;
     }}
-    [data-testid="stMain"] .stButton > button:active {{
+    [data-testid="stBaseButton-secondary"]:active,
+    [data-testid="stBaseButton-secondary"]:focus {{
         background-color: {c['btn_hover_bg']} !important;
         color: {c['btn_text']} !important;
     }}
     /* Primary buttons — always blue with white text */
-    [data-testid="stMain"] .stButton > button[kind="primary"],
-    [data-testid="stMain"] [data-testid="stBaseButton-primary"] {{
+    [data-testid="stBaseButton-primary"] {{
         background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%) !important;
         color: #FFFFFF !important;
         border: none !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
     }}
-    [data-testid="stMain"] .stButton > button[kind="primary"]:hover,
-    [data-testid="stMain"] [data-testid="stBaseButton-primary"]:hover {{
+    [data-testid="stBaseButton-primary"]:hover {{
         background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%) !important;
         color: #FFFFFF !important;
     }}
 
     /* ===== Form submit buttons — always white text on blue ===== */
-    [data-testid="stForm"] button[kind="secondaryFormSubmit"],
-    [data-testid="stForm"] [data-testid="stBaseButton-secondaryFormSubmit"],
-    [data-testid="stForm"] button[type="submit"],
-    [data-testid="stForm"] .stButton > button {{
+    [data-testid="stBaseButton-secondaryFormSubmit"],
+    [data-testid="stForm"] button[type="submit"] {{
         background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%) !important;
         color: #FFFFFF !important;
         border: none !important;
     }}
-    [data-testid="stForm"] button[kind="secondaryFormSubmit"]:hover,
-    [data-testid="stForm"] [data-testid="stBaseButton-secondaryFormSubmit"]:hover,
-    [data-testid="stForm"] button[type="submit"]:hover,
-    [data-testid="stForm"] .stButton > button:hover {{
+    [data-testid="stBaseButton-secondaryFormSubmit"]:hover,
+    [data-testid="stForm"] button[type="submit"]:hover {{
         background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%) !important;
         color: #FFFFFF !important;
     }}
