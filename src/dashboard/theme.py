@@ -230,8 +230,17 @@ def theme_css() -> str:
     backdrop = "backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);" if dark else ""
 
     return f"""
+    /* ===== Streamlit CSS variable overrides ===== */
+    :root, .stApp {{
+        --primary-color: #2962FF;
+        --background-color: {c['bg']};
+        --secondary-background-color: {c['surface']};
+        --text-color: {c['text']};
+        --font: "Source Sans Pro", sans-serif;
+    }}
+
     /* ===== Base background ===== */
-    .stApp {{ background-color: {c['bg']} !important; }}
+    .stApp {{ background-color: {c['bg']} !important; color: {c['text']} !important; }}
 
     /* ===== Sidebar — always dark navy ===== */
     .stSidebar, section[data-testid="stSidebar"] {{
@@ -435,10 +444,56 @@ def theme_css() -> str:
         {card_shadow}
     }}
 
+    /* ===== Text inputs, number inputs, text areas ===== */
+    .stTextInput input, .stNumberInput input, .stTextArea textarea,
+    [data-testid="stTextInput"] input,
+    [data-testid="stNumberInput"] input,
+    [data-testid="stTextArea"] textarea {{
+        background-color: {c['input_bg']} !important;
+        border-color: {c['input_border']} !important;
+        color: {c['text']} !important;
+    }}
+    .stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus,
+    [data-testid="stTextInput"] input:focus,
+    [data-testid="stNumberInput"] input:focus {{
+        border-color: #2962FF !important;
+        box-shadow: 0 0 0 2px rgba(41,98,255,0.2) !important;
+    }}
+
+    /* ===== Multiselect ===== */
+    [data-baseweb="tag"] {{
+        background-color: {'rgba(41,98,255,0.2)' if dark else 'rgba(41,98,255,0.1)'} !important;
+        color: {c['text']} !important;
+    }}
+
+    /* ===== Checkbox / Radio ===== */
+    .stCheckbox label span, .stRadio label span {{
+        color: {c['text']} !important;
+    }}
+
+    /* ===== Number input buttons ===== */
+    [data-testid="stNumberInput"] button {{
+        color: {c['text_secondary']} !important;
+        background-color: {c['input_bg']} !important;
+        border-color: {c['input_border']} !important;
+    }}
+
     /* ===== Plotly ===== */
     .js-plotly-plot .plotly .main-svg {{ background: transparent !important; }}
 
     /* ===== Scrollbar ===== */
     ::-webkit-scrollbar-thumb {{ background: {c['scrollbar']}; }}
     ::-webkit-scrollbar-thumb:hover {{ background: {c['scrollbar_hover']}; }}
+
+    /* ===== Toast / Alerts ===== */
+    [data-testid="stAlert"] {{
+        background-color: {c['surface']} !important;
+        color: {c['text']} !important;
+        border: 1px solid {c['border']} !important;
+    }}
+
+    /* ===== Sidebar expand button — always visible ===== */
+    button[data-testid="stSidebarCollapsedControl"] {{
+        color: {'#D1D4DC' if dark else '#1E2329'} !important;
+    }}
     """
