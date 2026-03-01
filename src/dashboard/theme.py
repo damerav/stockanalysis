@@ -133,7 +133,11 @@ font = "sans serif"
 """
 
 def _sync_config_toml(theme_name: str):
-    """Rewrite .streamlit/config.toml to match the active theme."""
+    """Rewrite .streamlit/config.toml to match the active theme.
+    
+    Only writes when content actually changes to avoid triggering
+    Streamlit's file-watcher 'Rerun' banner on every page load.
+    """
     palette = DARK if theme_name == "dark" else LIGHT
     content = _TOML_TEMPLATE.format(
         base=theme_name,
@@ -144,6 +148,13 @@ def _sync_config_toml(theme_name: str):
     toml_dir = os.path.join(os.path.dirname(__file__), "..", "..", ".streamlit")
     toml_path = os.path.join(toml_dir, "config.toml")
     try:
+        # Only write if content differs — avoids file-watcher churn
+        existing = ""
+        if os.path.exists(toml_path):
+            with open(toml_path) as f:
+                existing = f.read()
+        if existing.strip() == content.strip():
+            return
         os.makedirs(toml_dir, exist_ok=True)
         with open(toml_path, "w") as f:
             f.write(content)
