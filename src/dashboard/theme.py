@@ -430,21 +430,37 @@ def theme_css() -> str:
         font-size: 0.82rem !important;
     }}
 
-    /* ===== Buttons (main content area only) ===== */
+    /* ===== Buttons — theme-aware colors (CSS overrides config.toml) ===== */
+    /* Regular (secondary) buttons: neutral gray/white palette */
     [data-testid="stMain"] .stButton > button {{
         background-color: {c['btn_bg']} !important;
+        color: {c['btn_text']} !important;
         border: 1px solid {c['btn_border']} !important;
         border-radius: 6px !important;
-        color: {c['btn_text']} !important;
         font-weight: 500 !important;
         font-size: 0.85rem !important;
         transition: all 0.15s ease !important;
-        {card_shadow}
     }}
     [data-testid="stMain"] .stButton > button:hover {{
+        background-color: {c['btn_hover_bg']} !important;
         border-color: {c['btn_hover_border']} !important;
         color: {c['btn_text']} !important;
+    }}
+    [data-testid="stMain"] .stButton > button:active {{
         background-color: {c['btn_hover_bg']} !important;
+        color: {c['btn_text']} !important;
+    }}
+    /* Primary buttons — always blue with white text */
+    [data-testid="stMain"] .stButton > button[kind="primary"],
+    [data-testid="stMain"] [data-testid="stBaseButton-primary"] {{
+        background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+    }}
+    [data-testid="stMain"] .stButton > button[kind="primary"]:hover,
+    [data-testid="stMain"] [data-testid="stBaseButton-primary"]:hover {{
+        background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%) !important;
+        color: #FFFFFF !important;
     }}
 
     /* ===== Form submit buttons — always white text on blue ===== */
