@@ -284,10 +284,10 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         # 6. institutional_hour_vol — 9:30-11:00 vs 14:00-16:00
         bars["ts_str"] = bars["timestamp"].astype(str)
         morning_vol = bars[bars["ts_str"].str.contains(
-            r" (09:3|09:4|09:5|10:|11:0)", regex=True, na=False
+            r" (?:09:3|09:4|09:5|10:|11:0)", regex=True, na=False
         )]["volume"].sum()
         afternoon_vol = bars[bars["ts_str"].str.contains(
-            r" (14:|15:)", regex=True, na=False
+            r" (?:14:|15:)", regex=True, na=False
         )]["volume"].sum()
         institutional_hour_vol = float(morning_vol) / max(float(afternoon_vol), 1.0)
 
