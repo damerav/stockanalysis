@@ -89,7 +89,20 @@ class SPYPredictor:
 
         # Drop rows with NaN target (last row has no next-day return)
         valid_mask = target.notna()
-        X = features_df[valid_mask].apply(pd.to_numeric, errors="coerce").values
+        features_valid = features_df[valid_mask].apply(pd.to_numeric, errors="coerce")
+
+        # --- Feature quality filtering: drop columns that are mostly NaN ---
+        nan_rates = features_valid.isna().mean()
+        good_cols = nan_rates[nan_rates < 0.5].index.tolist()
+        dropped = len(features_valid.columns) - len(good_cols)
+        if dropped > 0:
+            logger.info(f"Dropped {dropped} features with >50% NaN "
+                        f"({len(good_cols)} remaining)")
+            features_valid = features_valid[good_cols]
+            if feature_names:
+                feature_names = [c for c in feature_names if c in good_cols]
+
+        X = features_valid.values
         y = target[valid_mask].values
 
         # Replace NaN features with 0 (XGBoost handles missing values natively)
@@ -156,21 +169,61 @@ class SPYPredictor:
             except Exception:
                 logger.info("GPU not available, using CPU")
 
-        # Train XGBoost
+        # Train XGBoost — tune for dataset size
+        n_samples = len(X_train)
+        # Adaptive hyperparameters based on dataset size
+        if n_samples < 300:
+            # Small dataset: shallow trees, strong regularization, fewer estimators
+            eff_depth = min(self.max_depth, 3)
+            eff_lr = max(self.learning_rate, 0.03)
+            eff_n = min(self.n_estimators, 300)
+            eff_subsample = 0.7
+            eff_colsample = 0.6
+            eff_min_child = 5
+            eff_gamma = 1.0
+            eff_reg_alpha = 0.5
+            eff_reg_lambda = 2.0
+        elif n_samples < 1000:
+            eff_depth = min(self.max_depth, 4)
+            eff_lr = self.learning_rate
+            eff_n = self.n_estimators
+            eff_subsample = 0.8
+            eff_colsample = 0.7
+            eff_min_child = 3
+            eff_gamma = 0.5
+            eff_reg_alpha = 0.1
+            eff_reg_lambda = 1.5
+        else:
+            eff_depth = self.max_depth
+            eff_lr = self.learning_rate
+            eff_n = self.n_estimators
+            eff_subsample = 0.8
+            eff_colsample = 0.8
+            eff_min_child = 1
+            eff_gamma = 0.0
+            eff_reg_alpha = 0.0
+            eff_reg_lambda = 1.0
+
         params = {
             "objective": "multi:softprob",
             "num_class": 3,
             "tree_method": tree_method,
             "device": device,
-            "max_depth": self.max_depth,
-            "learning_rate": self.learning_rate,
-            "n_estimators": self.n_estimators,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
+            "max_depth": eff_depth,
+            "learning_rate": eff_lr,
+            "n_estimators": eff_n,
+            "subsample": eff_subsample,
+            "colsample_bytree": eff_colsample,
+            "min_child_weight": eff_min_child,
+            "gamma": eff_gamma,
+            "reg_alpha": eff_reg_alpha,
+            "reg_lambda": eff_reg_lambda,
             "eval_metric": "mlogloss",
             "verbosity": 1,
-            "early_stopping_rounds": 50,
+            "early_stopping_rounds": 30,
         }
+        logger.info(f"XGBoost params: depth={eff_depth}, lr={eff_lr}, "
+                     f"n={eff_n}, samples={n_samples}")
 
         self.model = xgb.XGBClassifier(**params)
         self.model.fit(
@@ -282,7 +335,7 @@ class SPYPredictor:
             self.prior_accuracy = float(accuracy)
             # Save feature names alongside model for inference alignment
             feat_names = (feature_names if feature_names
-                          else list(features_df.columns) if hasattr(features_df, 'columns')
+                          else list(features_valid.columns) if hasattr(features_valid, 'columns')
                           else [f"f{i}" for i in range(X.shape[1])])
             meta_path = model_path.replace(".json", "_meta.json")
             try:
