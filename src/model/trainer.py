@@ -340,13 +340,28 @@ class SPYPredictor:
             meta_path = model_path.replace(".json", "_meta.json")
             try:
                 import json as _json
+                meta_data = {"feature_names": feat_names}
+                # Save conformal calibrator state for persistence across loads
+                if self.conformal is not None and self.conformal.quantile is not None:
+                    meta_data["conformal_quantile"] = self.conformal.quantile
+                    meta_data["conformal_significance"] = self.conformal.significance
                 with open(meta_path, "w") as mf:
-                    _json.dump({"feature_names": feat_names}, mf)
+                    _json.dump(meta_data, mf)
                 logger.info(f"Feature metadata saved to {meta_path}")
             except Exception as e:
                 logger.warning(f"Failed to save feature metadata: {e}")
             # Update in-memory feature names so callers don't need to reload
             self.trained_feature_names = feat_names
+            # Save conformal calibrator if fitted
+            if self.conformal is not None:
+                conformal_path = model_path.replace(".json", "_conformal.pkl")
+                try:
+                    import pickle
+                    with open(conformal_path, "wb") as cf:
+                        pickle.dump(self.conformal, cf)
+                    logger.info(f"Conformal calibrator saved to {conformal_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save conformal calibrator: {e}")
             logger.info(f"Model saved to {model_path}")
 
         metrics = {
@@ -512,6 +527,7 @@ class SPYPredictor:
 
         # Load feature metadata if available
         self.trained_feature_names = None
+        self.conformal = None
         meta_path = model_path.replace(".json", "_meta.json")
         if os.path.exists(meta_path):
             try:
@@ -520,8 +536,28 @@ class SPYPredictor:
                     meta = _json.load(mf)
                 self.trained_feature_names = meta.get("feature_names")
                 logger.info(f"Loaded feature metadata: {len(self.trained_feature_names)} features")
+                # Restore conformal calibrator if saved
+                if meta.get("conformal_quantile") is not None:
+                    from src.model.conformal import ConformalPredictor
+                    self.conformal = ConformalPredictor(
+                        significance=meta.get("conformal_significance", 0.10)
+                    )
+                    self.conformal.quantile = meta["conformal_quantile"]
+                    logger.info(f"Conformal calibrator restored (quantile={self.conformal.quantile:.4f})")
             except Exception as e:
                 logger.warning(f"Failed to load feature metadata: {e}")
+
+        # Load conformal calibrator if available
+        self.conformal = None
+        conformal_path = model_path.replace(".json", "_conformal.pkl")
+        if os.path.exists(conformal_path):
+            try:
+                import pickle
+                with open(conformal_path, "rb") as cf:
+                    self.conformal = pickle.load(cf)
+                logger.info("Conformal calibrator loaded")
+            except Exception as e:
+                logger.warning(f"Failed to load conformal calibrator: {e}")
 
         return True
 
