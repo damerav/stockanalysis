@@ -1567,13 +1567,16 @@ def _admin_actions_tab():
         if st.button("Compute Technicals", key="act_tech", help="Recompute SMA, RSI, MACD, BB, ATR"):
             with st.spinner("Computing technicals..."):
                 try:
-                    from src.data.features import compute_technicals
+                    from src.data.features import compute_all_technicals, store_technicals
+                    import pandas as pd
                     config = _load_config()
                     from src.data.init_db import get_connection
                     conn = get_connection(config)
-                    compute_technicals(conn, config)
+                    df = pd.read_sql("SELECT date, open, high, low, close, volume FROM prices ORDER BY date", conn)
+                    tech_df = compute_all_technicals(df, config)
+                    store_technicals(conn, tech_df, config)
                     conn.close()
-                    st.success("Technicals computed")
+                    st.success(f"Technicals computed — {len(tech_df)} rows")
                 except Exception as e:
                     st.error(f"Technicals failed: {e}")
 
