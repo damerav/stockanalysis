@@ -9,10 +9,28 @@
 #MainMenu { visibility: hidden; }
 footer { visibility: hidden; }
 header[data-testid="stHeader"] {
-    height: 0 !important;
     min-height: 0 !important;
     padding: 0 !important;
-    overflow: hidden !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+/* Hide the decorative header content but keep the sidebar expand button */
+header[data-testid="stHeader"] [data-testid="stDecoration"] {
+    display: none !important;
+}
+/* Keep toolbar visible for sidebar expand button, but hide other toolbar items */
+header[data-testid="stHeader"] [data-testid="stToolbar"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+/* Hide the toolbar action buttons and main menu but NOT the sidebar expand */
+header[data-testid="stHeader"] [data-testid="stToolbarActions"] {
+    display: none !important;
+}
+header[data-testid="stHeader"] [data-testid="stMainMenu"] {
+    display: none !important;
 }
 
 /* ===== COMPACT PAGE LAYOUT — Maximize content real estate ===== */
