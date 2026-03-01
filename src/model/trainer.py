@@ -66,7 +66,8 @@ class SPYPredictor:
         os.makedirs(self.model_dir, exist_ok=True)
 
     def train(self, features_df: pd.DataFrame, target: pd.Series,
-              use_gpu: bool = True, feature_names: list[str] = None) -> dict:
+              use_gpu: bool = True, feature_names: list[str] = None,
+              force_save: bool = False) -> dict:
         """Train XGBoost with P2 enhancements: adaptive window, purged CV,
         ensemble, conformal prediction, model registry.
 
@@ -75,6 +76,7 @@ class SPYPredictor:
             target: Direction labels (-1, 0, 1)
             use_gpu: Use GPU acceleration if available
             feature_names: Feature column names for registry
+            force_save: Skip performance gating and always save model
 
         Returns:
             Dict with training metrics
@@ -260,13 +262,14 @@ class SPYPredictor:
         # --- P1: Performance gating ---
         gated = False
         gate_reason = ""
-        if accuracy < 0.52:
-            gated = True
-            gate_reason = f"val accuracy {accuracy:.3f} < 0.52 threshold"
-        elif self.prior_accuracy is not None and accuracy < self.prior_accuracy - 0.02:
-            gated = True
-            gate_reason = (f"val accuracy {accuracy:.3f} degraded > 2% "
-                           f"vs prior {self.prior_accuracy:.3f}")
+        if not force_save:
+            if accuracy < 0.52:
+                gated = True
+                gate_reason = f"val accuracy {accuracy:.3f} < 0.52 threshold"
+            elif self.prior_accuracy is not None and accuracy < self.prior_accuracy - 0.02:
+                gated = True
+                gate_reason = (f"val accuracy {accuracy:.3f} degraded > 2% "
+                               f"vs prior {self.prior_accuracy:.3f}")
 
         model_path = ""
         if gated:

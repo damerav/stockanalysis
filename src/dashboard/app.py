@@ -1587,7 +1587,7 @@ def _admin_actions_tab():
             with st.spinner("Training XGBoost on GPU... this may take a minute."):
                 try:
                     from src.data.init_db import get_connection
-                    from src.data.features import build_feature_vector, get_target
+                    from src.data.features import build_feature_vector, get_feature_columns, get_target
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
                     conn = get_connection(config)
@@ -1595,7 +1595,7 @@ def _admin_actions_tab():
                     conn.close()
                     target = get_target(fv)
                     predictor = SPYPredictor(config)
-                    feature_cols = [c for c in fv.columns if c not in ["date", "close", "target", "next_return"]]
+                    feature_cols = [c for c in get_feature_columns() if c in fv.columns]
                     X = fv[feature_cols]
                     result = predictor.train(X, target, feature_names=list(feature_cols))
                     st.success(f"Training complete — accuracy: {result.get('accuracy', 0):.1%}")
@@ -1629,15 +1629,15 @@ def _admin_actions_tab():
 
                     if needs_retrain:
                         st.info("Model outdated or missing — auto-retraining with current features...")
-                        train_cols = [c for c in fv.columns if c not in ["date", "close", "target", "next_return"]]
                         target = get_target(fv)
-                        result = predictor.train(fv[train_cols], target, feature_names=list(train_cols))
+                        result = predictor.train(fv[all_feature_cols], target,
+                                                 feature_names=list(all_feature_cols), force_save=True)
                         if result.get("error"):
                             st.error(f"Auto-retrain failed: {result['error']}")
                             conn.close()
                         else:
                             st.success(f"Auto-retrained — accuracy: {result.get('accuracy', 0):.1%}")
-                            feature_cols = train_cols
+                            feature_cols = all_feature_cols
 
                     if not needs_retrain or not (needs_retrain and (result or {}).get("error")):
                         latest = fv[feature_cols].iloc[-1].values.astype(np.float64)

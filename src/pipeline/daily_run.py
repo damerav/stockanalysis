@@ -566,14 +566,15 @@ class DailyPipeline:
         if self.predictor.trained_feature_names:
             available = [c for c in self.predictor.trained_feature_names if c in fv.columns]
         elif hasattr(self.predictor.model, 'n_features_in_') and self.predictor.model.n_features_in_ != len(available):
-            # Auto-retrain with current feature set
+            # Auto-retrain with curated feature set
             logger.info(f"Feature mismatch ({self.predictor.model.n_features_in_} vs {len(available)}) — auto-retraining...")
             from src.data.features import get_target
             full_fv = build_feature_vector(self.conn, config=self.config)
             if full_fv is not None and not full_fv.empty:
-                train_cols = [c for c in full_fv.columns if c not in ["date", "close", "target", "next_return"]]
+                train_cols = [c for c in feature_cols if c in full_fv.columns]
                 target = get_target(full_fv)
-                result = self.predictor.train(full_fv[train_cols], target, feature_names=train_cols)
+                result = self.predictor.train(full_fv[train_cols], target,
+                                              feature_names=train_cols, force_save=True)
                 if result.get("error"):
                     return {"error": f"Auto-retrain failed: {result['error']}"}
                 logger.info(f"Auto-retrained: accuracy={result.get('accuracy', 0):.3f}")
