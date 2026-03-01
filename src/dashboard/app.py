@@ -1607,51 +1607,51 @@ def _admin_actions_tab():
             with st.spinner("Generating prediction..."):
                 try:
                     from src.data.init_db import get_connection
-                    from src.data.features import build_feature_vector, get_feature_columns
+                    from src.data.features import build_feature_vector, get_feature_columns, get_target
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
                     conn = get_connection(config)
                     fv = build_feature_vector(conn, config=config)
                     predictor = SPYPredictor(config)
-                    if not predictor.load_latest_model():
-                        st.error("No trained model found — train first")
-                    else:
-                        # Align features to what the model expects
-                        expected_n = getattr(predictor.model, "n_features_in_", None)
-                        all_feature_cols = [c for c in get_feature_columns() if c in fv.columns]
-                        feature_cols = None
-                        can_predict = True
+                    all_feature_cols = [c for c in get_feature_columns() if c in fv.columns]
 
+                    needs_retrain = False
+                    if not predictor.load_latest_model():
+                        needs_retrain = True
+                    else:
+                        expected_n = getattr(predictor.model, "n_features_in_", None)
                         if predictor.trained_feature_names:
-                            # Use saved feature names from metadata
                             feature_cols = [c for c in predictor.trained_feature_names if c in fv.columns]
-                            if len(feature_cols) < len(predictor.trained_feature_names):
-                                missing = set(predictor.trained_feature_names) - set(feature_cols)
-                                st.warning(f"Missing {len(missing)} features from model: {', '.join(list(missing)[:5])}...")
                         elif expected_n and expected_n != len(all_feature_cols):
-                            st.error(
-                                f"Feature mismatch: model expects {expected_n} features, "
-                                f"current pipeline produces {len(all_feature_cols)}. "
-                                f"Please retrain the model first (click 'Retrain XGBoost' above)."
-                            )
-                            can_predict = False
+                            needs_retrain = True
                         else:
                             feature_cols = all_feature_cols
 
-                        if can_predict and feature_cols:
-                            latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
-                            pred = predictor.predict(latest, feature_names=feature_cols)
-                            # Store in DB
-                            today = datetime.now().strftime("%Y-%m-%d")
-                            conn.execute(
-                                "INSERT OR REPLACE INTO predictions (date, direction, confidence, predicted_at) "
-                                "VALUES (?, ?, ?, ?)",
-                                (today, pred.get("direction", ""), pred.get("confidence", 0),
-                                 datetime.now().isoformat())
-                            )
-                            conn.commit()
-                            st.success(f"{pred.get('scale_label', pred.get('direction'))} — {pred.get('confidence', 0):.0f}% confidence")
-                            st.json(pred)
+                    if needs_retrain:
+                        st.info("Model outdated or missing — auto-retraining with current features...")
+                        train_cols = [c for c in fv.columns if c not in ["date", "close", "target", "next_return"]]
+                        target = get_target(fv)
+                        result = predictor.train(fv[train_cols], target, feature_names=list(train_cols))
+                        if result.get("error"):
+                            st.error(f"Auto-retrain failed: {result['error']}")
+                            conn.close()
+                        else:
+                            st.success(f"Auto-retrained — accuracy: {result.get('accuracy', 0):.1%}")
+                            feature_cols = train_cols
+
+                    if not needs_retrain or not (needs_retrain and (result or {}).get("error")):
+                        latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
+                        pred = predictor.predict(latest, feature_names=feature_cols)
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        conn.execute(
+                            "INSERT OR REPLACE INTO predictions (date, direction, confidence, predicted_at) "
+                            "VALUES (?, ?, ?, ?)",
+                            (today, pred.get("direction", ""), pred.get("confidence", 0),
+                             datetime.now().isoformat())
+                        )
+                        conn.commit()
+                        st.success(f"{pred.get('scale_label', pred.get('direction'))} — {pred.get('confidence', 0):.0f}% confidence")
+                        st.json(pred)
                     conn.close()
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
