@@ -1099,7 +1099,7 @@ def page_admin():
 def _admin_status_tab():
     st.subheader("System Health")
 
-    if st.button("🔄 Refresh Status", key="refresh_status"):
+    if st.button("\u21BB Refresh Status", key="refresh_status"):
         st.rerun()
 
     col1, col2, col3 = st.columns(3)
@@ -1393,7 +1393,7 @@ def _admin_users_tab():
             new_name = st.text_input("Display Name", key="new_name")
             new_role = st.selectbox("Role", ["viewer", "admin"], key="new_role")
 
-        if st.form_submit_button("➕ Add User"):
+        if st.form_submit_button("+ Add User"):
             if not new_username or not new_password:
                 st.error("Username and password are required")
             elif len(new_password) < 6:
@@ -1432,9 +1432,9 @@ def _admin_users_tab():
 
             fc1, fc2 = st.columns(2)
             with fc1:
-                save_clicked = st.form_submit_button("💾 Save Changes")
+                save_clicked = st.form_submit_button("Save Changes")
             with fc2:
-                delete_clicked = st.form_submit_button("🗑️ Delete User")
+                delete_clicked = st.form_submit_button("Delete User")
 
             if save_clicked:
                 if edit_password and len(edit_password) < 6:
@@ -1486,7 +1486,7 @@ def _admin_actions_tab():
     with col1:
         st.markdown("**Data Operations**")
 
-        if st.button("📥 Pull Latest Data", key="act_pull", help="Gap detection + backfill prices and macro"):
+        if st.button("Pull Latest Data", key="act_pull", help="Gap detection + backfill prices and macro"):
             with st.spinner("Running daily data pull..."):
                 try:
                     from src.data.daily_pull import run_daily_pull
@@ -1497,7 +1497,7 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"Data pull failed: {e}")
 
-        if st.button("📰 Fetch News", key="act_news", help="Fetch latest news from Finnhub + RSS"):
+        if st.button("Fetch News", key="act_news", help="Fetch latest news from Finnhub + RSS"):
             with st.spinner("Fetching news..."):
                 try:
                     from src.data.fetcher import FallbackFetcher
@@ -1525,7 +1525,7 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"News fetch failed: {e}")
 
-        if st.button("📊 Fetch Macro Data", key="act_macro", help="Fetch VIX, yields, DXY, gold, crude from FRED"):
+        if st.button("Fetch Macro Data", key="act_macro", help="Fetch VIX, yields, DXY, gold, crude from FRED"):
             with st.spinner("Fetching macro data..."):
                 try:
                     from src.data.fetcher import FallbackFetcher
@@ -1560,7 +1560,7 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"Macro fetch failed: {e}")
 
-        if st.button("📈 Compute Technicals", key="act_tech", help="Recompute SMA, RSI, MACD, BB, ATR"):
+        if st.button("Compute Technicals", key="act_tech", help="Recompute SMA, RSI, MACD, BB, ATR"):
             with st.spinner("Computing technicals..."):
                 try:
                     from src.data.features import compute_technicals
@@ -1576,7 +1576,7 @@ def _admin_actions_tab():
     with col2:
         st.markdown("**Model Operations**")
 
-        if st.button("🧠 Retrain XGBoost", key="act_train", help="Retrain SPY predictor with latest data (GPU)"):
+        if st.button("Retrain XGBoost", key="act_train", help="Retrain SPY predictor with latest data (GPU)"):
             with st.spinner("Training XGBoost on GPU... this may take a minute."):
                 try:
                     from src.data.init_db import get_connection
@@ -1596,7 +1596,7 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"Training failed: {e}")
 
-        if st.button("🔮 Generate Prediction", key="act_predict", help="Run inference for next trading day"):
+        if st.button("Generate Prediction", key="act_predict", help="Run inference for next trading day"):
             with st.spinner("Generating prediction..."):
                 try:
                     from src.data.init_db import get_connection
@@ -1627,7 +1627,7 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
 
-        if st.button("🩺 LLM Health Check", key="act_llm", help="Check Ollama + model availability"):
+        if st.button("LLM Health Check", key="act_llm", help="Check Ollama + model availability"):
             with st.spinner("Checking LLM health..."):
                 try:
                     from src.llm.analyzer import LLMAnalyzer
@@ -1641,7 +1641,7 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"LLM check failed: {e}")
 
-        if st.button("📝 Generate Report", key="act_report", help="Generate LLM daily report for latest prediction"):
+        if st.button("Generate Report", key="act_report", help="Generate LLM daily report for latest prediction"):
             with st.spinner("Generating LLM report (this may take a few minutes)..."):
                 try:
                     from src.llm.reporter import ReportGenerator
@@ -1675,7 +1675,7 @@ def _admin_actions_tab():
     with pc1:
         skip_llm = st.checkbox("Skip LLM steps (faster)", value=True, key="skip_llm_check")
     with pc2:
-        if st.button("🚀 Run Full Pipeline Now", key="act_pipeline", type="primary"):
+        if st.button("Run Full Pipeline", key="act_pipeline", type="primary"):
             with st.spinner("Running full 13-step pipeline... this may take several minutes."):
                 try:
                     from src.pipeline.daily_run import DailyPipeline
@@ -1707,7 +1707,7 @@ def _admin_actions_tab():
 
     # Send test alert
     st.markdown("**Alerts**")
-    if st.button("📨 Send Test Alert", key="act_alert", help="Send a test prediction alert"):
+    if st.button("Send Test Alert", key="act_alert", help="Send a test prediction alert"):
         try:
             from src.pipeline.alerts import send_alerts
             config = _load_config()
@@ -1776,7 +1776,7 @@ def _admin_actions_tab():
 
     tc1, tc2 = st.columns(2)
     with tc1:
-        if st.button("🎯 Train Entry Gate", key="act_train_entry",
+        if st.button("Train Entry Gate", key="act_train_entry",
                       help="Train XGBoost entry gate using triple-barrier labels on intraday data"):
             with st.spinner("Training ES Entry Gate..."):
                 try:
@@ -1825,7 +1825,7 @@ def _admin_actions_tab():
                     st.error(f"Entry Gate training failed: {e}")
 
     with tc2:
-        if st.button("🛡️ Train Exit Controller", key="act_train_exit",
+        if st.button("Train Exit Controller", key="act_train_exit",
                       help="Train CNN exit controller using reversal labels on intraday data"):
             with st.spinner("Training ES Exit Controller..."):
                 try:
@@ -2016,7 +2016,7 @@ def _admin_db_tab():
     st.subheader("Maintenance")
     mc1, mc2 = st.columns(2)
     with mc1:
-        if st.button("🗜️ Vacuum Database", key="db_vacuum", help="Reclaim unused space"):
+        if st.button("Vacuum Database", key="db_vacuum", help="Reclaim unused space"):
             try:
                 conn = sqlite3.connect(db_path)
                 size_before = os.path.getsize(db_path)
@@ -2028,7 +2028,7 @@ def _admin_db_tab():
             except Exception as e:
                 st.error(f"Vacuum failed: {e}")
     with mc2:
-        if st.button("🔍 Integrity Check", key="db_integrity"):
+        if st.button("Integrity Check", key="db_integrity"):
             try:
                 conn = sqlite3.connect(db_path)
                 result = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -2095,7 +2095,7 @@ def _admin_config_tab():
 
     edited = st.text_area("config.yaml", value=display_raw, height=400, key="config_editor")
 
-    if st.button("💾 Save Configuration", key="save_config"):
+    if st.button("Save Configuration", key="save_config"):
         # Prevent saving masked values
         if not show_secrets and "****" in edited:
             st.error("Cannot save masked values. Enable 'Reveal sensitive values' first, then edit and save.")

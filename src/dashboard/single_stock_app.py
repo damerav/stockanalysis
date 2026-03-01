@@ -429,7 +429,7 @@ def _render_news_tab(ticker: str):
 
         if not articles:
             st.info("No recent news articles available.")
-            if st.button("🔄 Run News Pipeline Now", key="run_news_pipeline"):
+            if st.button("Run News Pipeline Now", key="run_news_pipeline"):
                 with st.spinner("Fetching news and processing features..."):
                     try:
                         from src.pipeline.news_pipeline_run import run_news_pipeline

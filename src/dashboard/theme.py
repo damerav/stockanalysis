@@ -384,6 +384,33 @@ def theme_css() -> str:
         background-color: rgba(41,98,255,0.1) !important;
     }}
 
+    /* ===== Form submit buttons — always white text on blue ===== */
+    [data-testid="stForm"] button[kind="secondaryFormSubmit"],
+    [data-testid="stForm"] [data-testid="stBaseButton-secondaryFormSubmit"],
+    [data-testid="stForm"] button[type="submit"],
+    [data-testid="stForm"] .stButton > button {{
+        background: linear-gradient(135deg, #2962FF 0%, #1E88E5 100%) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+    }}
+    [data-testid="stForm"] button[kind="secondaryFormSubmit"]:hover,
+    [data-testid="stForm"] [data-testid="stBaseButton-secondaryFormSubmit"]:hover,
+    [data-testid="stForm"] button[type="submit"]:hover,
+    [data-testid="stForm"] .stButton > button:hover {{
+        background: linear-gradient(135deg, #1E88E5 0%, #1565C0 100%) !important;
+        color: #FFFFFF !important;
+    }}
+
+    /* ===== Password toggle (eye icon) — theme-aware ===== */
+    [data-testid="stTextInput"] button {{
+        color: {c['text_secondary']} !important;
+        background: transparent !important;
+        border: none !important;
+    }}
+    [data-testid="stTextInput"] button:hover {{
+        color: {c['text']} !important;
+    }}
+
     /* ===== Tabs — pill style ===== */
     .stTabs [data-baseweb="tab-list"] {{
         background-color: {c['tab_bg']} !important;

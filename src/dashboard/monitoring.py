@@ -1308,7 +1308,7 @@ def page_monitoring():
     ctrl_cols = st.columns([1, 2, 1, 1, 2, 1])
 
     with ctrl_cols[0]:
-        if st.button("⏪", key="mon_back", help="Shift time range back"):
+        if st.button("\u25C0", key="mon_back", help="Shift time range back"):
             if "mon_offset" not in st.session_state:
                 st.session_state["mon_offset"] = 0
             st.session_state["mon_offset"] += 1
@@ -1326,13 +1326,13 @@ def page_monitoring():
         days = time_options[time_label]
 
     with ctrl_cols[2]:
-        if st.button("⏩", key="mon_fwd", help="Shift time range forward"):
+        if st.button("\u25B6", key="mon_fwd", help="Shift time range forward"):
             if st.session_state.get("mon_offset", 0) > 0:
                 st.session_state["mon_offset"] -= 1
                 st.rerun()
 
     with ctrl_cols[3]:
-        if st.button("🔍", key="mon_zoom_out", help="Zoom out (double range)"):
+        if st.button("\u2212", key="mon_zoom_out", help="Zoom out (double range)"):
             current_idx = list(time_options.values()).index(days)
             if current_idx < len(time_options) - 1:
                 st.session_state["mon_time_range"] = list(time_options.keys())[current_idx + 1]
@@ -1347,7 +1347,7 @@ def page_monitoring():
         refresh_secs = refresh_options[refresh_label]
 
     with ctrl_cols[5]:
-        if st.button("🔄 Refresh", key="mon_manual_refresh"):
+        if st.button("\u21BB Refresh", key="mon_manual_refresh"):
             st.rerun()
 
     # Apply time offset for back/forward navigation
