@@ -1619,6 +1619,8 @@ def _admin_actions_tab():
                         # Align features to what the model expects
                         expected_n = getattr(predictor.model, "n_features_in_", None)
                         all_feature_cols = [c for c in get_feature_columns() if c in fv.columns]
+                        feature_cols = None
+                        can_predict = True
 
                         if predictor.trained_feature_names:
                             # Use saved feature names from metadata
@@ -1630,26 +1632,26 @@ def _admin_actions_tab():
                             st.error(
                                 f"Feature mismatch: model expects {expected_n} features, "
                                 f"current pipeline produces {len(all_feature_cols)}. "
-                                f"Please retrain the model first (click 'Train Model' above)."
+                                f"Please retrain the model first (click 'Retrain XGBoost' above)."
                             )
-                            conn.close()
-                            st.stop()
+                            can_predict = False
                         else:
                             feature_cols = all_feature_cols
 
-                        latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
-                        pred = predictor.predict(latest, feature_names=feature_cols)
-                        # Store in DB
-                        today = datetime.now().strftime("%Y-%m-%d")
-                        conn.execute(
-                            "INSERT OR REPLACE INTO predictions (date, direction, confidence, predicted_at) "
-                            "VALUES (?, ?, ?, ?)",
-                            (today, pred.get("direction", ""), pred.get("confidence", 0),
-                             datetime.now().isoformat())
-                        )
-                        conn.commit()
-                        st.success(f"{pred.get('scale_label', pred.get('direction'))} — {pred.get('confidence', 0):.0f}% confidence")
-                        st.json(pred)
+                        if can_predict and feature_cols:
+                            latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
+                            pred = predictor.predict(latest, feature_names=feature_cols)
+                            # Store in DB
+                            today = datetime.now().strftime("%Y-%m-%d")
+                            conn.execute(
+                                "INSERT OR REPLACE INTO predictions (date, direction, confidence, predicted_at) "
+                                "VALUES (?, ?, ?, ?)",
+                                (today, pred.get("direction", ""), pred.get("confidence", 0),
+                                 datetime.now().isoformat())
+                            )
+                            conn.commit()
+                            st.success(f"{pred.get('scale_label', pred.get('direction'))} — {pred.get('confidence', 0):.0f}% confidence")
+                            st.json(pred)
                     conn.close()
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
