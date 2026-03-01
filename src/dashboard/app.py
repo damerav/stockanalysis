@@ -1651,7 +1651,8 @@ def _admin_actions_tab():
         if st.button("Generate Report", key="act_report", help="Generate LLM daily report for latest prediction"):
             with st.spinner("Generating LLM report (this may take a few minutes)..."):
                 try:
-                    from src.llm.reporter import ReportGenerator
+                    from src.llm.reporter import DailyReporter
+                    from src.llm.analyzer import LLMAnalyzer
                     config = _load_config()
                     from src.data.init_db import get_connection
                     conn = get_connection(config)
@@ -1661,14 +1662,22 @@ def _admin_actions_tab():
                     if not pred:
                         st.error("No prediction found — generate one first")
                     else:
-                        reporter = ReportGenerator(config)
-                        report = reporter.generate(conn, pred[0])
-                        conn.execute(
-                            "UPDATE predictions SET report_text = ? WHERE date = ?",
-                            (report, pred[0])
-                        )
+                        pred_date = pred[0]
+                        tech_row = conn.execute("SELECT * FROM technicals WHERE date = ?", (pred_date,)).fetchone()
+                        sent_row = conn.execute("SELECT * FROM daily_sentiment WHERE date = ?", (pred_date,)).fetchone()
+                        macro_row = conn.execute("SELECT * FROM macro WHERE date = ?", (pred_date,)).fetchone()
+                        context = {
+                            "prediction": {"direction": pred[1], "confidence": pred[2]},
+                            "technicals": dict(tech_row) if tech_row else {},
+                            "sentiment": dict(sent_row) if sent_row else {},
+                            "macro": dict(macro_row) if macro_row else {},
+                        }
+                        llm = LLMAnalyzer(config)
+                        reporter = DailyReporter(config)
+                        report = reporter.generate_report(context, llm_available=llm.llm_available)
+                        conn.execute("UPDATE predictions SET report_text = ? WHERE date = ?", (report, pred_date))
                         conn.commit()
-                        st.success("Report generated")
+                        st.success(f"Report generated ({len(report)} chars)")
                         st.markdown(report)
                     conn.close()
                 except Exception as e:
