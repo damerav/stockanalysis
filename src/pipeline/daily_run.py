@@ -561,6 +561,14 @@ class DailyPipeline:
 
         feature_cols = get_feature_columns()
         available = [c for c in feature_cols if c in fv.columns]
+
+        # Align features to model's trained feature set if metadata exists
+        if self.predictor.trained_feature_names:
+            available = [c for c in self.predictor.trained_feature_names if c in fv.columns]
+        elif hasattr(self.predictor.model, 'n_features_in_') and self.predictor.model.n_features_in_ != len(available):
+            return {"error": f"Feature mismatch: model expects {self.predictor.model.n_features_in_}, "
+                    f"pipeline produces {len(available)}. Retrain required."}
+
         features = fv[available].iloc[0].values
         prediction = self.predictor.predict(features, feature_names=available)
 

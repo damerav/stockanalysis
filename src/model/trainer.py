@@ -62,6 +62,7 @@ class SPYPredictor:
         self.registry = None
         self.use_ensemble = config.get("ensemble", {}).get("enabled", False)
         self.use_conformal = config.get("conformal", {}).get("enabled", True)
+        self.trained_feature_names = None  # loaded from _meta.json
         os.makedirs(self.model_dir, exist_ok=True)
 
     def train(self, features_df: pd.DataFrame, target: pd.Series,
@@ -276,6 +277,18 @@ class SPYPredictor:
             model_path = os.path.join(self.model_dir, f"xgb_spy_{date_str}.json")
             self.model.save_model(model_path)
             self.prior_accuracy = float(accuracy)
+            # Save feature names alongside model for inference alignment
+            feat_names = (feature_names if feature_names
+                          else list(features_df.columns) if hasattr(features_df, 'columns')
+                          else [f"f{i}" for i in range(X.shape[1])])
+            meta_path = model_path.replace(".json", "_meta.json")
+            try:
+                import json as _json
+                with open(meta_path, "w") as mf:
+                    _json.dump({"feature_names": feat_names}, mf)
+                logger.info(f"Feature metadata saved to {meta_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save feature metadata: {e}")
             logger.info(f"Model saved to {model_path}")
 
         metrics = {
@@ -428,6 +441,7 @@ class SPYPredictor:
         models = sorted([
             f for f in os.listdir(self.model_dir)
             if f.startswith("xgb_spy_") and f.endswith(".json")
+            and not f.endswith("_meta.json")
         ])
         if not models:
             logger.info("No saved models found")
@@ -437,6 +451,20 @@ class SPYPredictor:
         self.model = xgb.XGBClassifier()
         self.model.load_model(model_path)
         logger.info(f"Loaded model: {model_path}")
+
+        # Load feature metadata if available
+        self.trained_feature_names = None
+        meta_path = model_path.replace(".json", "_meta.json")
+        if os.path.exists(meta_path):
+            try:
+                import json as _json
+                with open(meta_path) as mf:
+                    meta = _json.load(mf)
+                self.trained_feature_names = meta.get("feature_names")
+                logger.info(f"Loaded feature metadata: {len(self.trained_feature_names)} features")
+            except Exception as e:
+                logger.warning(f"Failed to load feature metadata: {e}")
+
         return True
 
     def _neutral_prediction(self) -> dict:

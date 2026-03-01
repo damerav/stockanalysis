@@ -1597,8 +1597,8 @@ def _admin_actions_tab():
                     predictor = SPYPredictor(config)
                     feature_cols = [c for c in fv.columns if c not in ["date", "close", "target", "next_return"]]
                     X = fv[feature_cols]
-                    result = predictor.train(X, target)
-                    st.success(f"Training complete — accuracy: {result.get('val_accuracy', 0):.1%}")
+                    result = predictor.train(X, target, feature_names=list(feature_cols))
+                    st.success(f"Training complete — accuracy: {result.get('accuracy', 0):.1%}")
                     st.json(result)
                 except Exception as e:
                     st.error(f"Training failed: {e}")
@@ -1616,9 +1616,29 @@ def _admin_actions_tab():
                     if not predictor.load_latest_model():
                         st.error("No trained model found — train first")
                     else:
-                        feature_cols = [c for c in get_feature_columns() if c in fv.columns]
+                        # Align features to what the model expects
+                        expected_n = getattr(predictor.model, "n_features_in_", None)
+                        all_feature_cols = [c for c in get_feature_columns() if c in fv.columns]
+
+                        if predictor.trained_feature_names:
+                            # Use saved feature names from metadata
+                            feature_cols = [c for c in predictor.trained_feature_names if c in fv.columns]
+                            if len(feature_cols) < len(predictor.trained_feature_names):
+                                missing = set(predictor.trained_feature_names) - set(feature_cols)
+                                st.warning(f"Missing {len(missing)} features from model: {', '.join(list(missing)[:5])}...")
+                        elif expected_n and expected_n != len(all_feature_cols):
+                            st.error(
+                                f"Feature mismatch: model expects {expected_n} features, "
+                                f"current pipeline produces {len(all_feature_cols)}. "
+                                f"Please retrain the model first (click 'Train Model' above)."
+                            )
+                            conn.close()
+                            st.stop()
+                        else:
+                            feature_cols = all_feature_cols
+
                         latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
-                        pred = predictor.predict(latest)
+                        pred = predictor.predict(latest, feature_names=feature_cols)
                         # Store in DB
                         today = datetime.now().strftime("%Y-%m-%d")
                         conn.execute(
