@@ -145,12 +145,15 @@ def backfill_dense(years: int = 3, config: dict = None):
     logger.info(f"  hy_spread: {len(hy_spread)} rows")
 
     # ── 4. Put/Call ratio from FRED ──
-    logger.info("Fetching put/call ratio from FRED (PCETCR)...")
-    # Try equity P/C ratio; fall back to total
-    pcr = _fetch_fred_series("PCETCR", fred_key, start_date, end_date)
+    logger.info("Fetching put/call ratio from FRED...")
+    # CBOE equity put/call ratio
+    pcr = _fetch_fred_series("EQUITYPCRATIO", fred_key, start_date, end_date)
     if pcr.empty:
-        logger.info("  Trying total P/C ratio (PCTTCR)...")
-        pcr = _fetch_fred_series("PCTTCR", fred_key, start_date, end_date)
+        logger.info("  Trying CBOE total P/C (TOTALPCR)...")
+        pcr = _fetch_fred_series("TOTALPCR", fred_key, start_date, end_date)
+    if pcr.empty:
+        # Try computing from VIX as proxy (higher VIX = more puts)
+        logger.info("  FRED P/C unavailable, skipping")
     logger.info(f"  put_call_ratio: {len(pcr)} rows")
 
     # ── 5. Build the dense feature table ──
@@ -307,8 +310,9 @@ def _safe_float(val):
 
 def _write_vix_term(conn, result):
     """Update macro table with VIX term structure and cross-asset columns."""
-    vix_cols = ["vix9d", "vix3m", "vix6m", "vvix", "skew_index",
-                "vix_term_slope", "vix_term_curve"]
+    # Only write columns that exist in the macro table schema
+    # vix_term_slope and vix_term_curve are computed by build_feature_vector
+    vix_cols = ["vix9d", "vix3m", "vix6m", "vvix", "skew_index"]
     cross_cols = ["hy_spread", "tlt_spy_ratio", "eem_spy_ratio",
                   "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio"]
     all_cols = vix_cols + cross_cols
