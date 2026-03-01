@@ -420,7 +420,7 @@ def theme_css() -> str:
     }}
 
     /* ===== Buttons (main content area only) ===== */
-    .main .stButton > button {{
+    [data-testid="stMain"] .stButton > button {{
         background-color: {c['btn_bg']} !important;
         border: 1px solid {c['btn_border']} !important;
         border-radius: 6px !important;
@@ -430,7 +430,7 @@ def theme_css() -> str:
         transition: all 0.15s ease !important;
         {card_shadow}
     }}
-    .main .stButton > button:hover {{
+    [data-testid="stMain"] .stButton > button:hover {{
         border-color: {c['btn_hover_border']} !important;
         color: {c['btn_text']} !important;
         background-color: {c['btn_hover_bg']} !important;
