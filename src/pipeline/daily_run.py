@@ -578,7 +578,8 @@ class DailyPipeline:
                 if result.get("error"):
                     return {"error": f"Auto-retrain failed: {result['error']}"}
                 logger.info(f"Auto-retrained: accuracy={result.get('accuracy', 0):.3f}")
-                available = train_cols
+                # Use the filtered feature names from training (may be fewer than train_cols)
+                available = self.predictor.trained_feature_names or train_cols
 
         features = fv[available].iloc[0].values
         prediction = self.predictor.predict(features, feature_names=available)

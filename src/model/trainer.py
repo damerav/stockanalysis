@@ -345,6 +345,8 @@ class SPYPredictor:
                 logger.info(f"Feature metadata saved to {meta_path}")
             except Exception as e:
                 logger.warning(f"Failed to save feature metadata: {e}")
+            # Update in-memory feature names so callers don't need to reload
+            self.trained_feature_names = feat_names
             logger.info(f"Model saved to {model_path}")
 
         metrics = {

@@ -1637,7 +1637,8 @@ def _admin_actions_tab():
                             conn.close()
                         else:
                             st.success(f"Auto-retrained — accuracy: {result.get('accuracy', 0):.1%}")
-                            feature_cols = all_feature_cols
+                            # Use the filtered feature names from training (may be fewer than all_feature_cols)
+                            feature_cols = predictor.trained_feature_names or all_feature_cols
 
                     if not needs_retrain or not (needs_retrain and (result or {}).get("error")):
                         latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
