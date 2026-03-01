@@ -98,7 +98,7 @@ def page_forecast():
         if os.path.exists(os.path.join(model_path, "meta.pkl")):
             predictor.load(model_path)
             forecast_df = predictor.predict(prices)
-            model_info = f"Trained model (loss: {predictor.history.get('loss', 0):.6f})" if predictor.history else "Pre-trained"
+            model_info = f"Trained model (accuracy: {(1 - predictor.history.get('loss', 0)) * 100:.1f}%)" if predictor.history else "Pre-trained"
         else:
             # Train on the fly with available data
             st.info("No pre-trained model found. Training on available data...")
@@ -108,7 +108,7 @@ def page_forecast():
             if "error" not in metrics:
                 predictor.save(model_path)
                 forecast_df = predictor.predict(prices)
-                model_info = f"Just trained (loss: {metrics.get('loss', 0):.6f})"
+                model_info = f"Just trained (accuracy: {(1 - metrics.get('loss', 0)) * 100:.1f}%)"
             else:
                 st.error(f"Training failed: {metrics.get('error')}")
     except ImportError:

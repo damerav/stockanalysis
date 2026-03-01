@@ -76,8 +76,8 @@ def _fetch_company_info(ticker: str) -> dict:
         info = t.info or {}
         return {
             "name": info.get("longName", ticker),
-            "sector": info.get("sector", "—"),
-            "industry": info.get("industry", "—"),
+            "sector": info.get("sector") or ("ETF" if info.get("quoteType") == "ETF" else "—"),
+            "industry": info.get("industry") or ("ETF" if info.get("quoteType") == "ETF" else "—"),
             "market_cap": info.get("marketCap", 0),
             "pe_ratio": info.get("trailingPE", 0),
             "dividend_yield": info.get("dividendYield", 0),
@@ -343,7 +343,11 @@ def page_single_stock():
     # Tab 1: Company Info
     with tabs[0]:
         if info.get("description"):
-            st.markdown(f"**{info.get('name', ticker)}** — {info.get('sector', '')} / {info.get('industry', '')}")
+            sector_industry = f"{info.get('sector', '')} / {info.get('industry', '')}" if info.get('sector') and info.get('sector') != '—' else ""
+            header = f"**{info.get('name', ticker)}**"
+            if sector_industry:
+                header += f" — {sector_industry}"
+            st.markdown(header)
             st.markdown(info["description"][:600] + ("..." if len(info.get("description", "")) > 600 else ""))
             c1, c2 = st.columns(2)
             with c1:

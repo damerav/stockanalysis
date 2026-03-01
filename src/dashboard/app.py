@@ -293,7 +293,7 @@ def page_spy():
             st.metric("📅 Earnings", f"{density} mega-caps",
                       delta="Earnings Week" if earn_week else None,
                       delta_color="normal" if earn_week else "off")
-            st.caption(f"Next in {days_next}d")
+            st.caption("Earnings today" if days_next == 0 else f"Next in {days_next}d")
 
         with p3_col2:
             from src.data.fed_comms import get_fed_features as _get_fed
