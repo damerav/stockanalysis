@@ -44,9 +44,11 @@ DARK = {
     "input_bg": "#1E222D",
     "input_border": "#2A2E39",
     "form_bg": "rgba(30,34,45,0.8)",
-    "btn_bg": "#1E222D",
-    "btn_border": "#363A45",
+    "btn_bg": "#2A2E39",
+    "btn_border": "#4A4E59",
     "btn_text": "#D1D4DC",
+    "btn_hover_bg": "#363A45",
+    "btn_hover_border": "#5A5E69",
     "expander_bg": "rgba(30,34,45,0.4)",
     "scrollbar": "#2A2E39",
     "scrollbar_hover": "#363A45",
@@ -93,6 +95,8 @@ LIGHT = {
     "btn_bg": "#FFFFFF",
     "btn_border": "#B7BDC6",
     "btn_text": "#1E2329",
+    "btn_hover_bg": "#F0F2F5",
+    "btn_hover_border": "#707A8A",
     "expander_bg": "#FFFFFF",
     "scrollbar": "#D1D4DC",
     "scrollbar_hover": "#B7BDC6",
@@ -260,8 +264,8 @@ def theme_css() -> str:
         border-color: #363A45 !important;
     }}
     section[data-testid="stSidebar"] button:hover {{
-        border-color: #2962FF !important;
-        background-color: rgba(41,98,255,0.1) !important;
+        border-color: #5A5E69 !important;
+        background-color: #2A2E39 !important;
     }}
 
     /* Dividers */
@@ -388,9 +392,9 @@ def theme_css() -> str:
         {card_shadow}
     }}
     .main .stButton > button:hover {{
-        border-color: #2962FF !important;
-        color: {'#FFFFFF' if dark else '#2962FF'} !important;
-        background-color: rgba(41,98,255,0.1) !important;
+        border-color: {c['btn_hover_border']} !important;
+        color: {c['btn_text']} !important;
+        background-color: {c['btn_hover_bg']} !important;
     }}
 
     /* ===== Form submit buttons — always white text on blue ===== */
