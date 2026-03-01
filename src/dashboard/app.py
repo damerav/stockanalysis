@@ -42,6 +42,7 @@ from src.dashboard.theme import (
     get_theme, get_colors, get_plotly_layout, get_title_font,
     metric_card as _theme_metric_card, badge_html as _theme_badge,
     page_header, render_theme_toggle, theme_css, is_dark,
+    _sync_config_toml,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,9 @@ IS_CLOUD = bool(RELAY_URL)
 DATA_DIR = "./data"
 
 st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
+
+# --- Sync config.toml to match session theme (makes Streamlit native widgets correct) ---
+_sync_config_toml(get_theme())
 
 # --- Dynamic theme CSS ---
 st.markdown(f"<style>{theme_css()}</style>", unsafe_allow_html=True)

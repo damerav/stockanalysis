@@ -4,6 +4,7 @@ Usage in any dashboard page:
     from src.dashboard.theme import get_theme, get_colors, get_plotly_layout, metric_card, badge_html, theme_css
 """
 
+import os
 import streamlit as st
 
 # ══════════════════════════════════════════════════════════════════════
@@ -116,9 +117,47 @@ def get_theme() -> str:
     return st.session_state.get("app_theme", "dark")
 
 
+# ── Config.toml sync ────────────────────────────────────────────────
+# Streamlit reads config.toml at startup AND on each rerun for theme
+# variables.  By rewriting it before st.rerun(), the native theme
+# engine renders widgets (buttons, inputs, selects) with the correct
+# base colors — no CSS !important wars needed.
+
+_TOML_TEMPLATE = """[theme]
+base = "{base}"
+primaryColor = "#2962FF"
+backgroundColor = "{bg}"
+secondaryBackgroundColor = "{surface}"
+textColor = "{text}"
+font = "sans serif"
+"""
+
+def _sync_config_toml(theme_name: str):
+    """Rewrite .streamlit/config.toml to match the active theme."""
+    palette = DARK if theme_name == "dark" else LIGHT
+    content = _TOML_TEMPLATE.format(
+        base=theme_name,
+        bg=palette["bg"],
+        surface=palette["surface"],
+        text=palette["text"],
+    )
+    toml_dir = os.path.join(os.path.dirname(__file__), "..", "..", ".streamlit")
+    toml_path = os.path.join(toml_dir, "config.toml")
+    try:
+        os.makedirs(toml_dir, exist_ok=True)
+        with open(toml_path, "w") as f:
+            f.write(content)
+    except OSError:
+        pass  # read-only filesystem — CSS fallback still works
+
+
 def set_theme(name: str):
-    """Set theme to 'dark' or 'light'."""
+    """Set theme to 'dark' or 'light' and update config.toml so Streamlit's
+    native theme engine matches our palette."""
     st.session_state["app_theme"] = name
+    _sync_config_toml(name)
+
+
 
 
 def is_dark() -> bool:
