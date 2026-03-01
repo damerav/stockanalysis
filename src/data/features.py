@@ -247,8 +247,17 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         # 1. opening_gap_pct
         opening_gap_pct = (day_open - prev_close) / prev_close if prev_close else 0.0
 
-        # 2. opening_range_breakout — first 30 min = first 360 bars (5-sec)
-        first_30 = bars.head(360)
+        # 2. opening_range_breakout — first 30 min
+        # Detect bar interval: if <50 bars it's likely 5-min, else 5-sec
+        bar_count = len(bars)
+        if bar_count < 100:
+            # 5-min bars: 6 bars = 30 min, last 18 bars = 90 min
+            first_30 = bars.head(6)
+            last_90_count = 18
+        else:
+            # 5-sec bars: 360 bars = 30 min, last 1080 bars = 90 min
+            first_30 = bars.head(360)
+            last_90_count = 1080
         or_high = float(first_30["high"].max())
         or_low = float(first_30["low"].min())
         if day_close > or_high:
@@ -264,16 +273,15 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         # 4. close_vs_low_pct
         close_vs_low_pct = (day_close - day_low) / day_low if day_low else 0.0
 
-        # 5. afternoon_reversal — morning = first half, afternoon = last 90 min (~1080 bars)
+        # 5. afternoon_reversal — morning = first half, afternoon = last 90 min
         mid = len(bars) // 2
         morning_dir = float(bars.iloc[mid]["close"]) - day_open
-        last_90_start = max(0, len(bars) - 1080)
+        last_90_start = max(0, len(bars) - last_90_count)
         afternoon_dir = day_close - float(bars.iloc[last_90_start]["close"])
         afternoon_reversal = 1 if (morning_dir > 0 and afternoon_dir < 0) or \
                                    (morning_dir < 0 and afternoon_dir > 0) else 0
 
         # 6. institutional_hour_vol — 9:30-11:00 vs 14:00-16:00
-        # Timestamps are like "2026-02-21 09:30:05" or ISO format
         bars["ts_str"] = bars["timestamp"].astype(str)
         morning_vol = bars[bars["ts_str"].str.contains(
             r" (09:3|09:4|09:5|10:|11:0)", regex=True, na=False
@@ -283,10 +291,11 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         )]["volume"].sum()
         institutional_hour_vol = float(morning_vol) / max(float(afternoon_vol), 1.0)
 
-        # 7. tick_divergence — we don't have NYSE TICK data in intraday_bars,
-        # so approximate with count of bars where close moved > 0.1% in 5 sec
+        # 7. tick_divergence — approximate with count of bars with large moves
         pct_moves = bars["close"].pct_change().abs()
-        extreme_count = int((pct_moves > 0.001).sum())  # >0.1% per 5-sec bar
+        # Threshold depends on bar interval
+        tick_threshold = 0.002 if bar_count < 100 else 0.001  # 0.2% for 5-min, 0.1% for 5-sec
+        extreme_count = int((pct_moves > tick_threshold).sum())
         tick_divergence = extreme_count / max(len(bars), 1)
 
         # 8. vwap_reclaim_count — number of times close crossed VWAP
