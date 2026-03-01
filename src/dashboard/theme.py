@@ -485,6 +485,28 @@ def theme_css() -> str:
     ::-webkit-scrollbar-thumb {{ background: {c['scrollbar']}; }}
     ::-webkit-scrollbar-thumb:hover {{ background: {c['scrollbar_hover']}; }}
 
+    /* ===== Code blocks (st.code) ===== */
+    [data-testid="stCode"],
+    [data-testid="stCode"] > div {{
+        background-color: {c['surface']} !important;
+        border: 1px solid {c['border']} !important;
+        border-radius: 8px !important;
+    }}
+    [data-testid="stCode"] code,
+    [data-testid="stCode"] pre {{
+        background-color: {c['surface']} !important;
+        color: {c['text']} !important;
+    }}
+    .stCodeBlock, .stCodeBlock > div,
+    pre[class*="language-"], code[class*="language-"] {{
+        background-color: {c['surface']} !important;
+        color: {c['text']} !important;
+    }}
+    /* Code copy button */
+    [data-testid="stCode"] button {{
+        color: {c['text_secondary']} !important;
+    }}
+
     /* ===== Toast / Alerts ===== */
     [data-testid="stAlert"] {{
         background-color: {c['surface']} !important;
