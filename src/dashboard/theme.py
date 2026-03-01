@@ -44,8 +44,8 @@ DARK = {
     "input_bg": "#1E222D",
     "input_border": "#2A2E39",
     "form_bg": "rgba(30,34,45,0.8)",
-    "btn_bg": "rgba(30,34,45,0.6)",
-    "btn_border": "#2A2E39",
+    "btn_bg": "#1E222D",
+    "btn_border": "#363A45",
     "btn_text": "#D1D4DC",
     "expander_bg": "rgba(30,34,45,0.4)",
     "scrollbar": "#2A2E39",
@@ -91,7 +91,7 @@ LIGHT = {
     "input_border": "#E6E8EC",
     "form_bg": "#FFFFFF",
     "btn_bg": "#FFFFFF",
-    "btn_border": "#E6E8EC",
+    "btn_border": "#B7BDC6",
     "btn_text": "#1E2329",
     "expander_bg": "#FFFFFF",
     "scrollbar": "#D1D4DC",
@@ -256,8 +256,8 @@ def theme_css() -> str:
     }}
     section[data-testid="stSidebar"] button {{
         color: #D1D4DC !important;
-        background-color: rgba(30,34,45,0.6) !important;
-        border-color: #2A2E39 !important;
+        background-color: #1E222D !important;
+        border-color: #363A45 !important;
     }}
     section[data-testid="stSidebar"] button:hover {{
         border-color: #2962FF !important;
