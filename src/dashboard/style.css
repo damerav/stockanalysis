@@ -87,14 +87,13 @@ header[data-testid="stHeader"] [data-testid="stMainMenu"] {
     word-wrap: break-word;
 }
 
-/* ===== SIDEBAR — Always dark navy (structural) ===== */
+/* ===== SIDEBAR NAV (structural) ===== */
 [data-testid="stSidebarNav"] span[data-testid="stSidebarNavSectionHeader"] {
     font-size: 0.7rem !important;
     font-weight: 600 !important;
     letter-spacing: 0.1em !important;
     text-transform: uppercase !important;
     padding: 0.5rem 1rem 0.25rem !important;
-    color: #787B86 !important;
 }
 [data-testid="stSidebarNav"] ul {
     padding-top: 0.5rem;
@@ -109,27 +108,15 @@ header[data-testid="stHeader"] [data-testid="stMainMenu"] {
     border-radius: 6px;
     font-size: 0.88rem;
     font-weight: 400;
-    color: #787B86;
     transition: all 0.15s ease;
     border-left: 2px solid transparent;
     text-decoration: none;
 }
 [data-testid="stSidebarNav"] ul li a[aria-current="page"] {
-    background-color: rgba(41, 98, 255, 0.1) !important;
-    color: #D1D4DC !important;
-    border-left: 2px solid #2962FF !important;
     font-weight: 500;
 }
-[data-testid="stSidebarNav"] ul li a:hover {
-    background-color: rgba(255, 255, 255, 0.03) !important;
-    color: #D1D4DC !important;
-}
 [data-testid="stSidebarNav"] ul li a span[data-testid="stIconMaterial"] {
-    color: #787B86;
     font-size: 1.1rem;
-}
-[data-testid="stSidebarNav"] ul li a[aria-current="page"] span[data-testid="stIconMaterial"] {
-    color: #2962FF !important;
 }
 
 /* ===== PILL-STYLE TABS (structural) ===== */

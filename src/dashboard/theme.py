@@ -57,6 +57,18 @@ DARK = {
     "popover_hover": "#2A2E39",
     "df_border": "#2A2E39",
     "backdrop": "blur(12px)",
+    # Sidebar
+    "sidebar_bg": "linear-gradient(180deg, #0C0E14 0%, #0F1118 100%)",
+    "sidebar_border": "#1C1F2E",
+    "sidebar_text": "#D1D4DC",
+    "sidebar_text_muted": "#787B86",
+    "sidebar_btn_bg": "#1E222D",
+    "sidebar_btn_border": "#363A45",
+    "sidebar_btn_hover_bg": "#2A2E39",
+    "sidebar_btn_hover_border": "#5A5E69",
+    "sidebar_nav_hover": "rgba(255, 255, 255, 0.03)",
+    "sidebar_nav_active_bg": "rgba(41, 98, 255, 0.1)",
+    "sidebar_divider": "#1C1F2E",
 }
 
 LIGHT = {
@@ -105,6 +117,18 @@ LIGHT = {
     "popover_hover": "#F0F2F5",
     "df_border": "#E6E8EC",
     "backdrop": "none",
+    # Sidebar
+    "sidebar_bg": "linear-gradient(180deg, #FFFFFF 0%, #F8F9FA 100%)",
+    "sidebar_border": "#E6E8EC",
+    "sidebar_text": "#1E2329",
+    "sidebar_text_muted": "#707A8A",
+    "sidebar_btn_bg": "#F0F2F5",
+    "sidebar_btn_border": "#D1D4DC",
+    "sidebar_btn_hover_bg": "#E6E8EC",
+    "sidebar_btn_hover_border": "#B7BDC6",
+    "sidebar_nav_hover": "rgba(0, 0, 0, 0.04)",
+    "sidebar_nav_active_bg": "rgba(41, 98, 255, 0.08)",
+    "sidebar_divider": "#E6E8EC",
 }
 
 
@@ -274,7 +298,7 @@ def page_header(title: str) -> str:
 def theme_css() -> str:
     """Generate the full CSS string for the active theme.
 
-    Sidebar always stays dark navy regardless of theme.
+    Sidebar follows the active theme (dark/light).
     """
     c = get_colors()
     dark = is_dark()
@@ -296,29 +320,59 @@ def theme_css() -> str:
     /* ===== Base background ===== */
     .stApp {{ background-color: {c['bg']} !important; color: {c['text']} !important; }}
 
-    /* ===== Sidebar — always dark navy ===== */
+    /* ===== Sidebar — theme-aware ===== */
     .stSidebar, section[data-testid="stSidebar"] {{
-        background: linear-gradient(180deg, #0C0E14 0%, #0F1118 100%) !important;
-        border-right: 1px solid #1C1F2E !important;
+        background: {c['sidebar_bg']} !important;
+        border-right: 1px solid {c['sidebar_border']} !important;
     }}
-    /* Sidebar text stays light */
+    /* Sidebar text */
     section[data-testid="stSidebar"] p,
     section[data-testid="stSidebar"] span,
     section[data-testid="stSidebar"] label,
     section[data-testid="stSidebar"] .stCaption {{
-        color: #D1D4DC !important;
+        color: {c['sidebar_text']} !important;
+    }}
+    section[data-testid="stSidebar"] h1 {{
+        color: {c['sidebar_text']} !important;
     }}
     section[data-testid="stSidebar"] button,
     section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {{
-        color: #D1D4DC !important;
-        background-color: #1E222D !important;
-        border-color: #363A45 !important;
+        color: {c['sidebar_text']} !important;
+        background-color: {c['sidebar_btn_bg']} !important;
+        border-color: {c['sidebar_btn_border']} !important;
     }}
     section[data-testid="stSidebar"] button:hover,
     section[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {{
-        border-color: #5A5E69 !important;
-        background-color: #2A2E39 !important;
-        color: #D1D4DC !important;
+        border-color: {c['sidebar_btn_hover_border']} !important;
+        background-color: {c['sidebar_btn_hover_bg']} !important;
+        color: {c['sidebar_text']} !important;
+    }}
+    /* Sidebar dividers */
+    section[data-testid="stSidebar"] hr {{
+        border-color: {c['sidebar_divider']} !important;
+    }}
+    /* Sidebar nav section headers */
+    [data-testid="stSidebarNav"] span[data-testid="stSidebarNavSectionHeader"] {{
+        color: {c['sidebar_text_muted']} !important;
+    }}
+    /* Sidebar nav links */
+    [data-testid="stSidebarNav"] ul li a {{
+        color: {c['sidebar_text_muted']} !important;
+    }}
+    [data-testid="stSidebarNav"] ul li a[aria-current="page"] {{
+        background-color: {c['sidebar_nav_active_bg']} !important;
+        color: {c['sidebar_text']} !important;
+        border-left: 2px solid #2962FF !important;
+    }}
+    [data-testid="stSidebarNav"] ul li a:hover {{
+        background-color: {c['sidebar_nav_hover']} !important;
+        color: {c['sidebar_text']} !important;
+    }}
+    [data-testid="stSidebarNav"] ul li a span[data-testid="stIconMaterial"] {{
+        color: {c['sidebar_text_muted']} !important;
+    }}
+    [data-testid="stSidebarNav"] ul li a[aria-current="page"] span[data-testid="stIconMaterial"] {{
+        color: #2962FF !important;
     }}
 
     /* Dividers */
