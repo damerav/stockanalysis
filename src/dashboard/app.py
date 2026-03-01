@@ -1637,12 +1637,29 @@ def _admin_actions_tab():
                             conn.close()
                         else:
                             st.success(f"Auto-retrained — accuracy: {result.get('accuracy', 0):.1%}")
-                            # Use the filtered feature names from training (may be fewer than all_feature_cols)
                             feature_cols = predictor.trained_feature_names or all_feature_cols
 
-                    if not needs_retrain or not (needs_retrain and (result or {}).get("error")):
+                    can_predict = not needs_retrain or not (needs_retrain and (result or {}).get("error"))
+                    if can_predict:
                         latest = fv[feature_cols].iloc[-1].values.astype(np.float64)
                         pred = predictor.predict(latest, feature_names=feature_cols)
+
+                        # Regime detection
+                        try:
+                            from src.model.regime import HMMRegimeDetector
+                            regime_det = HMMRegimeDetector()
+                            price_df = pd.read_sql_query(
+                                "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60", conn)
+                            macro_df = pd.read_sql_query(
+                                "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", conn)
+                            price_df["vix"] = macro_df["vix"].values if not macro_df.empty else 18.0
+                            regime = regime_det.predict(price_df)
+                            pred["regime"] = regime
+                        except Exception:
+                            pred["regime"] = ""
+
+                        pred["ensemble_used"] = predictor.ensemble is not None and predictor.use_ensemble
+
                         today = datetime.now().strftime("%Y-%m-%d")
                         conn.execute(
                             "INSERT OR REPLACE INTO predictions (date, direction, confidence, predicted_at) "
@@ -1651,6 +1668,28 @@ def _admin_actions_tab():
                              datetime.now().isoformat())
                         )
                         conn.commit()
+
+                        # Update spy_state.json so SPY Predictor page shows fresh data
+                        from src.realtime.dashboard_bridge import write_spy_state
+                        ind = {}
+                        tech_row = conn.execute(
+                            "SELECT rsi_14, macd, atr_14 FROM technicals ORDER BY date DESC LIMIT 1"
+                        ).fetchone()
+                        if tech_row:
+                            ind = {"rsi_14": tech_row[0], "macd": tech_row[1], "atr_14": tech_row[2]}
+                        macro_row = conn.execute(
+                            "SELECT vix, vix_change FROM macro ORDER BY date DESC LIMIT 1"
+                        ).fetchone()
+                        if macro_row:
+                            ind["vix"] = macro_row[0]
+                            ind["vix_change"] = macro_row[1]
+                        # Volume ratio and sentiment from latest features
+                        if "volume_ratio" in fv.columns:
+                            ind["volume_ratio"] = round(float(fv["volume_ratio"].iloc[-1]), 2) if pd.notna(fv["volume_ratio"].iloc[-1]) else None
+                        if "sentiment_score" in fv.columns:
+                            ind["sentiment_score"] = round(float(fv["sentiment_score"].iloc[-1]), 2) if pd.notna(fv["sentiment_score"].iloc[-1]) else None
+                        write_spy_state(prediction=pred, indicators=ind)
+
                         st.success(f"{pred.get('scale_label', pred.get('direction'))} — {pred.get('confidence', 0):.0f}% confidence")
                         st.json(pred)
                     conn.close()
