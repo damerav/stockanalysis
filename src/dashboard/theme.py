@@ -480,6 +480,25 @@ def theme_css() -> str:
         color: #FFFFFF !important;
     }}
 
+    /* ===== Tooltips — theme-aware ===== */
+    [data-baseweb="tooltip"] {{
+        background-color: {c['surface']} !important;
+        color: {c['text']} !important;
+        border: 1px solid {c['border']} !important;
+        border-radius: 6px !important;
+    }}
+    [data-baseweb="tooltip"] [kind="body"] {{
+        color: {c['text']} !important;
+    }}
+    /* Streamlit help tooltip popover */
+    [role="tooltip"] {{
+        background-color: {c['surface']} !important;
+        color: {c['text']} !important;
+    }}
+    [role="tooltip"] div {{
+        color: {c['text']} !important;
+    }}
+
     /* ===== Password toggle (eye icon) — theme-aware ===== */
     [data-testid="stTextInput"] button {{
         color: {c['text_secondary']} !important;
