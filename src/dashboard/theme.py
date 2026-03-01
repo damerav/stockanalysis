@@ -480,23 +480,31 @@ def theme_css() -> str:
         color: #FFFFFF !important;
     }}
 
-    /* ===== Tooltips — theme-aware ===== */
-    [data-baseweb="tooltip"] {{
+    /* ===== Tooltips — theme-aware (data-testid beats Emotion CSS) ===== */
+    [data-baseweb="tooltip"],
+    [role="tooltip"] {{
         background-color: {c['surface']} !important;
         color: {c['text']} !important;
         border: 1px solid {c['border']} !important;
         border-radius: 6px !important;
     }}
-    [data-baseweb="tooltip"] [kind="body"] {{
-        color: {c['text']} !important;
-    }}
-    /* Streamlit help tooltip popover */
-    [role="tooltip"] {{
+    [data-baseweb="tooltip"] div,
+    [role="tooltip"] div {{
         background-color: {c['surface']} !important;
         color: {c['text']} !important;
     }}
-    [role="tooltip"] div {{
+    [data-testid="stTooltipContent"],
+    [data-testid="stTooltipContent"] div,
+    [data-testid="stTooltipContent"] p,
+    [data-testid="stTooltipContent"] span,
+    [data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"],
+    [data-testid="stTooltipContent"] [data-testid="stMarkdownContainer"] p {{
+        background-color: {c['surface']} !important;
         color: {c['text']} !important;
+    }}
+    /* Tooltip icon (?) button next to labels */
+    [data-testid="stTooltipIcon"] {{
+        color: {c['text_secondary']} !important;
     }}
 
     /* ===== Password toggle (eye icon) — theme-aware ===== */
