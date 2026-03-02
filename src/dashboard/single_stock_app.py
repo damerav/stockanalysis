@@ -439,7 +439,8 @@ def _render_news_tab(ticker: str):
             # Try RFC 2822 (e.g. "Wed, 16 Jul 2025 12:00:00 GMT")
             try:
                 from email.utils import parsedate_to_datetime
-                return parsedate_to_datetime(pub)
+                dt = parsedate_to_datetime(pub)
+                return dt.replace(tzinfo=None)
             except Exception:
                 pass
             return datetime.min

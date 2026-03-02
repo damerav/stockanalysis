@@ -338,14 +338,16 @@ class NewsFetcher:
         def _parse_date(art):
             raw = art.get("published_at", "")
             try:
-                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                return dt.replace(tzinfo=None)
             except (ValueError, TypeError):
                 pass
             for fmt in ("%a, %d %b %Y %H:%M:%S %Z",
                         "%a, %d %b %Y %H:%M:%S %z",
                         "%Y-%m-%d %H:%M:%S"):
                 try:
-                    return datetime.strptime(raw.strip(), fmt)
+                    dt = datetime.strptime(raw.strip(), fmt)
+                    return dt.replace(tzinfo=None)
                 except (ValueError, TypeError):
                     continue
             return datetime.min
