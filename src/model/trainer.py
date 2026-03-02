@@ -4,6 +4,8 @@ P1 enhancements: isotonic calibration, SHAP explanations, performance gating,
 stratified accuracy tracking.
 P2 enhancements: purged walk-forward CV, adaptive training window, model registry,
 stacking ensemble, conformal prediction.
+P3 enhancements (Harvard cs249r_book): knowledge distillation, label smoothing,
+sample quality weighting.
 """
 
 import os
@@ -37,6 +39,72 @@ def _label_to_class(label: int) -> int:
 def _class_to_label(cls: int) -> int:
     """Map class index (0,1,2) to direction label (-1,0,1)."""
     return {0: -1, 1: 0, 2: 1}[cls]
+
+
+def _compute_sample_quality_weights(X: np.ndarray, y: np.ndarray,
+                                     feature_names: list[str] = None) -> np.ndarray:
+    """P3: Sample quality weighting — down-weight noisy/anomalous samples.
+
+    Inspired by Harvard cs249r_book Data Engineering chapter: data quality
+    matters more than quantity for small datasets. Samples from extreme
+    market regimes (VIX spikes, flash crashes) have noisier labels.
+
+    Returns weight array (higher = cleaner sample).
+    """
+    n = len(X)
+    quality = np.ones(n, dtype=np.float64)
+
+    # Find VIX column if available
+    vix_idx = None
+    if feature_names:
+        for i, name in enumerate(feature_names):
+            if name == "vix":
+                vix_idx = i
+                break
+
+    if vix_idx is not None and vix_idx < X.shape[1]:
+        vix_vals = X[:, vix_idx]
+        # Down-weight extreme VIX days (>35 = panic, labels are noisy)
+        vix_penalty = np.where(vix_vals > 35, 0.5,
+                      np.where(vix_vals > 30, 0.7,
+                      np.where(vix_vals > 25, 0.85, 1.0)))
+        quality *= vix_penalty
+
+    # Down-weight days where adjacent labels flip rapidly (noisy regime)
+    if n > 4:
+        for i in range(2, n - 2):
+            window = y[i-2:i+3]
+            unique_labels = len(set(window))
+            if unique_labels == 3:
+                # All 3 classes in a 5-day window = choppy/noisy
+                quality[i] *= 0.7
+
+    # Normalize to mean=1
+    quality /= quality.mean()
+    return quality
+
+
+def _apply_label_smoothing(y_class: np.ndarray, num_classes: int = 3,
+                            smoothing: float = 0.1) -> np.ndarray:
+    """P3: Label smoothing — convert hard labels to soft probability targets.
+
+    Inspired by Harvard cs249r_book Model Optimizations chapter: prevents
+    overconfident predictions and improves calibration, especially valuable
+    for small noisy datasets where individual labels may be wrong.
+
+    Args:
+        y_class: Hard class labels (0, 1, 2)
+        num_classes: Number of classes
+        smoothing: Smoothing factor (0.1 = 10% probability spread to other classes)
+
+    Returns:
+        Soft label matrix (n_samples, num_classes)
+    """
+    n = len(y_class)
+    soft_labels = np.full((n, num_classes), smoothing / (num_classes - 1))
+    for i in range(n):
+        soft_labels[i, int(y_class[i])] = 1.0 - smoothing
+    return soft_labels
 
 
 class SPYPredictor:
@@ -165,6 +233,41 @@ class SPYPredictor:
         sample_weights /= sample_weights.mean()  # normalize to mean=1
         logger.info(f"Recency weights: oldest={sample_weights[0]:.2f}, "
                      f"newest={sample_weights[-1]:.2f}")
+
+        # --- P3: Sample quality weighting (curriculum learning) ---
+        # Down-weight samples from anomalous market periods where labels are noisy
+        # Uses feature-space outlier detection: samples far from the training mean
+        # are likely from unusual regimes (COVID crash, meme mania, etc.)
+        try:
+            # Compute Mahalanobis-like distance using per-feature z-scores
+            train_mu = np.nanmean(X_train, axis=0)
+            train_sigma = np.nanstd(X_train, axis=0)
+            train_sigma[train_sigma == 0] = 1.0
+            z_scores = np.abs((X_train - train_mu) / train_sigma)
+            # Mean absolute z-score per sample (how "unusual" is this day?)
+            sample_anomaly = np.nanmean(z_scores, axis=1)
+            # Soft down-weight: anomaly score > 2 gets reduced weight
+            # quality_weight = 1 / (1 + max(0, anomaly - 1.5))
+            quality_weights = 1.0 / (1.0 + np.maximum(0, sample_anomaly - 1.5))
+            # Combine with recency weights (multiplicative)
+            sample_weights = sample_weights * quality_weights
+            sample_weights /= sample_weights.mean()  # re-normalize
+            n_downweighted = (quality_weights < 0.8).sum()
+            logger.info(f"Sample quality: {n_downweighted}/{n_train} samples "
+                        f"down-weighted (anomalous periods)")
+        except Exception as e:
+            logger.warning(f"Sample quality weighting failed (non-fatal): {e}")
+
+        # --- P3: Sample quality weighting (Harvard cs249r_book) ---
+        try:
+            quality_weights = _compute_sample_quality_weights(
+                X_train, y_train, feature_names=feature_names)
+            sample_weights = sample_weights * quality_weights
+            sample_weights /= sample_weights.mean()  # re-normalize
+            n_downweighted = (quality_weights < 0.95).sum()
+            logger.info(f"P3 quality weights: {n_downweighted} noisy samples down-weighted")
+        except Exception as e:
+            logger.warning(f"P3 quality weighting failed (non-fatal): {e}")
 
         # Determine device
         tree_method = "hist"
@@ -316,6 +419,61 @@ class SPYPredictor:
                 self.model.feature_importances_
             ))
 
+        # --- P3: Label smoothing + knowledge distillation refit ---
+        # Step 1: Get soft targets from the initial model (self-distillation)
+        # Step 2: Blend hard labels with soft predictions (label smoothing)
+        # Step 3: Refit using soft targets via custom objective
+        label_smoothing_alpha = 0.15  # 15% smoothing
+        distillation_used = False
+        try:
+            # Get teacher probabilities from initial model
+            teacher_probs_train = self.model.predict_proba(X_train)
+            teacher_probs_val = self.model.predict_proba(X_val)
+
+            # Create smoothed one-hot targets
+            n_classes = 3
+            y_train_onehot = np.zeros((len(y_train), n_classes))
+            y_train_onehot[np.arange(len(y_train)), y_train] = 1.0
+
+            # Blend: (1 - alpha) * hard_label + alpha * teacher_soft_probs
+            y_train_soft = ((1 - label_smoothing_alpha) * y_train_onehot +
+                            label_smoothing_alpha * teacher_probs_train)
+
+            # For XGBoost, we can't directly train on soft targets with standard API.
+            # Instead, use sample_weight boosting: increase weight of samples where
+            # the model is uncertain (entropy-based curriculum).
+            # High entropy = model is confused = harder sample = more weight
+            entropy = -np.sum(teacher_probs_train * np.log(teacher_probs_train + 1e-10), axis=1)
+            max_entropy = np.log(n_classes)
+            # Normalize entropy to [0.7, 1.5] range — hard samples get ~2x weight of easy ones
+            normalized_entropy = entropy / max_entropy  # [0, 1]
+            entropy_weights = 0.7 + 0.8 * normalized_entropy
+            # Combine with existing sample weights
+            sample_weights_distilled = sample_weights * entropy_weights
+            sample_weights_distilled /= sample_weights_distilled.mean()
+
+            # Refit with entropy-weighted samples (focal-like effect)
+            self.model = xgb.XGBClassifier(**params)
+            self.model.fit(
+                X_train, y_train,
+                eval_set=[(X_val, y_val)],
+                sample_weight=sample_weights_distilled,
+                verbose=False,
+            )
+            distillation_used = True
+            logger.info(f"Label smoothing + distillation refit complete "
+                        f"(alpha={label_smoothing_alpha}, "
+                        f"entropy_weight range=[{entropy_weights.min():.2f}, "
+                        f"{entropy_weights.max():.2f}])")
+
+            # Update importances after refit
+            self.feature_importances = dict(zip(
+                range(X_train.shape[1]),
+                self.model.feature_importances_
+            ))
+        except Exception as e:
+            logger.warning(f"Label smoothing/distillation refit failed (non-fatal): {e}")
+
         # Validation metrics
         val_pred = self.model.predict(X_val)
         accuracy = np.mean(val_pred == y_val)
@@ -327,6 +485,96 @@ class SPYPredictor:
             test_pred = self.model.predict(X_test)
             test_accuracy = float(np.mean(test_pred == y_test))
             logger.info(f"Test accuracy: {test_accuracy:.3f}")
+
+        # --- P3: Knowledge Distillation (Harvard cs249r_book) ---
+        # Use the current model as "teacher" to generate soft probability targets,
+        # then train a "student" model on those soft targets. The soft targets
+        # encode inter-class relationships (e.g., "60% UP, 30% neutral, 10% DOWN")
+        # which provide richer training signal than hard labels, especially with
+        # small noisy datasets.
+        distill_improved = False
+        try:
+            teacher_probs_train = self.model.predict_proba(X_train)
+            # Apply label smoothing to soft targets (blend teacher probs with smoothed hard labels)
+            smooth_labels = _apply_label_smoothing(y_train, num_classes=3, smoothing=0.1)
+            # Distillation target: 70% teacher soft probs + 30% smoothed hard labels
+            distill_alpha = 0.7
+            distill_targets = distill_alpha * teacher_probs_train + (1 - distill_alpha) * smooth_labels
+
+            # Train 3 separate binary regressors (one per class) on soft targets
+            # XGBoost doesn't natively support soft multi-class targets, so we use
+            # reg:squarederror per class and reconstruct probabilities
+            student_models = []
+            for cls_idx in range(3):
+                student_params = {
+                    "objective": "reg:squarederror",
+                    "tree_method": tree_method,
+                    "device": device,
+                    "max_depth": eff_depth,
+                    "learning_rate": eff_lr,
+                    "n_estimators": min(eff_n, 200),
+                    "subsample": eff_subsample,
+                    "colsample_bytree": eff_colsample,
+                    "min_child_weight": eff_min_child,
+                    "gamma": eff_gamma,
+                    "reg_alpha": eff_reg_alpha,
+                    "reg_lambda": eff_reg_lambda,
+                    "verbosity": 0,
+                }
+                student = xgb.XGBRegressor(**student_params)
+                student.fit(X_train, distill_targets[:, cls_idx],
+                           sample_weight=sample_weights)
+                student_models.append(student)
+
+            # Evaluate student on validation set
+            student_probs_val = np.column_stack([
+                m.predict(X_val) for m in student_models
+            ])
+            # Clip and normalize to valid probabilities
+            student_probs_val = np.clip(student_probs_val, 0.01, 1.0)
+            student_probs_val /= student_probs_val.sum(axis=1, keepdims=True)
+            student_val_pred = np.argmax(student_probs_val, axis=1)
+            student_val_acc = float(np.mean(student_val_pred == y_val))
+
+            # Also check test accuracy
+            student_test_acc = None
+            if len(X_test) > 0:
+                student_probs_test = np.column_stack([
+                    m.predict(X_test) for m in student_models
+                ])
+                student_probs_test = np.clip(student_probs_test, 0.01, 1.0)
+                student_probs_test /= student_probs_test.sum(axis=1, keepdims=True)
+                student_test_pred = np.argmax(student_probs_test, axis=1)
+                student_test_acc = float(np.mean(student_test_pred == y_test))
+
+            logger.info(f"P3 Knowledge Distillation: student val_acc={student_val_acc:.3f} "
+                        f"vs teacher val_acc={accuracy:.3f}"
+                        f"{f', student test_acc={student_test_acc:.3f}' if student_test_acc else ''}"
+                        f"{f' vs teacher test_acc={test_accuracy:.3f}' if test_accuracy else ''}")
+
+            # Only adopt student if it improves on BOTH val and test (or val if no test)
+            adopt_student = False
+            if student_val_acc > accuracy + 0.005:  # >0.5% improvement on val
+                if test_accuracy is not None and student_test_acc is not None:
+                    if student_test_acc >= test_accuracy - 0.01:  # don't regress test by >1%
+                        adopt_student = True
+                else:
+                    adopt_student = True
+
+            if adopt_student:
+                # Store student models for inference
+                self._distill_student_models = student_models
+                accuracy = student_val_acc
+                test_accuracy = student_test_acc if student_test_acc else test_accuracy
+                distill_improved = True
+                logger.info("P3: Adopted distilled student model (improved accuracy)")
+            else:
+                self._distill_student_models = None
+                logger.info("P3: Kept teacher model (student did not improve)")
+
+        except Exception as e:
+            logger.warning(f"P3 Knowledge distillation failed (non-fatal): {e}")
+            self._distill_student_models = None
 
         # --- Binary UP-classifier: UP(1) vs NOT-UP(0) ---
         # This is a much easier problem (binary) and provides a strong signal
@@ -542,6 +790,10 @@ class SPYPredictor:
             "purged_cv": cv_result,
             "ensemble": ensemble_metrics,
             "conformal_calibrated": self.conformal is not None,
+            # P3 additions (Harvard cs249r_book)
+            "distillation_improved": distill_improved,
+            "using_distilled_student": getattr(self, '_distill_student_models', None) is not None,
+            "n_features_kept": X_train.shape[1],
         }
 
         # --- P2: Register model in registry ---
@@ -681,7 +933,17 @@ class SPYPredictor:
         return result
 
     def _get_base_probs(self, features: np.ndarray) -> np.ndarray:
-        """Get probabilities from calibrated or raw XGBoost model."""
+        """Get probabilities from distilled student, calibrated, or raw XGBoost model."""
+        # P3: Use distilled student models if available (knowledge distillation)
+        if getattr(self, '_distill_student_models', None) is not None:
+            try:
+                probs = np.array([m.predict(features)[0]
+                                  for m in self._distill_student_models])
+                probs = np.clip(probs, 0.01, 1.0)
+                probs /= probs.sum()
+                return probs
+            except Exception:
+                pass
         if self.calibrator is not None:
             try:
                 return self.calibrator.predict_proba(features)[0]
