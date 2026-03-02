@@ -12,11 +12,27 @@ import os
 import re
 import sqlite3
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_date_str(pub_at: str) -> str:
+    """Parse published_at to 'YYYY-MM-DD' from either ISO or RFC 2822 format."""
+    if not pub_at:
+        return ""
+    # ISO format: starts with 4-digit year
+    if pub_at[:4].isdigit():
+        return pub_at[:10]
+    # RFC 2822 format: "Fri, 01 Aug 2025 07:00:00 GMT"
+    try:
+        dt = parsedate_to_datetime(pub_at)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return ""
 
 # --- Geopolitical risk keyword lexicon (weighted) ---
 # Higher weight = stronger geopolitical signal
@@ -109,8 +125,8 @@ def compute_daily_geopolitical_features(config: dict = None) -> pd.DataFrame:
     records = []
     for pub_at, headline, summary in rows:
         text = f"{headline or ''} {summary or ''}"
-        date_str = (pub_at or "")[:10]
-        if not date_str or len(date_str) < 10:
+        date_str = _parse_date_str(pub_at or "")
+        if not date_str:
             continue
         scores = compute_geopolitical_score(text)
         records.append({"date": date_str, **scores})
@@ -194,6 +210,7 @@ def compute_finbert_sentiment(texts: list[str], batch_size: int = 32) -> list[di
 def compute_daily_finbert_features(config: dict = None, days_back: int = 7) -> pd.DataFrame:
     """Compute daily FinBERT sentiment features from recent news.db articles.
 
+    Uses a cache table (finbert_cache) in news.db to avoid re-scoring articles.
     Returns DataFrame with: date, finbert_positive, finbert_negative,
     finbert_neutral, finbert_score (positive - negative)
     """
@@ -201,11 +218,50 @@ def compute_daily_finbert_features(config: dict = None, days_back: int = 7) -> p
     if not os.path.exists(db_path):
         return pd.DataFrame()
 
-    cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     conn = sqlite3.connect(db_path)
+
+    # Ensure cache table exists
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS finbert_cache (
+            article_id INTEGER PRIMARY KEY,
+            fb_positive REAL,
+            fb_negative REAL,
+            fb_neutral REAL
+        )
+    """)
+    conn.commit()
+
+    cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    # Get articles that need scoring (not in cache)
+    uncached = conn.execute(
+        "SELECT a.id, a.published_at, a.headline, a.summary "
+        "FROM raw_articles a LEFT JOIN finbert_cache c ON a.id = c.article_id "
+        "WHERE c.article_id IS NULL AND a.published_at >= ? "
+        "ORDER BY a.published_at",
+        (cutoff,),
+    ).fetchall()
+
+    if uncached:
+        logger.info(f"FinBERT: scoring {len(uncached)} uncached articles...")
+        texts = [f"{h or ''} {s or ''}".strip() or "neutral"
+                 for _, _, h, s in uncached]
+        sentiments = compute_finbert_sentiment(texts)
+        for (art_id, _, _, _), sent in zip(uncached, sentiments):
+            conn.execute(
+                "INSERT OR REPLACE INTO finbert_cache (article_id, fb_positive, fb_negative, fb_neutral) "
+                "VALUES (?, ?, ?, ?)",
+                (art_id, sent["positive"], sent["negative"], sent["neutral"]),
+            )
+        conn.commit()
+        logger.info(f"FinBERT: cached {len(uncached)} scores")
+
+    # Read all cached scores with dates
     rows = conn.execute(
-        "SELECT published_at, headline, summary FROM raw_articles "
-        "WHERE published_at >= ? ORDER BY published_at",
+        "SELECT a.published_at, c.fb_positive, c.fb_negative, c.fb_neutral "
+        "FROM raw_articles a JOIN finbert_cache c ON a.id = c.article_id "
+        "WHERE a.published_at >= ? "
+        "ORDER BY a.published_at",
         (cutoff,),
     ).fetchall()
     conn.close()
@@ -213,28 +269,19 @@ def compute_daily_finbert_features(config: dict = None, days_back: int = 7) -> p
     if not rows:
         return pd.DataFrame()
 
-    texts = []
-    dates = []
-    for pub_at, headline, summary in rows:
-        text = f"{headline or ''} {summary or ''}".strip()
-        date_str = (pub_at or "")[:10]
-        if text and date_str and len(date_str) >= 10:
-            texts.append(text)
-            dates.append(date_str)
-
-    if not texts:
-        return pd.DataFrame()
-
-    sentiments = compute_finbert_sentiment(texts)
-
     records = []
-    for date_str, sent in zip(dates, sentiments):
-        records.append({
-            "date": date_str,
-            "fb_positive": sent["positive"],
-            "fb_negative": sent["negative"],
-            "fb_neutral": sent["neutral"],
-        })
+    for pub_at, fb_pos, fb_neg, fb_neu in rows:
+        date_str = _parse_date_str(pub_at or "")
+        if date_str:
+            records.append({
+                "date": date_str,
+                "fb_positive": fb_pos,
+                "fb_negative": fb_neg,
+                "fb_neutral": fb_neu,
+            })
+
+    if not records:
+        return pd.DataFrame()
 
     df = pd.DataFrame(records)
     daily = df.groupby("date").agg(

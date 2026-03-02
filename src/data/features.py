@@ -17,6 +17,7 @@ from src.data.fed_comms import get_fed_features
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.geopolitical_features import (
     compute_daily_geopolitical_features,
+    compute_daily_finbert_features,
     compute_oil_shock_features,
     compute_flight_to_safety_features,
 )
@@ -624,12 +625,31 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
             if col not in df.columns:
                 df[col] = 0.0
 
+    # --- FinBERT sentiment features from news.db ---
+    try:
+        fb_daily = compute_daily_finbert_features(config, days_back=730)
+        if not fb_daily.empty:
+            fb_daily = fb_daily.set_index("date")
+            for col in ["finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score"]:
+                if col in fb_daily.columns:
+                    df[col] = df["date"].map(fb_daily[col]).fillna(0)
+                else:
+                    df[col] = 0.0
+        else:
+            for col in ["finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score"]:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"FinBERT features failed: {e}")
+        for col in ["finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score"]:
+            df[col] = 0.0
+
     # Fill NaN for new features
     new_feat_cols = ["geo_risk_score", "geo_fear_score", "geo_recovery_score",
                      "geo_net_risk", "geo_article_ratio", "geo_max_risk",
                      "crude_pct_change", "crude_vs_ma20", "crude_shock",
                      "crude_momentum_5d", "gold_momentum_5d", "gold_vs_ma20",
-                     "yield_change_5d", "safety_signal"]
+                     "yield_change_5d", "safety_signal",
+                     "finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score"]
     for col in new_feat_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
@@ -698,6 +718,8 @@ def get_feature_columns() -> list[str]:
         "crude_pct_change", "crude_vs_ma20", "crude_shock", "crude_momentum_5d",
         # Flight-to-safety features
         "gold_momentum_5d", "gold_vs_ma20", "yield_change_5d", "safety_signal",
+        # FinBERT sentiment features
+        "finbert_positive", "finbert_negative", "finbert_score",
     ]
 
 
