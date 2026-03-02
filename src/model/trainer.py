@@ -421,12 +421,18 @@ class SPYPredictor:
         # --- P1: Isotonic probability calibration ---
         try:
             from sklearn.calibration import CalibratedClassifierCV
-            # sklearn >= 1.6 removed cv="prefit"; use 3-fold instead
+            # Use 3-fold CV; need a fresh estimator without early_stopping
+            cal_params = params.copy()
+            cal_params.pop("early_stopping_rounds", None)
+            cal_base = xgb.XGBClassifier(**cal_params)
             self.calibrator = CalibratedClassifierCV(
-                self.model, method="isotonic", cv=3
+                cal_base, method="isotonic", cv=3
             )
-            self.calibrator.fit(X_val, y_val)
-            logger.info("Isotonic calibration fitted on validation set")
+            # Fit on combined train+val for calibration
+            X_cal = np.vstack([X_train, X_val])
+            y_cal = np.concatenate([y_train, y_val])
+            self.calibrator.fit(X_cal, y_cal)
+            logger.info("Isotonic calibration fitted")
         except Exception as e:
             logger.warning(f"Isotonic calibration failed (non-fatal): {e}")
             self.calibrator = None
