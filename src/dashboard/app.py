@@ -179,6 +179,20 @@ if user:
     st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
 render_theme_toggle()
 
+# --- Sidebar live ticker symbol selector ---
+_TICKER_PRESETS = ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+                   "QQQ", "IWM", "DIA", "VIX"]
+if "live_ticker_symbol" not in st.session_state:
+    st.session_state["live_ticker_symbol"] = "SPY"
+# Ensure current symbol is in the list (may have been set via Admin custom input)
+_current_sym = st.session_state["live_ticker_symbol"]
+_sidebar_options = _TICKER_PRESETS if _current_sym in _TICKER_PRESETS else [_current_sym] + _TICKER_PRESETS
+st.sidebar.selectbox(
+    "📈 Live Ticker",
+    _sidebar_options,
+    key="live_ticker_symbol",
+)
+
 # NOTE: st.navigation is called after all page functions are defined (see bottom of file)
 
 
@@ -1137,6 +1151,32 @@ def page_admin():
     ])
 
     with tab_status:
+        # ── Live Ticker Settings ──
+        _colors = get_colors()
+        with st.expander("📈 Live Ticker Settings", expanded=False):
+            st.caption("Pick a preset or type any valid ticker symbol.")
+            _col_preset, _col_custom = st.columns([1, 1])
+            with _col_preset:
+                _preset = st.selectbox(
+                    "Preset symbols",
+                    ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+                     "QQQ", "IWM", "DIA", "NFLX", "AMD", "COIN", "SOFI", "PLTR"],
+                    key="admin_ticker_preset",
+                )
+                if st.button("Apply preset", key="apply_preset_ticker"):
+                    st.session_state["live_ticker_symbol"] = _preset
+                    st.rerun()
+            with _col_custom:
+                _custom = st.text_input(
+                    "Custom symbol",
+                    placeholder="e.g. SOFI, BTC-USD, ^GSPC",
+                    key="admin_ticker_custom",
+                )
+                if st.button("Apply custom", key="apply_custom_ticker") and _custom.strip():
+                    st.session_state["live_ticker_symbol"] = _custom.strip().upper()
+                    st.rerun()
+            st.caption(f"Currently tracking: **{st.session_state.get('live_ticker_symbol', 'SPY')}**")
+
         _admin_status_tab()
     with tab_actions:
         _admin_actions_tab()
@@ -2541,6 +2581,44 @@ _pages = {
 }
 
 _pg = st.navigation(_pages)
+
+# ── Global live price ticker (auto-refreshes every 15s via st.fragment) ──
+@st.fragment(run_every=15)
+def _global_live_ticker():
+    import yfinance as _yf
+    from datetime import datetime as _dt
+    _colors = get_colors()
+    _sym = st.session_state.get("live_ticker_symbol", "SPY")
+    try:
+        _fi = _yf.Ticker(_sym).fast_info
+        _price = float(getattr(_fi, "last_price", 0) or 0)
+        _prev = float(getattr(_fi, "previous_close", 0) or 0)
+        if _price <= 0 or _prev <= 0:
+            return
+        _chg = _price - _prev
+        _pct = (_chg / _prev) * 100
+        _arrow = "▲" if _chg >= 0 else "▼"
+        _c = _colors["green"] if _chg >= 0 else _colors["red"]
+        _now = _dt.now().strftime("%H:%M:%S")
+        st.markdown(
+            f'<div style="display:flex; align-items:center; gap:14px; '
+            f'padding:6px 14px; background:{_colors["card"]}; '
+            f'border:1px solid {_colors["card_border"]}; border-radius:8px; '
+            f'margin-bottom:8px;">'
+            f'<span style="color:{_colors["text"]}; font-weight:600;">{_sym}</span>'
+            f'<span style="color:{_colors["text"]}; font-size:1.2em; font-weight:700;">'
+            f'${_price:,.2f}</span>'
+            f'<span style="color:{_c}; font-weight:600;">'
+            f'{_arrow} {_chg:+.2f} ({_pct:+.2f}%)</span>'
+            f'<span style="color:{_colors["text_secondary"]}; font-size:0.75em; '
+            f'margin-left:auto;">Live · {_now}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        pass
+
+_global_live_ticker()
 
 st.sidebar.divider()
 mode_label = "☁️ Cloud" if IS_CLOUD else "🖥️ Local"

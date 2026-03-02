@@ -1,11 +1,13 @@
 """🔮 Forecast Page — LSTM multi-day price prediction UI.
 
 Displays 5-day price forecast with chart and insight box.
+Includes a live price ticker that auto-refreshes via yfinance.
 """
 
 import os
 import sqlite3
 import logging
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -97,6 +99,8 @@ def page_forecast():
 
         if os.path.exists(os.path.join(model_path, "meta.pkl")):
             predictor.load(model_path)
+            # Override n_future to match user's slider selection
+            predictor.n_future = forecast_days
             forecast_df = predictor.predict(prices)
             if predictor.history:
                 # Show MAE in scaled units (0-1 range from MinMaxScaler)
@@ -159,7 +163,7 @@ def page_forecast():
             f'<div style="color:{COLORS["text_secondary"]}; font-size:0.8em;">FORECAST INSIGHT</div>'
             f'<div style="color:{dir_color}; font-size:1.8em; font-weight:bold; margin:8px 0;">{direction}</div>'
             f'<div style="color:{COLORS["text"]};">Current: <b>${last_close:,.2f}</b></div>'
-            f'<div style="color:{COLORS["text"]};">Day {forecast_days}: <b>${pred_last:,.2f}</b></div>'
+            f'<div style="color:{COLORS["text"]};">Day {len(forecast_df)}: <b>${pred_last:,.2f}</b></div>'
             f'<div style="color:{dir_color}; font-size:1.2em; margin-top:8px;">{pct_change:+.2f}%</div>'
             f'<div style="color:{COLORS["text_secondary"]}; font-size:0.75em; margin-top:12px;">{model_info}</div>'
             f'</div>',
@@ -192,7 +196,8 @@ def page_forecast():
         y0=0, y1=1, yref="paper",
         line=dict(color=COLORS["border"], width=1, dash="dot"),
     )
+    actual_days = len(forecast_df)
     fig.update_layout(**DARK_LAYOUT,
-                      title=dict(text=f"{ticker} — {forecast_days}-Day Forecast", font=dict(color=COLORS["text"], size=14)),
+                      title=dict(text=f"{ticker} — {actual_days}-Day Forecast", font=dict(color=COLORS["text"], size=14)),
                       height=350, yaxis_title="USD")
     st.plotly_chart(fig, use_container_width=True)
