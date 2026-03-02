@@ -184,6 +184,9 @@ _TICKER_PRESETS = ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA
                    "QQQ", "IWM", "DIA", "VIX"]
 if "live_ticker_symbol" not in st.session_state:
     st.session_state["live_ticker_symbol"] = "SPY"
+# Apply pending ticker change from Admin page (must happen BEFORE widget renders)
+if "_ticker_pending" in st.session_state:
+    st.session_state["live_ticker_symbol"] = st.session_state.pop("_ticker_pending")
 # Ensure current symbol is in the list (may have been set via Admin custom input)
 _current_sym = st.session_state["live_ticker_symbol"]
 _sidebar_options = _TICKER_PRESETS if _current_sym in _TICKER_PRESETS else [_current_sym] + _TICKER_PRESETS
@@ -1164,7 +1167,7 @@ def page_admin():
                     key="admin_ticker_preset",
                 )
                 if st.button("Apply preset", key="apply_preset_ticker"):
-                    st.session_state["live_ticker_symbol"] = _preset
+                    st.session_state["_ticker_pending"] = _preset
                     st.rerun()
             with _col_custom:
                 _custom = st.text_input(
@@ -1173,7 +1176,7 @@ def page_admin():
                     key="admin_ticker_custom",
                 )
                 if st.button("Apply custom", key="apply_custom_ticker") and _custom.strip():
-                    st.session_state["live_ticker_symbol"] = _custom.strip().upper()
+                    st.session_state["_ticker_pending"] = _custom.strip().upper()
                     st.rerun()
             st.caption(f"Currently tracking: **{st.session_state.get('live_ticker_symbol', 'SPY')}**")
 
