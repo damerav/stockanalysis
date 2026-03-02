@@ -145,6 +145,8 @@ class LSTMPredictor:
         self.history = {
             "loss": history.history["loss"][-1],
             "val_loss": history.history.get("val_loss", [0])[-1],
+            "mae": history.history.get("mae", [0])[-1],
+            "val_mae": history.history.get("val_mae", [0])[-1],
             "epochs": self.epochs,
             "samples": len(X),
         }
