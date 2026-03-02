@@ -1603,8 +1603,51 @@ def _admin_actions_tab():
                     st.error(f"Training failed: {e}")
 
         if st.button("Generate Prediction", key="act_predict", help="Run inference for next trading day"):
-            with st.spinner("Generating prediction..."):
+            with st.spinner("Fetching latest news + generating prediction..."):
                 try:
+                    # Fetch fresh news first so sentiment features are current
+                    try:
+                        from src.data.news_fetcher import NewsFetcher
+                        nf = NewsFetcher(_load_config())
+                        news_count = nf.fetch_all()
+
+                        # Quick sentiment update from expanded news corpus
+                        if news_count > 0:
+                            st.info(f"Fetched {news_count} news articles")
+                            try:
+                                from src.data.news_features import NewsFeatureProcessor
+                                processor = NewsFeatureProcessor(_load_config())
+                                article_df = processor.process_articles()
+                                today = datetime.now().strftime("%Y-%m-%d")
+                                today_arts = article_df[article_df["date"] == today] if not article_df.empty else article_df
+                                if not today_arts.empty:
+                                    avg_sent = float(today_arts["sentiment_compound"].mean())
+                                    art_count = len(today_arts)
+                                    pos_ratio = float((today_arts["sentiment_compound"] > 0.05).mean())
+                                    neg_ratio = float((today_arts["sentiment_compound"] < -0.05).mean())
+                                    # Update daily_sentiment in spy.db
+                                    cfg = _load_config()
+                                    from src.data.init_db import get_connection as _gc
+                                    _conn = _gc(cfg)
+                                    _conn.execute(
+                                        """INSERT OR REPLACE INTO daily_sentiment
+                                           (date, score, confidence, article_count,
+                                            positive_ratio, negative_ratio, neutral_ratio)
+                                           VALUES (?,?,?,?,?,?,?)""",
+                                        (today, avg_sent, min(art_count / 50, 1.0),
+                                         art_count, pos_ratio, neg_ratio,
+                                         1 - pos_ratio - neg_ratio),
+                                    )
+                                    _conn.commit()
+                                    _conn.close()
+                                    st.info(f"Sentiment updated: {art_count} articles, score={avg_sent:.3f}")
+                                processor.close()
+                            except Exception as se:
+                                logger.warning(f"Quick sentiment update failed: {se}")
+                        nf.close()
+                    except Exception as ne:
+                        logger.warning(f"News fetch failed (non-fatal): {ne}")
+
                     from src.data.init_db import get_connection
                     from src.data.features import build_feature_vector, get_feature_columns, get_target
                     from src.model.trainer import SPYPredictor

@@ -34,6 +34,8 @@ from src.model.regime import HMMRegimeDetector
 from src.data.earnings_calendar import fetch_earnings_yf, store_earnings
 from src.data.fed_comms import update_fed_communications
 from src.data.db_router import get_router
+from src.data.news_fetcher import NewsFetcher
+from src.data.news_features import NewsFeatureProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -207,53 +209,180 @@ class DailyPipeline:
         return {"source": "none", "rows": 0}
 
     def _step3_news(self) -> dict:
-        """Step 3: Fetch news from Finnhub + RSS."""
+        """Step 3: Fetch news from expanded sources (Finnhub + company news + 17 RSS feeds)."""
+        # Use expanded NewsFetcher (news.db) for broad coverage
+        expanded_count = 0
+        try:
+            nf = NewsFetcher(self.config)
+            expanded_count = nf.fetch_all()
+
+            # Bridge today's articles from news.db → spy.db news table
+            # so Step 4 sentiment analysis picks them all up
+            recent = nf.get_recent(days=1)
+            bridged = 0
+            for a in recent:
+                pub = a.get("published_at", "")
+                date_str = pub[:10] if pub else self.today
+                try:
+                    self.conn.execute(
+                        """INSERT OR IGNORE INTO news
+                           (date, source, headline, summary, url, fetched_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (date_str, a.get("source", ""), a.get("headline", ""),
+                         a.get("summary", ""), a.get("url", ""),
+                         a.get("fetched_at", "")),
+                    )
+                    bridged += 1
+                except (sqlite3.IntegrityError, sqlite3.OperationalError):
+                    pass
+            self.conn.commit()
+            nf.close()
+            logger.info(f"Expanded news: {expanded_count} new, {bridged} bridged to spy.db")
+        except Exception as e:
+            logger.warning(f"Expanded news fetch failed: {e}")
+
+        # Also fetch via legacy path as fallback
         articles = []
-        # Finnhub
         finnhub_articles = self.fallback.get_news_finnhub()
         articles.extend(finnhub_articles)
-        # RSS
         rss_articles = self.fallback.get_news_rss()
         articles.extend(rss_articles)
 
-        # Store in DB
         for a in articles:
-            self.conn.execute(
-                """INSERT INTO news (date, source, headline, summary, url, fetched_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (a["date"], a["source"], a["headline"],
-                 a["summary"], a.get("url", ""), a.get("fetched_at", "")),
-            )
+            try:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO news
+                       (date, source, headline, summary, url, fetched_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (a["date"], a["source"], a["headline"],
+                     a["summary"], a.get("url", ""), a.get("fetched_at", "")),
+                )
+            except (sqlite3.IntegrityError, sqlite3.OperationalError):
+                pass
         self.conn.commit()
-        logger.info(f"Fetched {len(articles)} news articles")
-        return {"articles": len(articles)}
+        logger.info(f"Legacy news: {len(articles)} articles")
+        return {"articles": len(articles), "expanded_articles": expanded_count}
 
     def _step4_sentiment(self) -> dict:
-        """Step 4: LLM sentiment analysis on today's news."""
-        if not self.llm.llm_available:
-            logger.info("LLM unavailable — using neutral sentiment")
-            neutral = self.llm.get_neutral_sentiment()
-            self._store_sentiment(neutral)
-            return {"skipped": True, "sentiment": neutral}
+        """Step 4: Sentiment analysis — combines LLM analysis with expanded news.db corpus."""
+        # --- Part A: Process expanded news.db articles via VADER/FinBERT ---
+        expanded_sentiment = {}
+        try:
+            processor = NewsFeatureProcessor(self.config)
+            article_df = processor.process_articles()
+            if not article_df.empty:
+                # Filter to today's articles
+                today_articles = article_df[article_df["date"] == self.today]
+                if not today_articles.empty:
+                    expanded_sentiment = {
+                        "article_count": len(today_articles),
+                        "avg_sentiment": float(today_articles["sentiment_compound"].mean()),
+                        "max_sentiment": float(today_articles["sentiment_compound"].max()),
+                        "min_sentiment": float(today_articles["sentiment_compound"].min()),
+                        "sentiment_std": float(today_articles["sentiment_compound"].std()) if len(today_articles) > 1 else 0,
+                        "positive_ratio": float((today_articles["sentiment_compound"] > 0.05).mean()),
+                        "negative_ratio": float((today_articles["sentiment_compound"] < -0.05).mean()),
+                    }
+                    # Compute per-category sentiment from ticker matching
+                    macro_arts = today_articles[today_articles["ticker"].isin(["MACRO", "MARKET", "SPY", "VIX"])]
+                    tech_arts = today_articles[today_articles["ticker"].isin(["NVDA", "AAPL", "MSFT", "GOOGL", "META", "AMD", "INTC"])]
+                    expanded_sentiment["macro_sentiment_expanded"] = float(macro_arts["sentiment_compound"].mean()) if not macro_arts.empty else 0
+                    expanded_sentiment["tech_sentiment_expanded"] = float(tech_arts["sentiment_compound"].mean()) if not tech_arts.empty else 0
+                    logger.info(f"Expanded news sentiment: {len(today_articles)} articles, "
+                                f"avg={expanded_sentiment['avg_sentiment']:.3f}")
 
-        # Get today's articles
+                # Also build and store daily features for the news_features table
+                daily_df = processor.build_daily_features()
+                processor.store_features(daily_df)
+            processor.close()
+        except Exception as e:
+            logger.warning(f"Expanded news processing failed (non-fatal): {e}")
+
+        # --- Part B: LLM sentiment analysis on spy.db news table (original path) ---
+        if not self.llm.llm_available:
+            logger.info("LLM unavailable — using expanded news sentiment")
+            if expanded_sentiment:
+                # Use expanded corpus sentiment as primary
+                sentiment = {
+                    "score": expanded_sentiment.get("avg_sentiment", 0),
+                    "confidence": min(expanded_sentiment.get("article_count", 0) / 50, 1.0),
+                    "article_count": expanded_sentiment.get("article_count", 0),
+                    "positive_ratio": expanded_sentiment.get("positive_ratio", 0),
+                    "negative_ratio": expanded_sentiment.get("negative_ratio", 0),
+                    "neutral_ratio": 1 - expanded_sentiment.get("positive_ratio", 0) - expanded_sentiment.get("negative_ratio", 0),
+                    "macro_sentiment": expanded_sentiment.get("macro_sentiment_expanded", 0),
+                    "earnings_sentiment": 0,
+                    "geopolitical_sentiment": 0,
+                    "technical_sentiment": expanded_sentiment.get("tech_sentiment_expanded", 0),
+                    "sentiment_dispersion": expanded_sentiment.get("sentiment_std", 0),
+                    "sentiment_velocity": 0,
+                }
+            else:
+                sentiment = self.llm.get_neutral_sentiment()
+            self._store_sentiment(sentiment)
+            return {"skipped_llm": True, "expanded_articles": expanded_sentiment.get("article_count", 0), "sentiment": sentiment}
+
+        # Get today's articles from spy.db
         rows = self.conn.execute(
-            "SELECT headline, summary FROM news WHERE date = ? LIMIT 50",
+            "SELECT headline, summary FROM news WHERE date = ? LIMIT 200",
             (self.today,),
         ).fetchall()
         articles = [{"headline": r[0], "summary": r[1]} for r in rows]
 
         if not articles:
-            logger.info("No articles to analyse")
-            neutral = self.llm.get_neutral_sentiment()
-            self._store_sentiment(neutral)
-            return {"articles": 0, "sentiment": neutral}
+            logger.info("No articles in spy.db — using expanded sentiment")
+            if expanded_sentiment:
+                sentiment = {
+                    "score": expanded_sentiment.get("avg_sentiment", 0),
+                    "confidence": min(expanded_sentiment.get("article_count", 0) / 50, 1.0),
+                    "article_count": expanded_sentiment.get("article_count", 0),
+                    "positive_ratio": expanded_sentiment.get("positive_ratio", 0),
+                    "negative_ratio": expanded_sentiment.get("negative_ratio", 0),
+                    "neutral_ratio": 1 - expanded_sentiment.get("positive_ratio", 0) - expanded_sentiment.get("negative_ratio", 0),
+                    "macro_sentiment": expanded_sentiment.get("macro_sentiment_expanded", 0),
+                    "earnings_sentiment": 0,
+                    "geopolitical_sentiment": 0,
+                    "technical_sentiment": expanded_sentiment.get("tech_sentiment_expanded", 0),
+                    "sentiment_dispersion": expanded_sentiment.get("sentiment_std", 0),
+                    "sentiment_velocity": 0,
+                }
+            else:
+                sentiment = self.llm.get_neutral_sentiment()
+            self._store_sentiment(sentiment)
+            return {"articles": 0, "expanded_articles": expanded_sentiment.get("article_count", 0), "sentiment": sentiment}
 
         logger.info(f"Analysing sentiment for {len(articles)} articles...")
         results = self.llm.analyze_sentiment(articles)
         daily = self.llm.aggregate_daily_sentiment(results)
+
+        # --- Part C: Blend LLM sentiment with expanded corpus sentiment ---
+        if expanded_sentiment and expanded_sentiment.get("article_count", 0) > 10:
+            # Weighted blend: LLM is deeper analysis, expanded is broader coverage
+            llm_weight = 0.6
+            exp_weight = 0.4
+            daily["score"] = daily["score"] * llm_weight + expanded_sentiment["avg_sentiment"] * exp_weight
+            daily["article_count"] = daily.get("article_count", len(articles)) + expanded_sentiment["article_count"]
+            daily["sentiment_dispersion"] = max(
+                daily.get("sentiment_dispersion", 0),
+                expanded_sentiment.get("sentiment_std", 0)
+            )
+            logger.info(f"Blended sentiment: LLM({llm_weight}) + expanded({exp_weight}) = {daily['score']:.3f}")
+
+        # Compute sentiment velocity (change vs yesterday)
+        try:
+            prev = self.conn.execute(
+                "SELECT score FROM daily_sentiment WHERE date < ? ORDER BY date DESC LIMIT 1",
+                (self.today,),
+            ).fetchone()
+            if prev and prev[0] is not None:
+                daily["sentiment_velocity"] = round(daily["score"] - prev[0], 4)
+            else:
+                daily["sentiment_velocity"] = 0
+        except Exception:
+            daily["sentiment_velocity"] = daily.get("sentiment_velocity", 0)
+
         self._store_sentiment(daily)
-        return {"articles": len(articles), "sentiment": daily}
+        return {"articles": len(articles), "expanded_articles": expanded_sentiment.get("article_count", 0), "sentiment": daily}
 
     def _store_sentiment(self, sentiment: dict):
         self.conn.execute(

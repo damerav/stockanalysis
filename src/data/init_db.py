@@ -221,6 +221,12 @@ def _migrate_schema(conn: sqlite3.Connection):
         )
     """)
 
+    # News table: add unique index on url for deduplication
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_url ON news(url)")
+    except Exception:
+        pass  # may fail if duplicates already exist
+
     # Users table (bcrypt-hashed passwords)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
