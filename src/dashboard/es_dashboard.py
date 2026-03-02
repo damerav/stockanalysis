@@ -52,11 +52,11 @@ entry_price = position.get("entry_price", 0)
 unrealized = pnl.get("unrealized", 0)
 daily_pnl = pnl.get("daily", 0)
 
-regime_colors = {"Low": "#4CAF50", "Med": "#FFC107", "High": "#FF5722"}
-pos_colors = {"LONG": "#00C853", "SHORT": "#D50000", "FLAT": "#9E9E9E"}
+regime_colors = {"Low": "var(--color-positive-500)", "Med": "var(--color-warning-500)", "High": "var(--color-negative-500)"}
+pos_colors = {"LONG": "var(--color-positive-500)", "SHORT": "var(--color-negative-500)", "FLAT": "var(--color-text-tertiary)"}
 
-banner_color = pos_colors.get(pos_status, "#9E9E9E")
-regime_color = regime_colors.get(regime, "#FFC107")
+banner_color = pos_colors.get(pos_status, "var(--color-text-tertiary)")
+regime_color = regime_colors.get(regime, "var(--color-warning-500)")
 
 st.markdown(
     f"""<div style="background-color:{banner_color}; padding:15px; border-radius:10px;

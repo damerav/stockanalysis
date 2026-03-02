@@ -166,7 +166,29 @@ class NewsFetcher:
                     headline = entry.get("title", "")
                     summary = entry.get("summary", "")[:500]
                     article_url = entry.get("link", "")
-                    pub_at = entry.get("published", now)
+                    # Normalize published date to ISO format for consistent sorting
+                    pub_at = now
+                    if hasattr(entry, "published_parsed") and entry.published_parsed:
+                        try:
+                            from time import mktime
+                            pub_at = datetime.fromtimestamp(mktime(entry.published_parsed)).isoformat()
+                        except Exception:
+                            pub_at = entry.get("published", now)
+                    elif entry.get("published"):
+                        raw_pub = entry["published"]
+                        # Try parsing common RSS date formats
+                        for fmt in ("%a, %d %b %Y %H:%M:%S %Z",
+                                    "%a, %d %b %Y %H:%M:%S %z",
+                                    "%Y-%m-%dT%H:%M:%S%z",
+                                    "%Y-%m-%dT%H:%M:%SZ",
+                                    "%Y-%m-%d %H:%M:%S"):
+                            try:
+                                pub_at = datetime.strptime(raw_pub.strip(), fmt).isoformat()
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            pub_at = raw_pub  # keep original if all parsing fails
                     ticker = self._match_ticker(headline + " " + summary)
                     try:
                         self.conn.execute(
@@ -296,20 +318,39 @@ class NewsFetcher:
         return "MARKET"
 
     def get_recent(self, days: int = 3, ticker: str = None) -> list[dict]:
-        """Get recent articles from news.db."""
+        """Get recent articles from news.db, sorted newest-first."""
+        # Use fetched_at for filtering (always ISO format) since published_at
+        # has mixed formats (ISO vs RFC 2822) that break SQL string comparison
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         if ticker:
             rows = self.conn.execute(
-                "SELECT * FROM raw_articles WHERE published_at >= ? AND ticker = ? "
-                "ORDER BY published_at DESC", (cutoff, ticker)
+                "SELECT * FROM raw_articles WHERE fetched_at >= ? AND ticker = ? "
+                "ORDER BY fetched_at DESC", (cutoff, ticker)
             ).fetchall()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM raw_articles WHERE published_at >= ? "
-                "ORDER BY published_at DESC", (cutoff,)
+                "SELECT * FROM raw_articles WHERE fetched_at >= ? "
+                "ORDER BY fetched_at DESC", (cutoff,)
             ).fetchall()
         cols = [d[0] for d in self.conn.execute("SELECT * FROM raw_articles LIMIT 0").description]
-        return [dict(zip(cols, r)) for r in rows]
+        results = [dict(zip(cols, r)) for r in rows]
+        # Re-sort by published_at in Python to handle mixed date formats
+        def _parse_date(art):
+            raw = art.get("published_at", "")
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+            for fmt in ("%a, %d %b %Y %H:%M:%S %Z",
+                        "%a, %d %b %Y %H:%M:%S %z",
+                        "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(raw.strip(), fmt)
+                except (ValueError, TypeError):
+                    continue
+            return datetime.min
+        results.sort(key=_parse_date, reverse=True)
+        return results
 
     def close(self):
         self.conn.close()

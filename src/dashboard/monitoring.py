@@ -254,7 +254,7 @@ def tab_spy_predictor(days: int = 90):
 
     # Staleness indicator (same logic as SPY Predictor page)
     updated_at = spy_state.get("updated_at", "")
-    _stale_color = "#475569"
+    _stale_color = "#64748B"
     _stale_label = ""
     if updated_at:
         try:
@@ -263,10 +263,10 @@ def tab_spy_predictor(days: int = 90):
                        else datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S"))
             _age_min = (datetime.now() - _upd_dt).total_seconds() / 60
             if _age_min > 60:
-                _stale_color = "#EF4444"
+                _stale_color = "#DC3545"
                 _stale_label = " ⚠️ STALE"
             elif _age_min > 30:
-                _stale_color = "#F59E0B"
+                _stale_color = "#FFC107"
                 _stale_label = " ⏳"
         except Exception:
             pass

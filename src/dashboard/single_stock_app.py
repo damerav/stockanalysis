@@ -427,6 +427,25 @@ def _render_news_tab(ticker: str):
             articles = fetcher.get_recent(days=7)  # fallback to all
         fetcher.close()
 
+        # Sort articles by published_at descending (handles mixed date formats)
+        def _parse_pub_date(a):
+            pub = a.get("published_at", "")
+            # Try ISO format first, then common RSS formats
+            for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                try:
+                    return datetime.strptime(pub[:19], fmt)
+                except (ValueError, TypeError):
+                    continue
+            # Try RFC 2822 (e.g. "Wed, 16 Jul 2025 12:00:00 GMT")
+            try:
+                from email.utils import parsedate_to_datetime
+                return parsedate_to_datetime(pub)
+            except Exception:
+                pass
+            return datetime.min
+
+        articles.sort(key=_parse_pub_date, reverse=True)
+
         if not articles:
             st.info("No recent news articles available.")
             if st.button("Run News Pipeline Now", key="run_news_pipeline"):
@@ -508,13 +527,15 @@ def _render_news_tab(ticker: str):
         except Exception:
             pass
 
-        # Recent headlines
+        # Recent headlines (already sorted newest-first by _parse_pub_date above)
         st.markdown("**Recent Headlines**")
-        for a in articles[:15]:
+        for a in articles[:25]:
             sent = article_df[article_df["headline"] == a.get("headline")]
             score = float(sent["sentiment_compound"].iloc[0]) if not sent.empty else 0
             emoji = "🟢" if score > 0.15 else "🔴" if score < -0.15 else "⚪"
-            pub = a.get("published_at", "")[:16]
+            # Normalize date display
+            pub_dt = _parse_pub_date(a)
+            pub = pub_dt.strftime("%a, %d %b %Y %H:%M") if pub_dt != datetime.min else a.get("published_at", "")[:16]
             st.markdown(
                 f'<div style="padding:4px 0; border-bottom:1px solid {COLORS["border"]};">'
                 f'<span style="color:{COLORS["text_secondary"]}; font-size:0.75em;">{pub} {emoji} {a.get("source", "")}</span><br>'

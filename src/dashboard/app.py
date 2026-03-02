@@ -41,8 +41,14 @@ from src.data.fetcher import FallbackFetcher
 from src.dashboard.theme import (
     get_theme, get_colors, get_plotly_layout, get_title_font,
     metric_card as _theme_metric_card, badge_html as _theme_badge,
-    page_header, render_theme_toggle, theme_css, is_dark,
+    page_header, render_theme_toggle, is_dark,
     _sync_config_toml,
+)
+from src.dashboard.template import (
+    kpi_card as _tpl_kpi_card,
+    signal_banner as _tpl_signal_banner,
+    stale_banner as _tpl_stale_banner,
+    badge_html as _tpl_badge,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,14 +105,60 @@ st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 # --- Sync config.toml to match session theme (makes Streamlit native widgets correct) ---
 _sync_config_toml(get_theme())
 
-# --- Dynamic theme CSS ---
-st.markdown(f"<style>{theme_css()}</style>", unsafe_allow_html=True)
-
-# --- Load external CSS for pill tabs + sidebar styling ---
+# --- Load unified design system CSS (single source of truth for all styling) ---
 _css_path = os.path.join(os.path.dirname(__file__), "style.css")
 if os.path.exists(_css_path):
     with open(_css_path) as _css_f:
         st.markdown(f"<style>{_css_f.read()}</style>", unsafe_allow_html=True)
+
+# --- Inject light theme overrides if in light mode ---
+# CSS [data-theme="light"] selector requires JS to set the attribute on the root,
+# which is unreliable in Streamlit's iframe structure. Instead, we inject the
+# light-mode CSS variables directly when the theme is light.
+if get_theme() == "light":
+    st.markdown("""<style>
+    :root {
+        --color-bg-primary: #FFFFFF;
+        --color-bg-secondary: #F8F9FA;
+        --color-bg-tertiary: #E9ECEF;
+        --color-border-primary: #DEE2E6;
+        --color-border-secondary: #D1D4DC;
+        --color-text-primary: #212529;
+        --color-text-secondary: #6C757D;
+        --color-text-tertiary: #ADB5BD;
+        --color-grid: #E6E8EC;
+        --color-zeroline: #B7BDC6;
+        --color-card-bg: #FFFFFF;
+        --color-card-hover: rgba(0,123,255,0.15);
+        --color-tab-bg: #E6E8EC;
+        --color-input-bg: #FFFFFF;
+        --color-input-border: #DEE2E6;
+        --color-form-bg: #FFFFFF;
+        --color-btn-bg: #FFFFFF;
+        --color-btn-border: #B7BDC6;
+        --color-btn-text: #212529;
+        --color-btn-hover-bg: #F0F2F5;
+        --color-btn-hover-border: #6C757D;
+        --color-expander-bg: #FFFFFF;
+        --color-scrollbar: #D1D4DC;
+        --color-scrollbar-hover: #B7BDC6;
+        --color-popover-bg: #FFFFFF;
+        --color-popover-hover: #F0F2F5;
+        --sidebar-bg: linear-gradient(180deg, #FFFFFF 0%, #F8F9FA 100%);
+        --sidebar-border: #DEE2E6;
+        --sidebar-text: #212529;
+        --sidebar-text-muted: #6C757D;
+        --sidebar-btn-bg: #F0F2F5;
+        --sidebar-btn-border: #D1D4DC;
+        --sidebar-btn-hover-bg: #E6E8EC;
+        --sidebar-btn-hover-border: #B7BDC6;
+        --sidebar-nav-hover: rgba(0, 0, 0, 0.04);
+        --sidebar-nav-active-bg: rgba(0, 123, 255, 0.08);
+        --sidebar-divider: #DEE2E6;
+        --backdrop-filter: none;
+        --card-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    </style>""", unsafe_allow_html=True)
 
 # --- OAuth Callback Handling ---
 if "code" in st.query_params and not is_authenticated():
@@ -509,10 +561,10 @@ def page_spy():
             _upd_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if "T" in updated_at else datetime.strptime(updated_at[:19], "%Y-%m-%d %H:%M:%S")
             _age_min = (datetime.now() - _upd_dt).total_seconds() / 60
             if _age_min > 60:
-                _stale_color = "#EF4444"
+                _stale_color = c["red"]
                 _stale_label = " ⚠️ STALE"
             elif _age_min > 30:
-                _stale_color = "#F59E0B"
+                _stale_color = c["yellow"]
                 _stale_label = " ⏳"
         except Exception:
             pass
@@ -564,7 +616,7 @@ def page_es():
     banner_color = pos_colors.get(pos_status, c["text_secondary"])
     regime_color = regime_colors.get(regime, c["yellow"])
     # Use dark text on yellow/green badges for WCAG contrast
-    regime_text = "#1E2329" if regime in ("Low", "Med") else "#FFFFFF"
+    regime_text = "#212529" if regime in ("Low", "Med") else "#FFFFFF"
 
     st.markdown(
         f"""<div style="background-color:{banner_color}; padding:10px; border-radius:8px;
