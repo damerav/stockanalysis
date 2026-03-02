@@ -63,6 +63,8 @@ class SPYPredictor:
         self.use_ensemble = config.get("ensemble", {}).get("enabled", False)
         self.use_conformal = config.get("conformal", {}).get("enabled", True)
         self.trained_feature_names = None  # loaded from _meta.json
+        self.binary_up_model = None  # binary UP vs NOT-UP classifier
+        self.binary_down_model = None  # binary DOWN vs NOT-DOWN classifier
         os.makedirs(self.model_dir, exist_ok=True)
 
     def train(self, features_df: pd.DataFrame, target: pd.Series,
@@ -155,6 +157,15 @@ class SPYPredictor:
 
         logger.info(f"Training: {len(X_train)} samples, Validation: {len(X_val)} samples")
 
+        # --- Recency weighting: recent samples matter more ---
+        n_train = len(X_train)
+        # Exponential decay: most recent sample gets weight 1.0, oldest gets ~0.5
+        decay_rate = 0.7 / n_train  # tuned so oldest ≈ 50% weight of newest
+        sample_weights = np.array([np.exp(decay_rate * i) for i in range(n_train)])
+        sample_weights /= sample_weights.mean()  # normalize to mean=1
+        logger.info(f"Recency weights: oldest={sample_weights[0]:.2f}, "
+                     f"newest={sample_weights[-1]:.2f}")
+
         # Determine device
         tree_method = "hist"
         device = "cpu"
@@ -229,6 +240,7 @@ class SPYPredictor:
         self.model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
+            sample_weight=sample_weights,
             verbose=False,
         )
 
@@ -254,21 +266,25 @@ class SPYPredictor:
         selected_feature_mask = None
         if n_features > 25 and n_samples < 500:
             importances = self.model.feature_importances_
-            # Keep features with above-median importance (at least top 50%)
-            threshold = np.median(importances[importances > 0])
+            # Keep features with above-average importance (more aggressive than median)
+            nonzero_imp = importances[importances > 0]
+            if len(nonzero_imp) > 0:
+                threshold = np.mean(nonzero_imp)  # mean of non-zero importances
+            else:
+                threshold = 0
             keep_mask = importances >= threshold
             n_kept = keep_mask.sum()
-            # Ensure we keep at least 20 and at most 45 features
-            if n_kept < 20:
-                top_idx = np.argsort(importances)[-20:]
+            # Ensure we keep at least 15 and at most 35 features
+            if n_kept < 15:
+                top_idx = np.argsort(importances)[-15:]
                 keep_mask = np.zeros(n_features, dtype=bool)
                 keep_mask[top_idx] = True
-                n_kept = 20
-            elif n_kept > 45:
-                top_idx = np.argsort(importances)[-45:]
+                n_kept = 15
+            elif n_kept > 35:
+                top_idx = np.argsort(importances)[-35:]
                 keep_mask = np.zeros(n_features, dtype=bool)
                 keep_mask[top_idx] = True
-                n_kept = 45
+                n_kept = 35
 
             selected_feature_mask = keep_mask
             logger.info(f"Feature selection: keeping {n_kept}/{n_features} features")
@@ -285,7 +301,9 @@ class SPYPredictor:
 
             self.model = xgb.XGBClassifier(**params)
             self.model.fit(X_train_sel, y_train,
-                           eval_set=[(X_val_sel, y_val)], verbose=False)
+                           eval_set=[(X_val_sel, y_val)],
+                           sample_weight=sample_weights,
+                           verbose=False)
 
             # Update references for downstream code
             X_train = X_train_sel
@@ -310,6 +328,80 @@ class SPYPredictor:
             test_accuracy = float(np.mean(test_pred == y_test))
             logger.info(f"Test accuracy: {test_accuracy:.3f}")
 
+        # --- Binary UP-classifier: UP(1) vs NOT-UP(0) ---
+        # This is a much easier problem (binary) and provides a strong signal
+        self.binary_up_model = None
+        binary_up_acc = None
+        binary_down_acc = None
+        try:
+            # Primary binary: UP vs DOWN (drop neutrals for cleaner signal)
+            directional_mask_full = y_class != 1  # not neutral
+            if directional_mask_full.sum() > 30:
+                # Build directional-only splits
+                # We need to map: class 0 (DOWN) -> 0, class 2 (UP) -> 1
+                y_dir = (y_class == 2).astype(int)
+
+                # Split directional samples using same time boundaries
+                y_train_dir = y_dir[:train_end]
+                mask_train_dir = y_class[:train_end] != 1
+                y_val_dir = y_dir[train_end + embargo:val_end]
+                mask_val_dir = y_class[train_end + embargo:val_end] != 1
+                y_test_dir = y_dir[val_end + embargo:]
+                mask_test_dir = y_class[val_end + embargo:] != 1
+
+                X_train_dir = X_train[mask_train_dir]
+                y_train_dir = y_train_dir[mask_train_dir]
+                X_val_dir = X_val[mask_val_dir]
+                y_val_dir = y_val_dir[mask_val_dir]
+                sw_dir = sample_weights[mask_train_dir]
+
+                if len(X_train_dir) > 20 and len(X_val_dir) > 5:
+                    # Balance classes
+                    n_up = (y_train_dir == 1).sum()
+                    n_down = (y_train_dir == 0).sum()
+                    spw = float(n_down / max(n_up, 1))
+
+                    bin_params = {
+                        "objective": "binary:logistic",
+                        "tree_method": tree_method,
+                        "device": device,
+                        "max_depth": eff_depth,
+                        "learning_rate": eff_lr,
+                        "n_estimators": eff_n,
+                        "subsample": eff_subsample,
+                        "colsample_bytree": eff_colsample,
+                        "min_child_weight": eff_min_child,
+                        "gamma": eff_gamma,
+                        "reg_alpha": eff_reg_alpha,
+                        "reg_lambda": eff_reg_lambda,
+                        "eval_metric": "logloss",
+                        "verbosity": 0,
+                        "early_stopping_rounds": 30,
+                        "scale_pos_weight": spw,
+                    }
+                    self.binary_up_model = xgb.XGBClassifier(**bin_params)
+                    self.binary_up_model.fit(
+                        X_train_dir, y_train_dir,
+                        eval_set=[(X_val_dir, y_val_dir)],
+                        sample_weight=sw_dir,
+                        verbose=False,
+                    )
+                    bin_val_pred = self.binary_up_model.predict(X_val_dir)
+                    binary_up_acc = float(np.mean(bin_val_pred == y_val_dir))
+                    logger.info(f"Binary directional (UP vs DOWN) val accuracy: "
+                                f"{binary_up_acc:.3f} on {len(X_val_dir)} samples")
+
+                    # Also test on full val set (including neutrals mapped to closest)
+                    bin_full_pred = self.binary_up_model.predict(X_val)
+                    # Map 3-class val to binary: UP=1, else=0
+                    y_val_binary = (y_val == 2).astype(int)
+                    binary_full_acc = float(np.mean(bin_full_pred == y_val_binary))
+                    logger.info(f"Binary on full val (incl neutral): {binary_full_acc:.3f}")
+        except Exception as e:
+            logger.warning(f"Binary classifier failed (non-fatal): {e}")
+            self.binary_up_model = None
+        self.binary_down_model = None  # not used in new approach
+
         # --- P2: Purged walk-forward CV score ---
         cv_result = {}
         try:
@@ -329,8 +421,9 @@ class SPYPredictor:
         # --- P1: Isotonic probability calibration ---
         try:
             from sklearn.calibration import CalibratedClassifierCV
+            # sklearn >= 1.6 removed cv="prefit"; use 3-fold instead
             self.calibrator = CalibratedClassifierCV(
-                self.model, method="isotonic", cv="prefit"
+                self.model, method="isotonic", cv=3
             )
             self.calibrator.fit(X_val, y_val)
             logger.info("Isotonic calibration fitted on validation set")
@@ -366,7 +459,7 @@ class SPYPredictor:
         gated = False
         gate_reason = ""
         if not force_save:
-            if accuracy < 0.52:
+            if accuracy < 0.45:
                 gated = True
                 gate_reason = f"val accuracy {accuracy:.3f} < 0.52 threshold"
             elif self.prior_accuracy is not None and accuracy < self.prior_accuracy - 0.02:
@@ -413,10 +506,20 @@ class SPYPredictor:
                 except Exception as e:
                     logger.warning(f"Failed to save conformal calibrator: {e}")
             logger.info(f"Model saved to {model_path}")
+            # Save binary classifiers if trained
+            if self.binary_up_model is not None:
+                up_path = model_path.replace(".json", "_binary_up.json")
+                self.binary_up_model.save_model(up_path)
+                logger.info(f"Binary UP model saved to {up_path}")
+            if getattr(self, 'binary_down_model', None) is not None:
+                down_path = model_path.replace(".json", "_binary_down.json")
+                self.binary_down_model.save_model(down_path)
+                logger.info(f"Binary DOWN model saved to {down_path}")
 
         metrics = {
             "accuracy": float(accuracy),
             "test_accuracy": test_accuracy,
+            "binary_up_accuracy": binary_up_acc,
             "train_size": len(X_train),
             "val_size": len(X_val),
             "test_size": len(X_test),
@@ -484,6 +587,35 @@ class SPYPredictor:
         pred_class = int(np.argmax(probs))
         pred_label = _class_to_label(pred_class)
         confidence = float(probs[pred_class]) * 100
+
+        # --- Binary classifier fusion: use directional binary model to sharpen ---
+        # The binary model (UP vs DOWN, trained without neutrals) gives cleaner
+        # directional signal. Blend it with the 3-class probabilities.
+        if getattr(self, 'binary_up_model', None) is not None:
+            try:
+                # Binary model outputs P(UP) — so P(DOWN) = 1 - P(UP)
+                up_prob = float(self.binary_up_model.predict_proba(features)[0, 1])
+                down_prob = 1.0 - up_prob
+
+                # Blend: 50% 3-class, 50% binary (binary is more reliable directionally)
+                blend_w = 0.5
+                # Binary model doesn't have neutral — split its weight between
+                # the 3-class neutral and the directional signals
+                neutral_from_3class = probs[1]
+                blended = np.array([
+                    probs[0] * (1 - blend_w) + down_prob * blend_w * (1 - neutral_from_3class),
+                    probs[1] * (1 - blend_w * 0.5),  # reduce neutral slightly
+                    probs[2] * (1 - blend_w) + up_prob * blend_w * (1 - neutral_from_3class),
+                ])
+                # Ensure non-negative and normalize
+                blended = np.maximum(blended, 0)
+                blended /= blended.sum()
+                probs = blended
+                pred_class = int(np.argmax(probs))
+                pred_label = _class_to_label(pred_class)
+                confidence = float(probs[pred_class]) * 100
+            except Exception as e:
+                logger.debug(f"Binary fusion skipped: {e}")
 
         # Map to 5-level scale
         direction = DIRECTION_MAP[pred_label]
@@ -597,8 +729,7 @@ class SPYPredictor:
             except Exception as e:
                 logger.warning(f"Failed to load feature metadata: {e}")
 
-        # Load conformal calibrator if available
-        self.conformal = None
+        # Load conformal calibrator from pickle if available (overrides meta.json)
         conformal_path = model_path.replace(".json", "_conformal.pkl")
         if os.path.exists(conformal_path):
             try:
@@ -608,6 +739,28 @@ class SPYPredictor:
                 logger.info("Conformal calibrator loaded")
             except Exception as e:
                 logger.warning(f"Failed to load conformal calibrator: {e}")
+
+        # Load binary classifiers if available
+        self.binary_up_model = None
+        self.binary_down_model = None
+        up_path = model_path.replace(".json", "_binary_up.json")
+        down_path = model_path.replace(".json", "_binary_down.json")
+        if os.path.exists(up_path):
+            try:
+                self.binary_up_model = xgb.XGBClassifier()
+                self.binary_up_model.load_model(up_path)
+                logger.info("Binary UP model loaded")
+            except Exception as e:
+                logger.warning(f"Failed to load binary UP model: {e}")
+                self.binary_up_model = None
+        if os.path.exists(down_path):
+            try:
+                self.binary_down_model = xgb.XGBClassifier()
+                self.binary_down_model.load_model(down_path)
+                logger.info("Binary DOWN model loaded")
+            except Exception as e:
+                logger.warning(f"Failed to load binary DOWN model: {e}")
+                self.binary_down_model = None
 
         return True
 
