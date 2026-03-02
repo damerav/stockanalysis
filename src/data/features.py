@@ -613,13 +613,13 @@ def get_adaptive_neutral_threshold(vix_level: float, base_threshold: float = 0.0
     return max(0.001, min(0.008, adaptive))
 
 
-def get_target(df: pd.DataFrame, threshold: float = 0.005,
+def get_target(df: pd.DataFrame, threshold: float = 0.004,
                adaptive: bool = True) -> pd.Series:
     """Compute next-day direction target: UP(1), DOWN(-1), NEUTRAL(0).
 
     Args:
         df: DataFrame with 'close' column and optionally 'vix'
-        threshold: Base ±0.5% daily return for neutral zone
+        threshold: Base ±0.4% daily return for neutral zone
         adaptive: If True and 'vix' column exists, scale threshold per regime
     """
     returns = df["close"].pct_change().shift(-1)  # next-day return

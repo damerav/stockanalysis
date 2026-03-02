@@ -131,8 +131,8 @@ class SPYPredictor:
         except Exception as e:
             logger.warning(f"Adaptive window selection failed (using full data): {e}")
 
-        # Walk-forward split: 70/20/10 with 5-day embargo (GAP 12)
-        train_end = int(len(X) * 0.70)
+        # Walk-forward split: 80/10/10 with 5-day embargo (GAP 12)
+        train_end = int(len(X) * 0.80)
         val_end = int(len(X) * 0.90)
         embargo = 5  # 5-day gap to prevent look-ahead bias
 
@@ -258,17 +258,17 @@ class SPYPredictor:
             threshold = np.median(importances[importances > 0])
             keep_mask = importances >= threshold
             n_kept = keep_mask.sum()
-            # Ensure we keep at least 15 and at most 40 features
-            if n_kept < 15:
-                top_idx = np.argsort(importances)[-15:]
+            # Ensure we keep at least 20 and at most 45 features
+            if n_kept < 20:
+                top_idx = np.argsort(importances)[-20:]
                 keep_mask = np.zeros(n_features, dtype=bool)
                 keep_mask[top_idx] = True
-                n_kept = 15
-            elif n_kept > 40:
-                top_idx = np.argsort(importances)[-40:]
+                n_kept = 20
+            elif n_kept > 45:
+                top_idx = np.argsort(importances)[-45:]
                 keep_mask = np.zeros(n_features, dtype=bool)
                 keep_mask[top_idx] = True
-                n_kept = 40
+                n_kept = 45
 
             selected_feature_mask = keep_mask
             logger.info(f"Feature selection: keeping {n_kept}/{n_features} features")
