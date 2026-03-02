@@ -12,13 +12,19 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
 
 ## Architecture
 
-- **93 model features** across price, technicals, macro, sentiment, options, microstructure, earnings, and Fed NLP
-- **17+ database tables** split across SQLite (operational) and DuckDB (analytics)
-- **15-step daily pipeline** (`src/pipeline/daily_run.py`)
+- **125 model features** available across price, technicals, macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, and FinBERT NLP — **32 kept after aggressive feature selection**
+- **17+ database tables** split across SQLite (operational) and DuckDB (analytics), plus `news.db` (1787+ articles with FinBERT cache)
+- **15-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (17 sources, 1000+ articles/fetch)
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
 - **HMM regime detection**: 4 states (bull_trend, bear_trend, high_vol_choppy, low_vol_range)
 - **Conformal prediction**: 90% coverage prediction sets
-- **Adaptive training window**: candidates [63, 126, 252, 504] days
+- **Adaptive training window**: candidates [252, 504] days
+- **P3 training enhancements** (from Harvard cs249r_book research):
+  - Label smoothing (α=0.15) — blends hard labels with teacher soft probabilities
+  - Sample quality weighting — z-score anomaly detection + VIX-based penalty + label-flip detection
+  - Entropy-weighted self-distillation refit — up-weights hard/uncertain samples (focal-loss-like)
+  - Knowledge distillation validation — trains student models on soft targets, only adopts if accuracy improves
+- **Current model accuracy**: 3-class val=48.9%, test=47.8%, binary directional=54.2%
 
 ## Infrastructure
 
@@ -33,6 +39,7 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
 - **Python**: 3.12.3 in venv at `~/stockanalysis/.venv`
 - **Activate**: `source .venv/bin/activate`
 - **Note**: `lsof` is NOT installed — use `fuser -k <port>/tcp` to kill processes
+- **ML dependencies**: FinBERT (`ProsusAI/finbert`) + `transformers` + `torch` installed for NLP sentiment
 
 ### Running Commands on DGX
 - All commands via: `ssh abidamera@192.168.1.211 "command"`
@@ -62,6 +69,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `data/es_state.json` — ES futures strategy state (P&L, positions, signals, regime)
 - `data/spy.db` — SQLite operational database
 - `data/analytics.duckdb` — DuckDB analytics layer
+- `data/news.db` — News article store (1787+ articles) with FinBERT sentiment cache
 
 ### Config
 - `config.yaml` — Central config (API keys, model params, auth, grafana, ensemble, etc.)
@@ -69,19 +77,20 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `grafana/grafana.ini` — Grafana config (anonymous auth enabled, must be chmod 644 after Mutagen sync)
 
 ### Dashboard Source
-- `src/dashboard/app.py` — Main unified dashboard (~2500+ lines). Uses `st.navigation` with 8 pages across Markets and Operations groups
-- `src/dashboard/theme.py` — Theme system: DARK + LIGHT palettes (TradingView-inspired), dynamic CSS injection, `get_plotly_layout()`, `themed_metric_card()`, `get_theme()` helpers
+- `src/dashboard/app.py` — Main unified dashboard (~2500+ lines). Uses `st.navigation` with 8 pages across Markets and Operations groups. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list
+- `src/dashboard/theme.py` — Theme system: CSS token-based design with DARK + LIGHT palettes (TradingView-inspired), dynamic CSS injection, `get_plotly_layout()`, `themed_metric_card()`, `get_theme()` helpers
 - `src/dashboard/monitoring.py` — Native Plotly monitoring (6 tabs: SPY, ES, System Health, Confidence API, Pipeline, Data Sources)
-- `src/dashboard/forecast_app.py` — LSTM + ensemble forecast page with multi-horizon predictions
+- `src/dashboard/forecast_app.py` — LSTM + ensemble forecast page with multi-horizon predictions, MAE-based accuracy metric
 - `src/dashboard/single_stock_app.py` — Individual stock analysis with technical indicators
 - `src/dashboard/realtime_app.py` — Real-time streaming dashboard
 - `src/dashboard/es_dashboard.py` — ES strategy dashboard (standalone)
 - `src/dashboard/whatif_app.py` — What-If analysis
-- `src/dashboard/style.css` — Base CSS overrides (pill tabs, compact headers, sidebar styling)
+- `src/dashboard/style.css` — CSS token-based design system (dark/light theme variables, pill tabs, compact headers, sidebar styling)
+- `src/dashboard/template.py` — HTML template helpers for themed components
 
 ### Core Modules
-- `src/data/` — Data fetching, features, DB routing, backfill, calendar, drift monitoring
-- `src/model/` — Trainer, registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
+- `src/data/` — Data fetching, features (125 available), DB routing, backfill, calendar, drift monitoring, geopolitical risk features, news fetching (17 sources), FinBERT sentiment caching
+- `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine, indicators, position management, RL trailing, labeling
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 70B via Ollama)
 - `src/pipeline/` — Daily pipeline orchestration, alerts, and news pipeline runner
@@ -107,9 +116,9 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 ## spy_state.json Fields
 
-**Contains**: `updated_at`, `prediction` (direction, scale_label, confidence, probabilities), `indicators` (rsi_14, macd, atr_14, vix, vix_change, volume_ratio, sentiment_score), `flow_alerts`
+**Contains**: `updated_at`, `prediction` (direction, scale_label, confidence, probabilities), `indicators` (rsi_14, macd, atr_14, vix, vix_change, volume_ratio, sentiment_score), `flow_alerts`, `regime`, `prediction_set`
 
-**Does NOT contain**: `last_close`, `regime`, `ensemble_used`, `prediction_set`, `shap_drivers` — these come from the pipeline when it runs
+**Does NOT contain**: `last_close`, `ensemble_used`, `shap_drivers` — these come from the pipeline when it runs
 
 ## Data Consistency Rules
 
@@ -141,3 +150,14 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 - **DARK**: bg `#131722`, surface `#1E222D`, accent `#2962FF`, bull `#26A69A`, bear `#EF5350`, text `#D1D4DC`/`#787B86`, border `#2A2E39`
 - **LIGHT**: bg `#F0F2F5`, surface `#FFFFFF`, green `#0ECB81`, red `#F6465D`, yellow `#F0B90B`, text `#1E2329`/`#707A8A`, border `#E6E8EC`, card_border `#D1D4DC`
+
+## Recent Changes (Post Phase 3)
+
+- Expanded news pipeline: 17 active sources, 1000+ articles per fetch, VADER + FinBERT + LLM blended sentiment
+- Geopolitical risk features: `src/data/geopolitical_features.py` (oil shock, geopolitical risk index, FinBERT-scored geopolitical headlines)
+- P3 training enhancements from Harvard cs249r_book research (label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation validation)
+- Global live price ticker bar on all dashboard pages with admin-configurable stock list
+- Forecast accuracy display fixed to use MAE instead of meaningless `(1 - MSE_loss) * 100`
+- Single-stock news sorting fixed (RFC 2822 vs ISO date format mismatch)
+- CSS token-based unified design system for dark/light theme
+- Feature shape mismatch fix after auto-retrain (predictor.trained_feature_names now updates in memory)
