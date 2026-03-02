@@ -36,6 +36,7 @@ from src.data.fed_comms import update_fed_communications
 from src.data.db_router import get_router
 from src.data.news_fetcher import NewsFetcher
 from src.data.news_features import NewsFeatureProcessor
+from src.data.geopolitical_features import compute_daily_finbert_features
 
 logger = logging.getLogger(__name__)
 
@@ -382,7 +383,21 @@ class DailyPipeline:
             daily["sentiment_velocity"] = daily.get("sentiment_velocity", 0)
 
         self._store_sentiment(daily)
-        return {"articles": len(articles), "expanded_articles": expanded_sentiment.get("article_count", 0), "sentiment": daily}
+
+        # --- Part D: FinBERT sentiment (runs on recent articles for higher accuracy) ---
+        finbert_result = {}
+        try:
+            fb_daily = compute_daily_finbert_features(self.config, days_back=3)
+            if not fb_daily.empty:
+                today_fb = fb_daily[fb_daily["date"] == self.today]
+                if not today_fb.empty:
+                    finbert_result = today_fb.iloc[0].to_dict()
+                    logger.info(f"FinBERT sentiment: score={finbert_result.get('finbert_score', 0):.3f}")
+        except Exception as e:
+            logger.warning(f"FinBERT processing failed (non-fatal): {e}")
+
+        return {"articles": len(articles), "expanded_articles": expanded_sentiment.get("article_count", 0),
+                "sentiment": daily, "finbert": finbert_result}
 
     def _store_sentiment(self, sentiment: dict):
         self.conn.execute(

@@ -15,6 +15,11 @@ from src.data.calendar import get_event_features, has_nearby_event
 from src.data.earnings_calendar import get_earnings_features
 from src.data.fed_comms import get_fed_features
 from src.data.db_router import get_router, ANALYTICS_TABLES
+from src.data.geopolitical_features import (
+    compute_daily_geopolitical_features,
+    compute_oil_shock_features,
+    compute_flight_to_safety_features,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -586,6 +591,49 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
     else:
         df["sentiment_momentum"] = 0
 
+    # --- Geopolitical risk features from news.db ---
+    try:
+        geo_daily = compute_daily_geopolitical_features(config)
+        if not geo_daily.empty:
+            geo_daily = geo_daily.set_index("date")
+            for col in ["geo_risk_score", "geo_fear_score", "geo_recovery_score",
+                        "geo_net_risk", "geo_article_ratio", "geo_max_risk"]:
+                if col in geo_daily.columns:
+                    df[col] = df["date"].map(geo_daily[col]).fillna(0)
+                else:
+                    df[col] = 0.0
+        else:
+            for col in ["geo_risk_score", "geo_fear_score", "geo_recovery_score",
+                        "geo_net_risk", "geo_article_ratio", "geo_max_risk"]:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"Geopolitical features failed: {e}")
+        for col in ["geo_risk_score", "geo_fear_score", "geo_recovery_score",
+                    "geo_net_risk", "geo_article_ratio", "geo_max_risk"]:
+            df[col] = 0.0
+
+    # --- Oil shock & flight-to-safety features ---
+    try:
+        df = compute_oil_shock_features(df)
+        df = compute_flight_to_safety_features(df)
+    except Exception as e:
+        logger.debug(f"Oil/safety features failed: {e}")
+        for col in ["crude_pct_change", "crude_vs_ma20", "crude_shock",
+                     "crude_momentum_5d", "gold_momentum_5d", "gold_vs_ma20",
+                     "yield_change_5d", "safety_signal"]:
+            if col not in df.columns:
+                df[col] = 0.0
+
+    # Fill NaN for new features
+    new_feat_cols = ["geo_risk_score", "geo_fear_score", "geo_recovery_score",
+                     "geo_net_risk", "geo_article_ratio", "geo_max_risk",
+                     "crude_pct_change", "crude_vs_ma20", "crude_shock",
+                     "crude_momentum_5d", "gold_momentum_5d", "gold_vs_ma20",
+                     "yield_change_5d", "safety_signal"]
+    for col in new_feat_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+
     return df
 
 
@@ -643,6 +691,13 @@ def get_feature_columns() -> list[str]:
         # News-derived (expanded news.db)
         "news_volume", "news_source_count", "news_volume_spike",
         "sentiment_momentum",
+        # Geopolitical risk features
+        "geo_risk_score", "geo_fear_score", "geo_recovery_score",
+        "geo_net_risk", "geo_article_ratio", "geo_max_risk",
+        # Oil shock features
+        "crude_pct_change", "crude_vs_ma20", "crude_shock", "crude_momentum_5d",
+        # Flight-to-safety features
+        "gold_momentum_5d", "gold_vs_ma20", "yield_change_5d", "safety_signal",
     ]
 
 
