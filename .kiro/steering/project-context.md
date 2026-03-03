@@ -13,8 +13,8 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
 ## Architecture
 
 - **125 model features** available across price, technicals, macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, and FinBERT NLP — **32 kept after aggressive feature selection**
-- **17+ database tables** split across SQLite (operational) and DuckDB (analytics), plus `news.db` (1787+ articles with FinBERT cache)
-- **15-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (17 sources, 1000+ articles/fetch)
+- **17+ database tables** split across SQLite (operational) and DuckDB (analytics), plus `news.db` (4600+ articles with FinBERT cache, category-tagged)
+- **15-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch)
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
 - **HMM regime detection**: 4 states (bull_trend, bear_trend, high_vol_choppy, low_vol_range)
 - **Conformal prediction**: 90% coverage prediction sets
@@ -89,7 +89,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/dashboard/template.py` — HTML template helpers for themed components
 
 ### Core Modules
-- `src/data/` — Data fetching, features (125 available), DB routing, backfill, calendar, drift monitoring, geopolitical risk features, news fetching (17 sources), FinBERT sentiment caching
+- `src/data/` — Data fetching, features (125 available), DB routing, backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching
 - `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine, indicators, position management, RL trailing, labeling
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 70B via Ollama)
@@ -153,7 +153,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 ## Recent Changes (Post Phase 3)
 
-- Expanded news pipeline: 17 active sources, 1000+ articles per fetch, VADER + FinBERT + LLM blended sentiment
+- Expanded news pipeline: 44 categorized RSS feeds across 13 finance categories (markets, forex, bonds, commodities, crypto, centralbanks, economic, ipo, derivatives, fintech, regulation, institutional, analysis), 2800+ articles per fetch, VADER + FinBERT + LLM blended sentiment. Inspired by worldmonitor project's Google News RSS proxy technique — all feeds are free, no API keys needed.
 - Geopolitical risk features: `src/data/geopolitical_features.py` (oil shock, geopolitical risk index, FinBERT-scored geopolitical headlines)
 - P3 training enhancements from Harvard cs249r_book research (label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation validation)
 - Global live price ticker bar on all dashboard pages with admin-configurable stock list
