@@ -94,7 +94,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `grafana/grafana.ini` — Grafana config (anonymous auth enabled, must be chmod 644 after Mutagen sync)
 
 ### Dashboard Source
-- `src/dashboard/app.py` — Main unified dashboard (~3000+ lines). Uses `st.navigation` with 7 pages across Markets and Operations groups. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list. Contains Quant Agent chatbot page with 8 quick-action buttons (data-only, no LLM) + free-form LLM chat.
+- `src/dashboard/app.py` — Main unified dashboard (~3000+ lines). Uses `st.navigation` with 7 pages across Markets and Operations groups. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list. Contains Quant Agent chatbot page with 10 quick-action buttons in 3 rows (data-only, no LLM) + free-form LLM chat. Row 3 has Market Thesis and Vigilance Alerts (v2.6).
 - `src/dashboard/theme.py` — Theme system: CSS token-based design with DARK + LIGHT palettes (TradingView-inspired), dynamic CSS injection, `get_plotly_layout()`, `themed_metric_card()`, `get_theme()` helpers
 - `src/dashboard/monitoring.py` — Native Plotly monitoring (6 tabs: SPY, ES, System Health, Confidence API, Pipeline, Data Sources). Uses thread-safe fresh DB connections per query (PostgreSQL primary, SQLite fallback) — no singleton router.
 - `src/dashboard/single_stock_app.py` — Individual stock analysis with technical indicators
@@ -134,7 +134,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 ## spy_state.json Fields
 
-**Contains**: `updated_at`, `prediction` (direction, scale_label, confidence, probabilities), `indicators` (rsi_14, macd, atr_14, vix, vix_change, volume_ratio, sentiment_score), `flow_alerts`, `regime`, `prediction_set`
+**Contains**: `updated_at`, `prediction` (direction, scale_label, confidence, probabilities), `indicators` (rsi_14, macd, atr_14, vix, vix_change, volume_ratio, sentiment_score), `flow_alerts`, `regime`, `prediction_set`, `vigilance_alerts` (array of event-driven alerts from vigilance monitor)
 
 **Does NOT contain**: `last_close`, `ensemble_used`, `shap_drivers` — these come from the pipeline when it runs
 
@@ -186,7 +186,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 ### v2.5 Changes (PostgreSQL migration + Quant Agent + LLM routing)
 
 - **PostgreSQL migration**: All 17+ tables migrated from SQLite/DuckDB to PostgreSQL (Docker container on DGX). `src/data/db_router.py` provides `DbRouter` class with PostgreSQL primary + SQLite fallback. `src/data/migrate_to_postgres.py` handles migration.
-- **Quant Agent chatbot**: New page in dashboard with 8 quick-action buttons (Current Prediction, Feature Importance, News Sentiment, Regime History, Correlations, Risk Assessment, Alpha Ideas, Explain Regime) — all bypass LLM for instant results. Free-form chat input routes through LLM for deep analysis.
+- **Quant Agent chatbot**: New page in dashboard with 10 quick-action buttons in 3 rows (Current Prediction, Feature Importance, News Sentiment, Regime History, Correlations, Risk Assessment, Alpha Ideas, Explain Regime, Market Thesis, Vigilance Alerts) — all bypass LLM for instant results. Free-form chat input routes through LLM for deep analysis.
 - **Multi-model LLM routing**: `deepseek-r1:14b` (9GB, ~19s) for fast tool routing + `deepseek-r1:70b` (42.5GB) for deep interpretation. Automatic fallback from 70B to 14B on timeout. Sidebar shows both models.
 - **Prediction formatter fix**: Emoji checked for BULLISH/BEARISH (not UP/DOWN), confidence no longer formatted as percentage of percentage, enriched with conformal set + regime + SHAP drivers.
 - **Forecast page removed**: Vanilla LSTM on close-only prices was slow (TensorFlow import), simplistic, and duplicated the 32-feature stacking ensemble. Disconnected from navigation.
@@ -206,3 +206,4 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Dynamic feature alignment**: `SPYPredictor._align_features()` maps any input feature array to the model's trained feature set. `predict()` calls it automatically when `feature_names` and `trained_feature_names` are both available. Fixes What-If page `ValueError: feature shape mismatch`.
 - **Model file sorting fix**: `load_latest_model()` now excludes `_binary_up/down` and `_conformal` files from the sort. Previously loaded the binary UP model instead of the main model, causing `trained_feature_names` to be None.
 - **Streamlit duplicate element fix**: `_prediction_card()` now takes `key_suffix` param for unique `plotly_chart` keys on What-If comparison page.
+- **Quant Agent UI expansion**: Added Row 3 quick-action buttons — "🎯 Market Thesis" and "🚨 Vigilance Alerts" — with dedicated formatters (`_fmt_thesis`, `_fmt_vigilance`). Total buttons now 10 across 3 rows.
