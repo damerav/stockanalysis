@@ -2600,6 +2600,98 @@ def page_grafana():
 
 
 # ======================================================================
+# QUANT AGENT PAGE (Admin-only)
+# ======================================================================
+
+def page_quant_agent():
+    c = get_colors()
+    st.markdown(page_header('🤖 Quant Agent'), unsafe_allow_html=True)
+
+    # Admin-only gate
+    current_user = get_user()
+    current_role = current_user.get("role", "viewer") if current_user else "viewer"
+    if current_role != "admin":
+        st.warning("Quant Agent is available to admin users only.")
+        return
+
+    st.caption("Conversational AI assistant powered by DeepSeek R1 70B. "
+               "Ask about predictions, run backtests, query databases, or retrain models.")
+
+    # Initialize agent in session state
+    if "quant_agent" not in st.session_state:
+        from src.llm.quant_agent import QuantAgent
+        st.session_state.quant_agent = QuantAgent(load_config())
+    if "quant_messages" not in st.session_state:
+        st.session_state.quant_messages = []
+
+    agent = st.session_state.quant_agent
+
+    # Quick action buttons
+    q1, q2, q3, q4 = st.columns(4)
+    with q1:
+        if st.button("📊 Current Prediction", key="qa_pred", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "What's the current prediction and why?"})
+            st.rerun()
+    with q2:
+        if st.button("🔬 Feature Importance", key="qa_feat", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Show me the top 15 most important features"})
+            st.rerun()
+    with q3:
+        if st.button("📰 News Sentiment", key="qa_news", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Summarize today's news sentiment across all categories"})
+            st.rerun()
+    with q4:
+        if st.button("🧪 Backtest 60d", key="qa_bt", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Run a 60-day backtest and show me the results"})
+            st.rerun()
+
+    st.divider()
+
+    # Chat history display
+    for msg in st.session_state.quant_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("chart"):
+                import plotly.graph_objects as go
+                fig = go.Figure(msg["chart"])
+                fig.update_layout(**get_plotly_layout())
+                st.plotly_chart(fig, use_container_width=True)
+
+    # Chat input
+    if prompt := st.chat_input("Ask the quant agent anything..."):
+        st.session_state.quant_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response, chart_data = agent.chat(prompt)
+            st.markdown(response)
+            msg_data = {"role": "assistant", "content": response}
+            if chart_data:
+                msg_data["chart"] = chart_data
+                import plotly.graph_objects as go
+                fig = go.Figure(chart_data)
+                fig.update_layout(**get_plotly_layout())
+                st.plotly_chart(fig, use_container_width=True)
+            st.session_state.quant_messages.append(msg_data)
+
+    # Sidebar controls
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Agent Controls**")
+    if st.sidebar.button("🗑️ Clear Chat", use_container_width=True):
+        st.session_state.quant_messages = []
+        st.session_state.quant_agent = None
+        st.rerun()
+    st.sidebar.caption(f"Model: {agent.model}")
+    st.sidebar.caption(f"History: {len(st.session_state.quant_messages)} messages")
+
+
+# ======================================================================
 # ROUTER — st.navigation handles page dispatch
 # ======================================================================
 
@@ -2610,6 +2702,7 @@ _pages = {
         st.Page(page_whatif, title="What-If Analysis", icon=":material/science:"),
         st.Page(page_forecast, title="Forecast", icon=":material/trending_up:"),
         st.Page(page_single_stock, title="Single-Stock", icon=":material/search:"),
+        st.Page(page_quant_agent, title="Quant Agent", icon=":material/smart_toy:"),
     ],
     "Operations": [
         st.Page(page_monitoring, title="Monitoring", icon=":material/monitor_heart:"),
