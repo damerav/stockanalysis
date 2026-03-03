@@ -1739,6 +1739,51 @@ def _admin_actions_tab():
                 except Exception as e:
                     st.error(f"Training failed: {e}")
 
+        if st.button("Run Backtest", key="act_backtest", help="Walk-forward backtest on recent N days"):
+            bt_days = st.session_state.get("_bt_days", 60)
+            with st.spinner(f"Running {bt_days}-day backtest..."):
+                try:
+                    from src.data.init_db import get_connection
+                    from src.data.features import build_feature_vector, get_feature_columns, get_target
+                    from src.model.trainer import SPYPredictor
+                    config = _load_config()
+                    conn = get_connection(config)
+                    fv = build_feature_vector(conn, config=config)
+                    conn.close()
+                    if fv is None or fv.empty:
+                        st.error("No feature data available")
+                    else:
+                        feature_cols = [c for c in get_feature_columns() if c in fv.columns]
+                        target = get_target(fv)
+                        bt_days = min(bt_days, len(fv) - 100)
+                        test_start = len(fv) - bt_days
+                        predictor = SPYPredictor(config)
+                        train_fv = fv.iloc[:test_start]
+                        train_target = target.iloc[:test_start]
+                        result = predictor.train(train_fv[feature_cols], train_target,
+                                                 feature_names=list(feature_cols), force_save=False)
+                        if result.get("error"):
+                            st.error(f"Training failed: {result['error']}")
+                        else:
+                            test_fv = fv.iloc[test_start:]
+                            test_target = target.iloc[test_start:]
+                            correct, total = 0, 0
+                            for i in range(len(test_fv)):
+                                if pd.isna(test_target.iloc[i]):
+                                    continue
+                                features = test_fv[feature_cols].iloc[i].values
+                                pred = predictor.predict(features, feature_names=feature_cols)
+                                pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
+                                actual = int(test_target.iloc[i])
+                                correct += int(pred_dir == actual)
+                                total += 1
+                            accuracy = correct / max(total, 1)
+                            st.success(f"Backtest: {accuracy:.1%} accuracy ({correct}/{total} correct over {bt_days} days)")
+                            st.metric("Train Accuracy", f"{result.get('accuracy', 0):.1%}")
+                except Exception as e:
+                    st.error(f"Backtest failed: {e}")
+        bt_days_val = st.number_input("Backtest days", min_value=20, max_value=252, value=60, key="_bt_days")
+
         if st.button("Generate Prediction", key="act_predict", help="Run inference for next trading day"):
             with st.spinner("Fetching latest news + generating prediction..."):
                 try:
@@ -1959,6 +2004,36 @@ def _admin_actions_tab():
                         st.dataframe(pd.DataFrame(step_rows), use_container_width=True, hide_index=True)
                 except Exception as e:
                     st.error(f"Pipeline failed: {e}")
+
+    st.divider()
+
+    # Pipeline Schedule Info
+    st.markdown("**Pipeline Schedule**")
+    st.caption("The daily pipeline runs automatically via the scheduler (src/launcher.py).")
+    sched_c1, sched_c2 = st.columns(2)
+    with sched_c1:
+        st.markdown(f"""
+- Full pipeline: **4:30 PM ET** (Mon–Fri)
+- Steps: data pull → news → sentiment → macro → options → technicals → intraday → earnings → fed → **retrain** → **predict** → report → alerts
+""")
+    with sched_c2:
+        st.markdown(f"""
+- Intraday updates: **8:30 AM, 12:00 PM, 1:30 PM, 3:00 PM** ET
+- Intraday steps: news → sentiment → macro → technicals → intraday → predict
+""")
+    # Check if scheduler is running
+    try:
+        import subprocess as _sp
+        sched_check = _sp.run(
+            ["pgrep", "-af", "src.launcher"],
+            capture_output=True, text=True, timeout=5)
+        if sched_check.stdout.strip():
+            pid = sched_check.stdout.strip().split("\n")[0].split()[0]
+            st.success(f"Scheduler is running (PID: {pid})")
+        else:
+            st.warning("Scheduler not detected — pipeline won't run automatically")
+    except Exception:
+        st.info("Could not check scheduler status")
 
     st.divider()
 
