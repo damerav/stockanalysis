@@ -2685,6 +2685,7 @@ def page_grafana():
 # QUANT AGENT PAGE (Admin-only)
 # ======================================================================
 
+
 def page_quant_agent():
     c = get_colors()
     st.markdown(page_header('🤖 Quant Agent'), unsafe_allow_html=True)
@@ -2708,50 +2709,165 @@ def page_quant_agent():
 
     agent = st.session_state.quant_agent
 
-    # Quick action buttons — Row 1
+    # ── Helper: format tool results as markdown (no LLM needed) ──
+    def _fmt_prediction(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        pred = data.get("prediction", {})
+        ind = data.get("indicators", {})
+        direction = pred.get("direction", "N/A")
+        conf = pred.get("confidence", 0)
+        scale = pred.get("scale_label", "")
+        probs = pred.get("probabilities", {})
+        emoji = "🟢" if direction == "UP" else "🔴" if direction == "DOWN" else "⚪"
+        lines = [
+            f"## {emoji} Current Prediction: **{direction}**",
+            f"**Confidence**: {conf:.1%} ({scale})" if scale else f"**Confidence**: {conf:.1%}",
+            f"**Updated**: {data.get('updated_at', 'N/A')}",
+            "",
+            "**Probabilities**:",
+        ]
+        for k, v in probs.items():
+            lines.append(f"- {k}: {v:.1%}" if isinstance(v, float) else f"- {k}: {v}")
+        if ind:
+            lines += ["", "**Key Indicators**:"]
+            for k, v in ind.items():
+                val = f"{v:.4f}" if isinstance(v, float) else str(v)
+                lines.append(f"- {k}: {val}")
+        return "\n".join(lines)
+
+    def _fmt_features(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        lines = [
+            f"## 🔬 Feature Importance",
+            f"**Total features**: {data['total_features']} | **Top {len(data['top_features'])} account for {data['top_feature_pct']}%**",
+            "",
+            "| Rank | Feature | Importance |",
+            "|------|---------|------------|",
+        ]
+        for i, f in enumerate(data["top_features"], 1):
+            bar = "█" * int(f["importance"] * 100)
+            lines.append(f"| {i} | `{f['name']}` | {f['importance']:.4f} {bar} |")
+        return "\n".join(lines)
+
+    def _fmt_news(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        avg = data["avg_sentiment"]
+        emoji = "🟢" if avg > 0.05 else "🔴" if avg < -0.05 else "⚪"
+        lines = [
+            f"## 📰 News Sentiment Summary",
+            f"**Articles**: {data['total_articles']} | **Sources**: {data['unique_sources']} | **Avg Sentiment**: {emoji} {avg:.4f}",
+        ]
+        if data.get("category_breakdown"):
+            lines += ["", "**By Category**:", "| Category | Count | Avg Sentiment |", "|----------|-------|---------------|"]
+            for cat in data["category_breakdown"]:
+                s = cat.get("avg_sent", 0) or 0
+                ce = "🟢" if s > 0.05 else "🔴" if s < -0.05 else "⚪"
+                lines.append(f"| {cat.get('category', 'N/A')} | {cat.get('count', 0)} | {ce} {s:.4f} |")
+        if data.get("top_headlines"):
+            lines += ["", "**Top Headlines** (by sentiment strength):"]
+            for h in data["top_headlines"][:7]:
+                s = h.get("sentiment_compound", 0) or 0
+                he = "🟢" if s > 0 else "🔴" if s < 0 else "⚪"
+                lines.append(f"- {he} **{h.get('headline', 'N/A')}** ({h.get('source', '')}, {s:+.3f})")
+        return "\n".join(lines)
+
+    def _fmt_regime(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        regime_emoji = {"bull_trend": "🟢", "bear_trend": "🔴", "high_vol_choppy": "🟡", "low_vol_range": "🔵"}
+        current = data.get("current_regime", "unknown")
+        lines = [
+            f"## {regime_emoji.get(current, '⚪')} Regime History ({data['days']}d)",
+            f"**Current Regime**: {current}",
+            "",
+            "**Distribution**:",
+        ]
+        for regime, count in data.get("regime_distribution", {}).items():
+            lines.append(f"- {regime_emoji.get(regime, '⚪')} {regime}: {count} days")
+        if data.get("regime_history"):
+            lines += ["", "**Recent History**:", "| Date | Regime |", "|------|--------|"]
+            for entry in data["regime_history"]:
+                r = entry["regime"]
+                lines.append(f"| {entry['date']} | {regime_emoji.get(r, '⚪')} {r} |")
+        return "\n".join(lines)
+
+    def _fmt_correlations(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        lines = [
+            f"## 🔗 Feature Correlations",
+            f"**Features analyzed**: {data['total_features']} | **Threshold**: {data['threshold']} | **High-corr pairs**: {data['high_corr_count']}",
+        ]
+        if data.get("high_corr_pairs"):
+            lines += ["", "**Highly Correlated Pairs**:", "| Feature 1 | Feature 2 | Correlation |", "|-----------|-----------|-------------|"]
+            for p in data["high_corr_pairs"][:10]:
+                lines.append(f"| `{p['feature_1']}` | `{p['feature_2']}` | {p['correlation']:+.3f} |")
+        if data.get("vif_top10"):
+            lines += ["", "**Top VIF Scores** (>10 = severe multicollinearity):"]
+            for v in data["vif_top10"][:7]:
+                if "note" in v:
+                    lines.append(f"- ⚠️ {v['note']}")
+                else:
+                    flag = "🔴" if v["vif"] > 10 else "🟡" if v["vif"] > 5 else "🟢"
+                    lines.append(f"- {flag} `{v['feature']}`: VIF={v['vif']}")
+        if data.get("drop_suggestions"):
+            lines += ["", f"**Suggested drops**: {', '.join(f'`{d}`' for d in data['drop_suggestions'])}"]
+        return "\n".join(lines)
+
+    def _run_direct_tool(tool_fn, formatter, label, **kwargs):
+        """Call a tool directly, format result, append to chat. No LLM."""
+        st.session_state.quant_messages.append({"role": "user", "content": label})
+        with st.spinner("Fetching data..."):
+            result = tool_fn(**kwargs)
+        md = formatter(result)
+        st.session_state.quant_messages.append({"role": "assistant", "content": md})
+        st.rerun()
+
+    # Quick action buttons — Row 1 (instant — no LLM)
     q1, q2, q3, q4 = st.columns(4)
     with q1:
         if st.button("📊 Current Prediction", key="qa_pred", use_container_width=True):
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "What's the current prediction and why?"})
-            st.rerun()
+            _run_direct_tool(agent._tool_get_prediction_state, _fmt_prediction,
+                             "📊 Current Prediction")
     with q2:
         if st.button("🔬 Feature Importance", key="qa_feat", use_container_width=True):
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "Show me the top 15 most important features"})
-            st.rerun()
+            _run_direct_tool(agent._tool_get_feature_importance, _fmt_features,
+                             "🔬 Feature Importance")
     with q3:
         if st.button("📰 News Sentiment", key="qa_news", use_container_width=True):
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "Summarize today's news sentiment across all categories"})
-            st.rerun()
+            _run_direct_tool(agent._tool_get_news_summary, _fmt_news,
+                             "📰 News Sentiment")
     with q4:
         if st.button("📊 Regime History", key="qa_regime_hist", use_container_width=True):
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "Show me the regime history for the last 30 days"})
-            st.rerun()
+            _run_direct_tool(agent._tool_get_regime_history, _fmt_regime,
+                             "📊 Regime History")
 
-    # Quick action buttons — Row 2 (new Alpha-Agent inspired tools)
+    # Quick action buttons — Row 2 (LLM-dependent ones + instant correlations)
     q5, q6, q7, q8 = st.columns(4)
     with q5:
         if st.button("⚠️ Risk Assessment", key="qa_risk", use_container_width=True):
+            st.session_state._qa_pending = "Assess the risk level of today's news headlines"
             st.session_state.quant_messages.append(
-                {"role": "user", "content": "Assess the risk level of today's news headlines"})
+                {"role": "user", "content": "⚠️ Risk Assessment"})
             st.rerun()
     with q6:
         if st.button("💡 Alpha Ideas", key="qa_alpha", use_container_width=True):
+            st.session_state._qa_pending = "Generate new alpha factor hypotheses based on current market conditions"
             st.session_state.quant_messages.append(
-                {"role": "user", "content": "Generate new alpha factor hypotheses based on current market conditions"})
+                {"role": "user", "content": "💡 Alpha Ideas"})
             st.rerun()
     with q7:
         if st.button("🔗 Correlations", key="qa_corr", use_container_width=True):
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "Analyze feature correlations and detect multicollinearity"})
-            st.rerun()
+            _run_direct_tool(agent._tool_analyze_feature_correlations, _fmt_correlations,
+                             "🔗 Feature Correlations")
     with q8:
         if st.button("🌊 Explain Regime", key="qa_regime", use_container_width=True):
+            st.session_state._qa_pending = "Explain the current market regime and its implications"
             st.session_state.quant_messages.append(
-                {"role": "user", "content": "Explain the current market regime and its implications"})
+                {"role": "user", "content": "🌊 Explain Regime"})
             st.rerun()
 
     st.divider()
@@ -2766,9 +2882,25 @@ def page_quant_agent():
                 fig.update_layout(**get_plotly_layout())
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Process pending user message (from quick-action buttons)
-    if (st.session_state.quant_messages
+    # Process pending LLM message (from LLM-dependent quick-action buttons or typed input)
+    _pending_llm = st.session_state.pop("_qa_pending", None)
+    if _pending_llm:
+        # LLM-dependent quick-action button was pressed
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing with AI — this may take a minute..."):
+                response, chart_data = agent.chat(_pending_llm)
+            st.markdown(response)
+            msg_data = {"role": "assistant", "content": response}
+            if chart_data:
+                msg_data["chart"] = chart_data
+                import plotly.graph_objects as go
+                fig = go.Figure(chart_data)
+                fig.update_layout(**get_plotly_layout())
+                st.plotly_chart(fig, use_container_width=True)
+            st.session_state.quant_messages.append(msg_data)
+    elif (st.session_state.quant_messages
             and st.session_state.quant_messages[-1]["role"] == "user"):
+        # Typed chat message — route through LLM
         pending = st.session_state.quant_messages[-1]["content"]
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
@@ -2799,6 +2931,8 @@ def page_quant_agent():
         st.rerun()
     st.sidebar.caption(f"Model: {agent.model}")
     st.sidebar.caption(f"History: {len(st.session_state.quant_messages)} messages")
+
+
 
 
 # ======================================================================
