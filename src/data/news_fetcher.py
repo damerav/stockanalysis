@@ -48,6 +48,28 @@ NEWS_DB_SENTIMENT_MIGRATION = [
     "ALTER TABLE raw_articles ADD COLUMN sentiment_neu REAL",
 ]
 
+# Migration: add quality_score column
+NEWS_DB_QUALITY_MIGRATION = "ALTER TABLE raw_articles ADD COLUMN quality_score REAL DEFAULT 0.5"
+
+# Source credibility tiers (0.0 - 1.0)
+# Tier 1: Major financial news outlets with editorial standards
+# Tier 2: Aggregators and secondary sources
+# Tier 3: Google News proxied / general
+SOURCE_CREDIBILITY = {
+    # Tier 1 — high credibility
+    "bloomberg_markets": 0.95, "fed_press": 0.95,
+    "cnbc_top": 0.85, "cnbc_economy": 0.85, "cnbc_earnings": 0.85, "cnbc_finance": 0.85,
+    "marketwatch_top": 0.80, "marketwatch_markets": 0.80, "marketwatch_stocks": 0.80,
+    "yahoo_finance": 0.75, "seekingalpha_market": 0.75, "seekingalpha_news": 0.75,
+    "investing_news": 0.70, "investing_analysis": 0.75,
+    # Tier 2 — moderate credibility
+    "finnhub": 0.70, "alpha_vantage": 0.65,
+    # Tier 3 — Google News aggregated (variable quality)
+    "google_business": 0.55, "google_markets": 0.55, "google_economy": 0.55,
+}
+# Default for unknown sources
+_DEFAULT_CREDIBILITY = 0.50
+
 
 # VADER sentiment — compute at fetch time
 try:
@@ -75,6 +97,37 @@ def _compute_vader(text: str) -> tuple:
         return (0.0, 0.0, 0.0, 1.0)
     compound = (p - n) / total
     return (compound, max(0, compound), abs(min(0, compound)), 1.0 - abs(compound))
+
+
+def _compute_quality_score(source: str, headline: str, summary: str,
+                           sentiment_compound: float) -> float:
+    """Compute article quality score (0.0 - 1.0).
+
+    Factors:
+      - Source credibility (40%): editorial standards of the outlet
+      - Content depth (30%): headline + summary length as proxy for substance
+      - Sentiment confidence (15%): strong VADER signal = more informative
+      - Specificity (15%): contains numbers, tickers, or named entities
+    """
+    # Source credibility (0.0 - 1.0)
+    cred = SOURCE_CREDIBILITY.get(source, _DEFAULT_CREDIBILITY)
+
+    # Content depth: longer = more substantive (capped at 1.0)
+    text_len = len(headline or "") + len(summary or "")
+    depth = min(text_len / 400.0, 1.0)  # 400 chars = full score
+
+    # Sentiment confidence: strong signal = more informative
+    sent_conf = min(abs(sentiment_compound) / 0.5, 1.0)
+
+    # Specificity: numbers, $ signs, % signs, ticker-like patterns
+    combined = (headline or "") + " " + (summary or "")
+    has_numbers = 1.0 if any(c.isdigit() for c in combined) else 0.0
+    has_dollar = 1.0 if "$" in combined else 0.0
+    has_pct = 1.0 if "%" in combined else 0.0
+    specificity = (has_numbers * 0.4 + has_dollar * 0.3 + has_pct * 0.3)
+
+    score = (cred * 0.40 + depth * 0.30 + sent_conf * 0.15 + specificity * 0.15)
+    return round(min(max(score, 0.0), 1.0), 3)
 
 
 class NewsFetcher:
@@ -219,6 +272,16 @@ class NewsFetcher:
                     pass
             self.conn.commit()
             logger.info("Migrated news.db: added sentiment columns")
+        # Migrate: add quality_score column if missing
+        try:
+            self.conn.execute("SELECT quality_score FROM raw_articles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                self.conn.execute(NEWS_DB_QUALITY_MIGRATION)
+                self.conn.commit()
+                logger.info("Migrated news.db: added quality_score column")
+            except sqlite3.OperationalError:
+                pass
 
     def fetch_finnhub(self, category: str = "general", days_back: int = 3) -> int:
         """Fetch market news from Finnhub API. Returns count of new articles."""
@@ -247,14 +310,15 @@ class NewsFetcher:
             pub_at = datetime.fromtimestamp(pub_ts).isoformat() if pub_ts else now
             ticker = self._match_ticker(headline + " " + summary)
             sent = _compute_vader(headline + " " + summary)
+            qscore = _compute_quality_score("finnhub", headline, summary, sent[0])
             try:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO raw_articles "
                     "(source, ticker, headline, summary, url, published_at, fetched_at, "
-                    "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu, quality_score) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("finnhub", ticker, headline, summary, article_url, pub_at, now,
-                     sent[0], sent[1], sent[2], sent[3]),
+                     sent[0], sent[1], sent[2], sent[3], qscore),
                 )
                 count += 1
             except sqlite3.IntegrityError:
@@ -304,8 +368,9 @@ class NewsFetcher:
                             pub_at = raw_pub
                     ticker = self._match_ticker(headline + " " + summary)
                     sent = _compute_vader(headline + " " + summary)
+                    quality = _compute_quality_score(source, headline, summary, sent[0])
                     articles.append((source, ticker, headline, summary, article_url, pub_at, now, category,
-                                     sent[0], sent[1], sent[2], sent[3]))
+                                     sent[0], sent[1], sent[2], sent[3], quality))
             except Exception as e:
                 logger.warning(f"RSS fetch failed for {source}: {e}")
             return source, category, articles
@@ -327,8 +392,8 @@ class NewsFetcher:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO raw_articles "
                     "(source, ticker, headline, summary, url, published_at, fetched_at, category, "
-                    "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row,
+                    "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu, quality_score) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row,
                 )
                 count += 1
             except sqlite3.IntegrityError:
@@ -369,13 +434,14 @@ class NewsFetcher:
                     pub_at = datetime.fromtimestamp(pub_ts).isoformat() if pub_ts else now
                     try:
                         sent = _compute_vader(headline + " " + summary)
+                        qscore = _compute_quality_score("finnhub", headline, summary, sent[0])
                         self.conn.execute(
                             "INSERT OR IGNORE INTO raw_articles "
                             "(source, ticker, headline, summary, url, published_at, fetched_at, "
-                            "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu, quality_score) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             ("finnhub_company", ticker, headline, summary, article_url, pub_at, now,
-                             sent[0], sent[1], sent[2], sent[3]),
+                             sent[0], sent[1], sent[2], sent[3], qscore),
                         )
                         count += 1
                     except sqlite3.IntegrityError:
@@ -423,13 +489,14 @@ class NewsFetcher:
                             break
                     try:
                         sent = _compute_vader(headline + " " + summary)
+                        qscore = _compute_quality_score("alpha_vantage", headline, summary, sent[0])
                         self.conn.execute(
                             "INSERT OR IGNORE INTO raw_articles "
                             "(source, ticker, headline, summary, url, published_at, fetched_at, "
-                            "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu, quality_score) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                             ("alpha_vantage", ticker, headline, summary, article_url, pub_at, now,
-                             sent[0], sent[1], sent[2], sent[3]),
+                             sent[0], sent[1], sent[2], sent[3], qscore),
                         )
                         count += 1
                     except sqlite3.IntegrityError:
@@ -509,18 +576,25 @@ class NewsFetcher:
         return grouped
 
     def get_category_sentiment_summary(self, days: int = 1) -> dict[str, dict]:
-        """Get article counts and basic stats per category for recent articles.
+        """Get article counts, sentiment stats, and quality-weighted sentiment per category.
 
-        Returns {category: {count, sources}} for pipeline feature computation.
+        Returns {category: {count, sources, avg_sentiment, weighted_sentiment}} for pipeline feature computation.
         """
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
         rows = self.conn.execute(
-            "SELECT category, COUNT(*) as cnt, COUNT(DISTINCT source) as src_cnt "
+            "SELECT category, COUNT(*) as cnt, COUNT(DISTINCT source) as src_cnt, "
+            "AVG(sentiment_compound) as avg_sent, "
+            "CASE WHEN SUM(COALESCE(quality_score, 0.5)) > 0 "
+            "  THEN SUM(sentiment_compound * COALESCE(quality_score, 0.5)) / SUM(COALESCE(quality_score, 0.5)) "
+            "  ELSE AVG(sentiment_compound) END as weighted_sent "
             "FROM raw_articles WHERE fetched_at >= ? GROUP BY category",
             (cutoff,),
         ).fetchall()
         return {
-            r[0] or "markets": {"count": r[1], "source_count": r[2]}
+            r[0] or "markets": {
+                "count": r[1], "source_count": r[2],
+                "avg_sentiment": r[3], "weighted_sentiment": r[4],
+            }
             for r in rows
         }
 

@@ -6,7 +6,7 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.5+ (post Phase 3 + LSTM/News pipeline + TradingView UI redesign + light/dark theme + PostgreSQL migration + Quant Agent + multi-model LLM)
+- **Current version**: v2.6 (Agentic Intelligence — event-driven vigilance, quality-weighted sentiment, market thesis tracker)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
@@ -110,8 +110,8 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine, indicators, position management, RL trailing, labeling
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 via Ollama), Quant Agent with multi-model routing (14B fast + 70B deep) and tool-based architecture
-- `src/pipeline/` — Daily pipeline orchestration (fully thread-safe — all DB ops via `_db_execute`/`_db_query`/`_db_fetchone` router helpers), alerts, and news pipeline runner
-- `src/launcher.py` — System launcher with background scheduler (pipeline + intraday updates), process manager, health monitoring
+- `src/pipeline/` — Daily pipeline orchestration (fully thread-safe — all DB ops via `_db_execute`/`_db_query`/`_db_fetchone` router helpers), alerts, news pipeline runner, and event-driven vigilance monitor
+- `src/launcher.py` — System launcher with background scheduler (pipeline + intraday updates + vigilance monitoring every 5 min), process manager, health monitoring
 - `src/api/` — Confidence API server, Prometheus metrics exporter
 - `src/auth/` — Google OAuth + local auth with bcrypt, server-side session files
 - `src/sync/` — Cloud relay publisher/server
@@ -195,3 +195,14 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Streamlit 1.54 compatibility**: Running on DGX with sklearn 1.8.0.
 - **Pipeline thread-safety migration**: All 13 pipeline steps now use router-based DB helpers (`_db_execute`, `_db_query`, `_db_fetchone`) instead of direct `self.conn`. Fresh `DbRouter` instance created per pipeline run (not the singleton). External functions (`store_technicals`, `build_feature_vector`, `evaluate_past_prediction`, `store_earnings`, `update_fed_communications`) receive `router.get_sqlite()` via `_get_conn()`. Fixes "SQLite objects created in a thread" errors when pipeline is triggered from Streamlit Admin page.
 - **Scheduler activated**: `src/launcher.py --spy` runs as background process on DGX. Manages dashboard process + scheduled pipeline runs (4:30 PM ET daily, intraday at 8:30/12:00/13:30/15:00). Admin page detects scheduler status via `pgrep`.
+
+### v2.6 Changes (Agentic Intelligence — Vigilance + Quality Scoring + Thesis Tracker)
+
+- **Event-driven vigilance monitor** (`src/pipeline/vigilance.py`): Lightweight polling loop (every 5 min during market hours) checks for VIX spikes (>20%), price gaps (>1.5%), HMM regime changes, and sentiment sign flips. Alerts written to `spy_state.json` → `vigilance_alerts` array and sent through existing Telegram/email channels. Integrated into `Scheduler._loop()` in `src/launcher.py`.
+- **News quality scoring**: Each article now gets a `quality_score` (0.0-1.0) computed at fetch time from 4 factors: source credibility (40%, tiered by outlet), content depth (30%, text length proxy), sentiment confidence (15%, VADER signal strength), specificity (15%, numbers/$/%  presence). `get_category_sentiment_summary()` now returns `weighted_sentiment` alongside `avg_sentiment`. New `quality_score` column in `news.db` with auto-migration.
+- **Source credibility tiers**: Bloomberg/Fed (0.95), CNBC (0.85), MarketWatch (0.80), Yahoo/SeekingAlpha (0.75), Investing.com (0.70), Google News aggregated (0.55), unknown (0.50).
+- **Market thesis tracker**: New Quant Agent tool `get_market_thesis()` builds a structured thesis with 4 pillars (Trend, Macro/VIX, News Sentiment, Regime). Each pillar evaluated as supporting/weakening/conflicting with current prediction. Summary shows thesis strength (strong/moderate/weak) and conviction ratio.
+- **Vigilance alerts tool**: New Quant Agent tool `get_vigilance_alerts()` surfaces recent event-driven alerts in the chatbot.
+- **Dynamic feature alignment**: `SPYPredictor._align_features()` maps any input feature array to the model's trained feature set. `predict()` calls it automatically when `feature_names` and `trained_feature_names` are both available. Fixes What-If page `ValueError: feature shape mismatch`.
+- **Model file sorting fix**: `load_latest_model()` now excludes `_binary_up/down` and `_conformal` files from the sort. Previously loaded the binary UP model instead of the main model, causing `trained_feature_names` to be None.
+- **Streamlit duplicate element fix**: `_prediction_card()` now takes `key_suffix` param for unique `plotly_chart` keys on What-If comparison page.

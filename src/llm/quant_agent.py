@@ -66,6 +66,8 @@ class QuantAgent:
             "analyze_feature_correlations": self._tool_analyze_feature_correlations,
             "explain_regime": self._tool_explain_regime,
             "search_similar_news": self._tool_search_similar_news,
+            "get_market_thesis": self._tool_get_market_thesis,
+            "get_vigilance_alerts": self._tool_get_vigilance_alerts,
         }
 
 
@@ -121,6 +123,14 @@ TOOLS:
 12. search_similar_news(query, limit=10, category=null, days_back=30) — Semantic vector search for similar articles
     using pgvector FinBERT embeddings. Finds historically similar news patterns.
     Example: {"tool": "search_similar_news", "args": {"query": "Fed rate hike inflation", "limit": 5}}
+
+13. get_market_thesis() — Build a structured market thesis from current data: prediction, regime, key indicators,
+    sentiment pillars, and risk factors. Evaluates each pillar's strength and flags weakened conditions.
+    Example: {"tool": "get_market_thesis", "args": {}}
+
+14. get_vigilance_alerts() — Get recent event-driven alerts (VIX spikes, regime changes, sentiment flips, price gaps).
+    These are proactive alerts from the vigilance monitor, not scheduled pipeline outputs.
+    Example: {"tool": "get_vigilance_alerts", "args": {}}
 
 RULES:
 - To use a tool, respond with EXACTLY one JSON block: {"tool": "name", "args": {...}}
@@ -1190,6 +1200,144 @@ RULES:
                 "total_embeddings": embed_count,
                 "results": results.to_dict(orient="records"),
                 "total": len(results),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _tool_get_market_thesis(self) -> dict:
+        """Build a structured market thesis from current data.
+
+        Evaluates multiple pillars (trend, macro, sentiment, regime, technicals)
+        and flags which are supporting or weakening the current prediction.
+        """
+        thesis = {"generated_at": datetime.now().isoformat(), "pillars": []}
+
+        # 1. Current prediction
+        pred_state = self._tool_get_prediction_state()
+        direction = pred_state.get("direction", "NEUTRAL")
+        confidence = pred_state.get("confidence", 0)
+        regime = pred_state.get("regime", "unknown")
+        thesis["direction"] = direction
+        thesis["confidence"] = confidence
+        thesis["regime"] = regime
+
+        # 2. Trend pillar — price vs moving averages
+        try:
+            router = get_router(self.config)
+            tech_df = router.read_analytics(
+                "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals ORDER BY date DESC LIMIT 1"
+            )
+            price_df = router.read_analytics(
+                "SELECT close FROM prices ORDER BY date DESC LIMIT 1"
+            )
+            if not tech_df.empty and not price_df.empty:
+                close = float(price_df.iloc[0]["close"])
+                sma20 = float(tech_df.iloc[0].get("sma_20", 0) or 0)
+                sma50 = float(tech_df.iloc[0].get("sma_50", 0) or 0)
+                rsi = float(tech_df.iloc[0].get("rsi_14", 50) or 50)
+                macd = float(tech_df.iloc[0].get("macd", 0) or 0)
+
+                above_sma20 = close > sma20 if sma20 > 0 else None
+                above_sma50 = close > sma50 if sma50 > 0 else None
+                trend_bullish = above_sma20 and above_sma50
+
+                strength = "strong" if trend_bullish else ("weak" if above_sma20 or above_sma50 else "bearish")
+                thesis["pillars"].append({
+                    "name": "Trend",
+                    "status": "supporting" if trend_bullish else "weakening",
+                    "strength": strength,
+                    "detail": f"SPY ${close:.2f} | SMA20={'above' if above_sma20 else 'below'} | "
+                              f"SMA50={'above' if above_sma50 else 'below'} | RSI={rsi:.0f} | MACD={macd:.3f}",
+                })
+        except Exception as e:
+            logger.debug(f"Thesis trend pillar error: {e}")
+
+        # 3. Macro pillar — VIX level and direction
+        try:
+            macro_df = router.read_analytics(
+                "SELECT vix FROM macro ORDER BY date DESC LIMIT 5"
+            )
+            if not macro_df.empty:
+                vix = float(macro_df.iloc[0]["vix"] or 18)
+                vix_prev = float(macro_df.iloc[-1]["vix"] or 18) if len(macro_df) > 1 else vix
+                vix_trend = "rising" if vix > vix_prev * 1.05 else ("falling" if vix < vix_prev * 0.95 else "stable")
+                vix_level = "elevated" if vix > 25 else ("low" if vix < 15 else "normal")
+
+                is_supportive = vix < 22 and vix_trend != "rising"
+                thesis["pillars"].append({
+                    "name": "Macro/VIX",
+                    "status": "supporting" if is_supportive else "weakening",
+                    "strength": "strong" if vix < 18 else ("weak" if vix > 25 else "moderate"),
+                    "detail": f"VIX={vix:.1f} ({vix_level}, {vix_trend})",
+                })
+        except Exception as e:
+            logger.debug(f"Thesis macro pillar error: {e}")
+
+        # 4. Sentiment pillar — news sentiment quality-weighted
+        try:
+            from src.data.news_fetcher import NewsFetcher
+            nf = NewsFetcher(self.config)
+            summary = nf.get_category_sentiment_summary(days=1)
+            nf.close()
+
+            if summary:
+                weighted_scores = [v.get("weighted_sentiment", v.get("avg_sentiment", 0))
+                                   for v in summary.values()
+                                   if v.get("weighted_sentiment") is not None or v.get("avg_sentiment") is not None]
+                if weighted_scores:
+                    avg_weighted = sum(s for s in weighted_scores if s) / max(len(weighted_scores), 1)
+                    sent_label = "positive" if avg_weighted > 0.05 else ("negative" if avg_weighted < -0.05 else "neutral")
+                    is_aligned = (("BULLISH" in direction and avg_weighted > 0) or
+                                  ("BEARISH" in direction and avg_weighted < 0) or
+                                  direction == "NEUTRAL")
+                    thesis["pillars"].append({
+                        "name": "News Sentiment",
+                        "status": "supporting" if is_aligned else "conflicting",
+                        "strength": "strong" if abs(avg_weighted) > 0.15 else "moderate",
+                        "detail": f"Quality-weighted sentiment: {avg_weighted:.4f} ({sent_label}) across {len(summary)} categories",
+                    })
+        except Exception as e:
+            logger.debug(f"Thesis sentiment pillar error: {e}")
+
+        # 5. Regime pillar — is regime consistent with prediction?
+        regime_bullish = regime in ("bull_trend", "low_vol_range")
+        regime_bearish = regime in ("bear_trend", "high_vol_choppy")
+        regime_aligned = (("BULLISH" in direction and regime_bullish) or
+                          ("BEARISH" in direction and regime_bearish) or
+                          direction == "NEUTRAL")
+        thesis["pillars"].append({
+            "name": "Regime",
+            "status": "supporting" if regime_aligned else "conflicting",
+            "strength": "strong" if regime in ("bull_trend", "bear_trend") else "moderate",
+            "detail": f"HMM regime: {regime} ({'aligned' if regime_aligned else 'conflicts'} with {direction})",
+        })
+
+        # Summary
+        supporting = sum(1 for p in thesis["pillars"] if p["status"] == "supporting")
+        total = len(thesis["pillars"])
+        thesis["summary"] = {
+            "supporting_pillars": supporting,
+            "total_pillars": total,
+            "thesis_strength": "strong" if supporting >= total * 0.8 else (
+                "moderate" if supporting >= total * 0.5 else "weak"),
+            "conviction": f"{supporting}/{total} pillars support {direction}",
+        }
+
+        return thesis
+
+    def _tool_get_vigilance_alerts(self) -> dict:
+        """Get recent event-driven vigilance alerts."""
+        try:
+            state_path = "./data/spy_state.json"
+            if not os.path.exists(state_path):
+                return {"alerts": [], "count": 0}
+            with open(state_path) as f:
+                state = json.load(f)
+            alerts = state.get("vigilance_alerts", [])
+            return {
+                "alerts": alerts[-10:],  # last 10
+                "count": len(alerts),
+                "message": f"{len(alerts)} vigilance alert(s) recorded today" if alerts else "No alerts — market conditions stable",
             }
         except Exception as e:
             return {"error": str(e)}

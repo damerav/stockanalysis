@@ -111,6 +111,8 @@ class Scheduler:
         self._thread: threading.Thread = None
         self._last_run_date: str = ""
         self._last_intraday_runs: dict = {}  # P2: track intraday updates
+        self._last_vigilance_check: float = 0  # P3: event-driven monitoring
+        self._vigilance: object = None  # lazy-loaded
 
     def start(self):
         self._running = True
@@ -148,6 +150,9 @@ class Scheduler:
                                 key not in self._last_intraday_runs):
                             self._last_intraday_runs[key] = True
                             self._run_intraday_update(hour, minute)
+
+                # P3: Event-driven vigilance monitoring (every 5 min, market hours)
+                self._run_vigilance_check()
             except Exception as e:
                 logger.error(f"Scheduler error: {e}")
 
@@ -194,6 +199,42 @@ class Scheduler:
             proc.kill()
         except Exception as e:
             logger.error(f"Intraday update ({label}) failed: {e}")
+
+    def _run_vigilance_check(self):
+        """P3: Event-driven market condition monitoring."""
+        now = time.time()
+        interval = self.config.get("vigilance", {}).get("check_interval_sec", 300)
+        if now - self._last_vigilance_check < interval:
+            return
+
+        self._last_vigilance_check = now
+        try:
+            if self._vigilance is None:
+                from src.pipeline.vigilance import VigilanceMonitor
+                self._vigilance = VigilanceMonitor(self.config)
+
+            alerts = self._vigilance.check()
+            if alerts:
+                logger.info(f"Vigilance: {len(alerts)} alert(s) triggered")
+                # Fire alerts through existing alert infrastructure
+                for alert in alerts:
+                    self._send_vigilance_alert(alert)
+        except Exception as e:
+            logger.debug(f"Vigilance check error: {e}")
+
+    def _send_vigilance_alert(self, alert: dict):
+        """Send a vigilance alert through configured channels."""
+        try:
+            from src.pipeline.alerts import send_alerts
+            alert_data = {
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "direction": f"⚡ {alert['type'].upper()}",
+                "confidence": 0,
+                "report": alert["message"],
+            }
+            send_alerts(self.config, alert_data)
+        except Exception as e:
+            logger.debug(f"Vigilance alert send failed: {e}")
 
 
 class SystemLauncher:
