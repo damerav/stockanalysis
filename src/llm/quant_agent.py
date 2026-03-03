@@ -135,6 +135,8 @@ TOOLS:
 
 RULES:
 - To use a tool, respond with EXACTLY one JSON block: {"tool": "name", "args": {...}}
+- Do NOT describe what tools you plan to use. Just call them directly with JSON.
+- Do NOT write a plan or list of steps. Call the first tool immediately.
 - After receiving tool results, analyze them and give a clear answer.
 - For SQL queries, use SELECT only (no INSERT/UPDATE/DELETE).
 - When showing numbers, round to 2-3 decimal places.
@@ -272,21 +274,61 @@ RULES:
         return False
 
     def _extract_tool_call(self, text: str) -> Optional[dict]:
-        """Extract a tool call JSON from LLM response."""
+        """Extract a tool call JSON from LLM response.
+
+        Handles three cases:
+        1. Proper JSON block: {"tool": "name", "args": {...}}
+        2. JSON inside markdown code fences
+        3. Fallback: LLM describes tool in natural language (e.g. "Use get_prediction_state()")
+        """
         import re
-        # Look for JSON blocks with "tool" key
+
+        # Strip thinking blocks first so we search the actual response
+        clean = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+        # Case 1 & 2: Look for JSON blocks with "tool" key
         patterns = [
             r'```json\s*(\{[^`]*?"tool"[^`]*?\})\s*```',
             r'```\s*(\{[^`]*?"tool"[^`]*?\})\s*```',
             r'(\{"tool"\s*:\s*"[^"]+"\s*,\s*"args"\s*:\s*\{[^}]*\}\s*\})',
         ]
         for pattern in patterns:
-            match = re.search(pattern, text, re.DOTALL)
+            match = re.search(pattern, clean, re.DOTALL)
             if match:
                 try:
                     return json.loads(match.group(1))
                 except json.JSONDecodeError:
                     continue
+
+        # Case 3: LLM described a tool call in natural language instead of JSON
+        # Detect patterns like "get_prediction_state()" or "Use `get_prediction_state()`"
+        tool_names = list(self.tools.keys())
+        for tname in tool_names:
+            # Match: tool_name() or tool_name(args)
+            pat = re.search(rf'\b{re.escape(tname)}\s*\(([^)]*)\)', clean)
+            if pat:
+                args_str = pat.group(1).strip()
+                args = {}
+                if args_str:
+                    # Try to parse simple keyword args like top_n=5, days=1
+                    for kv in args_str.split(","):
+                        kv = kv.strip().strip('"').strip("'")
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            k = k.strip().strip('"').strip("'")
+                            v = v.strip().strip('"').strip("'")
+                            # Type coerce
+                            try:
+                                v = int(v)
+                            except ValueError:
+                                try:
+                                    v = float(v)
+                                except ValueError:
+                                    if v.lower() == "null" or v.lower() == "none":
+                                        v = None
+                            args[k] = v
+                return {"tool": tname, "args": args}
+
         return None
 
     def _strip_thinking(self, text: str) -> str:
