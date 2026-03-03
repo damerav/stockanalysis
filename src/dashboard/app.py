@@ -271,27 +271,62 @@ def page_spy():
     probs = prediction.get("probabilities", {})
 
     color_map = {
-        "STRONG_BULLISH": c["green"], "BULLISH": c["green"],
+        "STRONG_BULLISH": c["green"], "BULLISH": c["green"], "WEAK_BULLISH": c["green"],
         "NEUTRAL": c["yellow"],
-        "BEARISH": c["red"], "STRONG_BEARISH": c["red"],
+        "WEAK_BEARISH": c["red"], "BEARISH": c["red"], "STRONG_BEARISH": c["red"],
     }
     banner_color = color_map.get(scale_label, c["yellow"])
 
-    # --- Compact prediction banner ---
+    # --- Hero prediction card ---
     if prediction:
-        # Confidence interpretation
-        conf_interp = "weak" if confidence < 55 else "moderate" if confidence < 70 else "strong" if confidence < 85 else "very strong"
+        conf_interp = "Weak" if confidence < 55 else "Moderate" if confidence < 70 else "Strong" if confidence < 85 else "Very Strong"
+        arrow = "▲" if "BULLISH" in scale_label else "▼" if "BEARISH" in scale_label else "◆"
+        up_pct = probs.get('up', 0)
+        neutral_pct = probs.get('neutral', 0)
+        down_pct = probs.get('down', 0)
+        total = max(up_pct + neutral_pct + down_pct, 1)
+        up_w = up_pct / total * 100
+        neut_w = neutral_pct / total * 100
+        down_w = down_pct / total * 100
+        updated_str = updated_at[:16].replace('T', ' ') if updated_at else "—"
+        # Solid banner with glow
+        glow = f"box-shadow: 0 6px 32px {banner_color}55, 0 2px 8px rgba(0,0,0,0.3);"
         st.markdown(
-            f"""<div style="background:{banner_color}; padding:8px 16px; border-radius:8px;
-            text-align:center; margin-bottom:6px; display:flex; align-items:center; justify-content:center; gap:20px;">
-            <span style="color:#fff; font-size:1.2rem; font-weight:700;">{scale_label.replace('_', ' ')}</span>
-            <span style="color:#fff; font-size:1.05rem; font-weight:600;">{confidence:.0f}%</span>
-            <span style="color:rgba(255,255,255,0.85); font-size:0.85rem;">
-            ↑{probs.get('up', 0):.0f}% · —{probs.get('neutral', 0):.0f}% · ↓{probs.get('down', 0):.0f}%
-            </span>
-            <span style="color:rgba(255,255,255,0.7); font-size:0.75rem; font-style:italic;">
-            ({conf_interp} signal)
-            </span></div>""",
+            f"""<div style="background: linear-gradient(135deg, {banner_color}ee 0%, {banner_color} 100%);
+            border-radius:16px; padding:28px 32px; margin-bottom:16px; {glow}">
+            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px;">
+                <div style="display:flex; align-items:center; gap:18px;">
+                    <span style="font-size:3.2rem; color:#fff; line-height:1; filter:drop-shadow(0 2px 4px rgba(0,0,0,0.3));">{arrow}</span>
+                    <div>
+                        <div style="font-size:2.2rem; font-weight:800; color:#fff; letter-spacing:1px; text-shadow:0 2px 4px rgba(0,0,0,0.2);">
+                            {scale_label.replace('_', ' ')}
+                        </div>
+                        <div style="font-size:0.9rem; color:rgba(255,255,255,0.8); margin-top:4px;">
+                            Next-day SPY direction · {conf_interp} signal
+                        </div>
+                    </div>
+                </div>
+                <div style="text-align:center; background:rgba(0,0,0,0.15); border-radius:12px; padding:12px 24px; min-width:120px;">
+                    <div style="font-size:3rem; font-weight:900; color:#fff; line-height:1; text-shadow:0 2px 4px rgba(0,0,0,0.2);">{confidence:.0f}%</div>
+                    <div style="font-size:0.75rem; color:rgba(255,255,255,0.7); text-transform:uppercase; letter-spacing:0.1em; margin-top:2px;">Confidence</div>
+                </div>
+            </div>
+            <div style="margin-top:18px;">
+                <div style="display:flex; border-radius:8px; overflow:hidden; height:14px; background:rgba(0,0,0,0.2);">
+                    <div style="width:{up_w:.1f}%; background:{c['green']}; transition:width 0.5s ease;" title="Up {up_pct:.0f}%"></div>
+                    <div style="width:{neut_w:.1f}%; background:{c['yellow']}; transition:width 0.5s ease;" title="Neutral {neutral_pct:.0f}%"></div>
+                    <div style="width:{down_w:.1f}%; background:{c['red']}; transition:width 0.5s ease;" title="Down {down_pct:.0f}%"></div>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-top:6px;">
+                    <span style="color:rgba(255,255,255,0.9); font-size:0.82rem; font-weight:600;">↑ Up {up_pct:.1f}%</span>
+                    <span style="color:rgba(255,255,255,0.9); font-size:0.82rem; font-weight:600;">— Neutral {neutral_pct:.1f}%</span>
+                    <span style="color:rgba(255,255,255,0.9); font-size:0.82rem; font-weight:600;">↓ Down {down_pct:.1f}%</span>
+                </div>
+            </div>
+            <div style="text-align:right; margin-top:8px; font-size:0.72rem; color:rgba(255,255,255,0.5);">
+                Updated {updated_str}
+            </div>
+            </div>""",
             unsafe_allow_html=True,
         )
     else:
