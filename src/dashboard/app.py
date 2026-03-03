@@ -2827,7 +2827,92 @@ def page_quant_agent():
             lines += ["", f"**Suggested drops**: {', '.join(f'`{d}`' for d in data['drop_suggestions'])}"]
         return "\n".join(lines)
 
+    def _fmt_risk(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        level = data.get("risk_level", "UNKNOWN")
+        le = "🔴" if level == "HIGH" else "🟡" if level == "MODERATE" else "🟢"
+        lines = [
+            f"## {le} News Risk Assessment: **{level}**",
+            f"**Articles assessed**: {data['articles_assessed']} | "
+            f"**Avg risk**: {data['avg_risk_score']}/5 | "
+            f"**High-risk articles**: {data['high_risk_articles']}",
+        ]
+        if data.get("assessed_articles"):
+            lines += ["", "| Risk | Headline | Source | Sentiment |",
+                       "|------|----------|--------|-----------|"]
+            for a in data["assessed_articles"][:12]:
+                rs = a["risk_score"]
+                re_icon = "🔴" if rs >= 4 else "🟡" if rs >= 3 else "🟢"
+                s = a.get("sentiment", 0)
+                se = "🟢" if s > 0 else "🔴" if s < 0 else "⚪"
+                hl = a["headline"][:60] + ("..." if len(a["headline"]) > 60 else "")
+                lines.append(f"| {re_icon} {rs}/5 | {hl} | {a.get('source', '')} | {se} {s:+.3f} |")
+        return "\n".join(lines)
+
+    def _fmt_alpha(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        lines = [
+            f"## 💡 Alpha Factor Hypotheses",
+            f"**Current regime**: {data.get('current_regime', 'N/A')} | "
+            f"**Existing features**: {data.get('current_features', '?')}",
+        ]
+        if data.get("raw_hypotheses"):
+            lines += ["", data["raw_hypotheses"]]
+        elif data.get("hypotheses"):
+            for i, h in enumerate(data["hypotheses"], 1):
+                lines += [
+                    "", f"### {i}. `{h.get('name', 'unnamed')}`",
+                    f"**Formula**: {h.get('formula', 'N/A')}",
+                    f"**Rationale**: {h.get('rationale', 'N/A')}",
+                    f"**Data source**: {h.get('data_source', 'N/A')}",
+                    f"**Expected signal**: {h.get('expected_signal', 'N/A')}",
+                ]
+        if data.get("note"):
+            lines += ["", f"*{data['note']}*"]
+        return "\n".join(lines)
+
+    def _fmt_explain_regime(data):
+        if "error" in data:
+            return f"⚠️ Error: {data['error']}"
+        remoji = {"bull_trend": "🟢", "bear_trend": "🔴", "high_vol_choppy": "🟡", "low_vol_range": "🔵"}
+        current = data.get("current_regime", "unknown")
+        ki = data.get("key_indicators", {})
+        rsi = ki.get("rsi_14")
+        summary = ""
+        if ki:
+            parts = [f"VIX: {ki.get('vix', 'N/A')}"]
+            if rsi is not None:
+                parts.append(f"RSI: {rsi:.1f}")
+            parts.append(f"SPY 1d: {ki.get('spy_1d_pct', 0):+.2f}%")
+            parts.append(f"5d: {ki.get('spy_5d_pct', 0):+.2f}%")
+            summary = " | ".join(parts)
+        lines = [
+            f"## {remoji.get(current, '⚪')} Regime Explanation: **{current}**",
+            summary,
+        ]
+        if data.get("explanation"):
+            lines += ["", data["explanation"]]
+        return "\n".join(lines)
+
+    def _run_direct_slow(tool_fn, formatter, label, **kwargs):
+        """Call LLM-dependent tool directly (skips outer LLM routing). Still ~30s."""
+        st.session_state.quant_messages.append({"role": "user", "content": label})
+        with st.spinner("Analyzing — this takes ~30s (one AI call)..."):
+            result = tool_fn(**kwargs)
+        md = formatter(result)
+        st.session_state.quant_messages.append({"role": "assistant", "content": md})
+        st.rerun()
+
     def _run_direct_tool(tool_fn, formatter, label, **kwargs):
+        """Call a tool directly, format result, append to chat. No LLM."""
+        st.session_state.quant_messages.append({"role": "user", "content": label})
+        with st.spinner("Fetching data..."):
+            result = tool_fn(**kwargs)
+        md = formatter(result)
+        st.session_state.quant_messages.append({"role": "assistant", "content": md})
+        st.rerun()
         """Call a tool directly, format result, append to chat. No LLM."""
         st.session_state.quant_messages.append({"role": "user", "content": label})
         with st.spinner("Fetching data..."):
@@ -2855,30 +2940,24 @@ def page_quant_agent():
             _run_direct_tool(agent._tool_get_regime_history, _fmt_regime,
                              "📊 Regime History")
 
-    # Quick action buttons — Row 2 (LLM-dependent ones + instant correlations)
+    # ── Quick action buttons — Row 2 (direct tool calls, LLM inside tool only) ──
     q5, q6, q7, q8 = st.columns(4)
     with q5:
         if st.button("⚠️ Risk Assessment", key="qa_risk", use_container_width=True):
-            st.session_state._qa_pending = "Assess the risk level of today's news headlines"
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "⚠️ Risk Assessment"})
-            st.rerun()
+            _run_direct_slow(agent._tool_assess_news_risk, _fmt_risk,
+                             "⚠️ Risk Assessment")
     with q6:
         if st.button("💡 Alpha Ideas", key="qa_alpha", use_container_width=True):
-            st.session_state._qa_pending = "Generate new alpha factor hypotheses based on current market conditions"
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "💡 Alpha Ideas"})
-            st.rerun()
+            _run_direct_slow(agent._tool_generate_alpha_hypothesis, _fmt_alpha,
+                             "💡 Alpha Ideas")
     with q7:
         if st.button("🔗 Correlations", key="qa_corr", use_container_width=True):
             _run_direct_tool(agent._tool_analyze_feature_correlations, _fmt_correlations,
                              "🔗 Feature Correlations")
     with q8:
         if st.button("🌊 Explain Regime", key="qa_regime", use_container_width=True):
-            st.session_state._qa_pending = "Explain the current market regime and its implications"
-            st.session_state.quant_messages.append(
-                {"role": "user", "content": "🌊 Explain Regime"})
-            st.rerun()
+            _run_direct_slow(agent._tool_explain_regime, _fmt_explain_regime,
+                             "🌊 Explain Regime")
 
     st.divider()
 
@@ -2892,25 +2971,9 @@ def page_quant_agent():
                 fig.update_layout(**get_plotly_layout())
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Process pending LLM message (from LLM-dependent quick-action buttons or typed input)
-    _pending_llm = st.session_state.pop("_qa_pending", None)
-    if _pending_llm:
-        # LLM-dependent quick-action button was pressed
-        with st.chat_message("assistant"):
-            with st.spinner("Analyzing with AI — this may take a minute..."):
-                response, chart_data = agent.chat(_pending_llm)
-            st.markdown(response)
-            msg_data = {"role": "assistant", "content": response}
-            if chart_data:
-                msg_data["chart"] = chart_data
-                import plotly.graph_objects as go
-                fig = go.Figure(chart_data)
-                fig.update_layout(**get_plotly_layout())
-                st.plotly_chart(fig, use_container_width=True)
-            st.session_state.quant_messages.append(msg_data)
-    elif (st.session_state.quant_messages
+    # Process pending typed chat message
+    if (st.session_state.quant_messages
             and st.session_state.quant_messages[-1]["role"] == "user"):
-        # Typed chat message — route through LLM
         pending = st.session_state.quant_messages[-1]["content"]
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
