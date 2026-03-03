@@ -2834,85 +2834,242 @@ def page_quant_agent():
         le = "🔴" if level == "HIGH" else "🟡" if level == "MODERATE" else "🟢"
         lines = [
             f"## {le} News Risk Assessment: **{level}**",
-            f"**Articles assessed**: {data['articles_assessed']} | "
-            f"**Avg risk**: {data['avg_risk_score']}/5 | "
-            f"**High-risk articles**: {data['high_risk_articles']}",
+            f"**Articles scanned**: {data.get('total_articles', 0)} | "
+            f"**Avg sentiment**: {data.get('avg_sentiment', 0):.4f} | "
+            f"**Negative ratio**: {data.get('negative_ratio', 0):.0%}",
         ]
-        if data.get("assessed_articles"):
-            lines += ["", "| Risk | Headline | Source | Sentiment |",
-                       "|------|----------|--------|-----------|"]
-            for a in data["assessed_articles"][:12]:
-                rs = a["risk_score"]
-                re_icon = "🔴" if rs >= 4 else "🟡" if rs >= 3 else "🟢"
-                s = a.get("sentiment", 0)
-                se = "🟢" if s > 0 else "🔴" if s < 0 else "⚪"
-                hl = a["headline"][:60] + ("..." if len(a["headline"]) > 60 else "")
-                lines.append(f"| {re_icon} {rs}/5 | {hl} | {a.get('source', '')} | {se} {s:+.3f} |")
+        if data.get("high_impact"):
+            lines += ["", "**High-Impact Headlines** (strongest sentiment):"]
+            for a in data["high_impact"][:10]:
+                s = a.get("sentiment_compound", 0) or 0
+                se = "🔴" if s < -0.3 else "🟡" if s < 0 else "🟢"
+                hl = a["headline"][:65] + ("..." if len(a["headline"]) > 65 else "")
+                lines.append(f"- {se} **{hl}** ({a.get('source', '')}, {s:+.3f})")
+        if data.get("category_risk"):
+            lines += ["", "**Risk by Category**:",
+                       "| Category | Articles | Avg Sentiment | Risk |",
+                       "|----------|----------|---------------|------|"]
+            for cr in data["category_risk"]:
+                s = cr["avg_sent"]
+                rl = "🔴 HIGH" if s < -0.15 else "🟡 MED" if s < 0 else "🟢 LOW"
+                lines.append(f"| {cr['category']} | {cr['count']} | {s:+.4f} | {rl} |")
         return "\n".join(lines)
 
     def _fmt_alpha(data):
         if "error" in data:
             return f"⚠️ Error: {data['error']}"
         lines = [
-            f"## 💡 Alpha Factor Hypotheses",
+            f"## 💡 Alpha Factor Analysis",
             f"**Current regime**: {data.get('current_regime', 'N/A')} | "
-            f"**Existing features**: {data.get('current_features', '?')}",
+            f"**Active features**: {data.get('current_features', '?')} | "
+            f"**Model confidence**: {data.get('confidence', 'N/A')}",
         ]
-        if data.get("raw_hypotheses"):
-            lines += ["", data["raw_hypotheses"]]
-        elif data.get("hypotheses"):
-            for i, h in enumerate(data["hypotheses"], 1):
-                lines += [
-                    "", f"### {i}. `{h.get('name', 'unnamed')}`",
-                    f"**Formula**: {h.get('formula', 'N/A')}",
-                    f"**Rationale**: {h.get('rationale', 'N/A')}",
-                    f"**Data source**: {h.get('data_source', 'N/A')}",
-                    f"**Expected signal**: {h.get('expected_signal', 'N/A')}",
-                ]
-        if data.get("note"):
-            lines += ["", f"*{data['note']}*"]
+        if data.get("weak_features"):
+            lines += ["", "**Weakest Features** (lowest importance — candidates for replacement):"]
+            for wf in data["weak_features"]:
+                lines.append(f"- `{wf['name']}`: importance={wf['importance']:.4f}")
+        if data.get("missing_categories"):
+            lines += ["", "**Unexplored Feature Categories**:"]
+            for cat in data["missing_categories"]:
+                lines.append(f"- 💡 {cat}")
+        if data.get("regime_suggestions"):
+            lines += ["", f"**Regime-Specific Ideas** ({data.get('current_regime', '')}):"]
+            for s in data["regime_suggestions"]:
+                lines.append(f"- {s}")
+        lines += ["", "*For AI-generated hypotheses, ask in chat: \"Generate alpha factor ideas\"*"]
         return "\n".join(lines)
 
     def _fmt_explain_regime(data):
         if "error" in data:
             return f"⚠️ Error: {data['error']}"
         remoji = {"bull_trend": "🟢", "bear_trend": "🔴", "high_vol_choppy": "🟡", "low_vol_range": "🔵"}
+        regime_desc = {
+            "bull_trend": "Sustained upward momentum with low volatility. Trend-following strategies tend to outperform.",
+            "bear_trend": "Persistent selling pressure. Defensive positioning and hedging recommended.",
+            "high_vol_choppy": "Elevated volatility with no clear direction. Mean-reversion strategies may work. Reduce position sizes.",
+            "low_vol_range": "Low volatility, range-bound market. Breakout signals are unreliable. Patience required.",
+        }
         current = data.get("current_regime", "unknown")
         ki = data.get("key_indicators", {})
-        rsi = ki.get("rsi_14")
-        summary = ""
-        if ki:
-            parts = [f"VIX: {ki.get('vix', 'N/A')}"]
-            if rsi is not None:
-                parts.append(f"RSI: {rsi:.1f}")
-            parts.append(f"SPY 1d: {ki.get('spy_1d_pct', 0):+.2f}%")
-            parts.append(f"5d: {ki.get('spy_5d_pct', 0):+.2f}%")
-            summary = " | ".join(parts)
         lines = [
-            f"## {remoji.get(current, '⚪')} Regime Explanation: **{current}**",
-            summary,
+            f"## {remoji.get(current, '⚪')} Market Regime: **{current}**",
+            f"*{regime_desc.get(current, 'Unknown regime state.')}*",
+            "",
         ]
-        if data.get("explanation"):
-            lines += ["", data["explanation"]]
+        if ki:
+            vix = ki.get("vix")
+            rsi = ki.get("rsi_14")
+            macd = ki.get("macd")
+            vol_ratio = ki.get("volume_ratio")
+            sent = ki.get("news_sentiment")
+            pct1 = ki.get("spy_1d_pct", 0)
+            pct5 = ki.get("spy_5d_pct", 0)
+            lines.append("**Key Indicators**:")
+            if vix is not None:
+                vix_label = "🔴 Elevated" if vix > 25 else "🟡 Normal" if vix > 15 else "🟢 Low"
+                lines.append(f"- VIX: {vix} ({vix_label})")
+            if rsi is not None:
+                rsi_label = "🔴 Overbought" if rsi > 70 else "🟢 Oversold" if rsi < 30 else "⚪ Neutral"
+                lines.append(f"- RSI(14): {rsi:.1f} ({rsi_label})")
+            if macd is not None:
+                macd_label = "🟢 Bullish" if macd > 0 else "🔴 Bearish"
+                lines.append(f"- MACD: {macd:.4f} ({macd_label})")
+            if vol_ratio is not None:
+                vol_label = "🔴 Heavy" if vol_ratio > 1.3 else "🟢 Light" if vol_ratio < 0.7 else "⚪ Normal"
+                lines.append(f"- Volume Ratio: {vol_ratio:.2f} ({vol_label})")
+            if sent is not None:
+                sent_label = "🟢 Positive" if sent > 0.05 else "🔴 Negative" if sent < -0.05 else "⚪ Neutral"
+                lines.append(f"- News Sentiment: {sent:.4f} ({sent_label})")
+            lines.append(f"- SPY 1d: {pct1:+.2f}% | 5d: {pct5:+.2f}%")
+        if data.get("regime_distribution"):
+            lines += ["", "**Regime Distribution (14d)**:"]
+            for regime, count in data["regime_distribution"].items():
+                lines.append(f"- {remoji.get(regime, '⚪')} {regime}: {count} days")
+        if data.get("watch_for"):
+            lines += ["", "**Watch For** (regime change signals):"]
+            for w in data["watch_for"]:
+                lines.append(f"- ⚡ {w}")
+        lines += ["", "*For deeper AI analysis, ask in chat: \"Explain the current regime in detail\"*"]
         return "\n".join(lines)
 
-    def _run_direct_slow(tool_fn, formatter, label, **kwargs):
-        """Call LLM-dependent tool directly (skips outer LLM routing). Still ~30s."""
-        st.session_state.quant_messages.append({"role": "user", "content": label})
-        with st.spinner("Analyzing — this takes ~30s (one AI call)..."):
-            result = tool_fn(**kwargs)
-        md = formatter(result)
-        st.session_state.quant_messages.append({"role": "assistant", "content": md})
-        st.rerun()
+    def _data_risk_assessment():
+        """Data-only risk assessment using VADER sentiment scores — no LLM."""
+        try:
+            from src.data.db_router import get_router
+            router = get_router(_load_config())
+            from datetime import datetime, timedelta
+            cutoff = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            stats = router.query(
+                f"SELECT COUNT(*) as count, AVG(sentiment_compound) as avg_sent, "
+                f"SUM(CASE WHEN sentiment_compound < -0.15 THEN 1 ELSE 0 END) as neg_count "
+                f"FROM raw_articles WHERE published_at >= '{cutoff}'"
+            )
+            top = router.query(
+                f"SELECT headline, source, category, sentiment_compound "
+                f"FROM raw_articles WHERE published_at >= '{cutoff}' "
+                f"ORDER BY ABS(sentiment_compound) DESC LIMIT 10"
+            )
+            cats = router.query(
+                f"SELECT category, COUNT(*) as count, AVG(sentiment_compound) as avg_sent "
+                f"FROM raw_articles WHERE published_at >= '{cutoff}' AND category IS NOT NULL "
+                f"GROUP BY category ORDER BY AVG(sentiment_compound) ASC"
+            )
+            total = int(stats.iloc[0]["count"]) if not stats.empty else 0
+            avg_s = float(stats.iloc[0]["avg_sent"] or 0) if not stats.empty else 0
+            neg_c = int(stats.iloc[0]["neg_count"] or 0) if not stats.empty else 0
+            neg_ratio = neg_c / max(total, 1)
+            level = "HIGH" if avg_s < -0.1 or neg_ratio > 0.4 else ("MODERATE" if avg_s < 0 or neg_ratio > 0.25 else "LOW")
+            return {
+                "total_articles": total, "avg_sentiment": avg_s,
+                "negative_ratio": neg_ratio, "risk_level": level,
+                "high_impact": top.to_dict(orient="records") if not top.empty else [],
+                "category_risk": cats.to_dict(orient="records") if not cats.empty else [],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _data_alpha_analysis():
+        """Data-only alpha analysis — shows model gaps and suggestions, no LLM."""
+        try:
+            import glob, json as _json
+            import xgboost as xgb
+            state = agent._tool_get_prediction_state()
+            pred = state.get("prediction", {})
+            regime = pred.get("regime", "unknown")
+            conf = pred.get("confidence", "N/A")
+            # Load feature importances
+            model_files = sorted(glob.glob("./models/xgb_spy_*.json"))
+            model_files = [f for f in model_files if "_meta" not in f and "_binary" not in f and "_conformal" not in f]
+            weak_features = []
+            n_features = 0
+            if model_files:
+                model = xgb.XGBClassifier()
+                model.load_model(model_files[-1])
+                meta_file = model_files[-1].replace(".json", "_meta.json")
+                feature_names = [f"f{i}" for i in range(model.n_features_in_)]
+                if os.path.exists(meta_file):
+                    with open(meta_file) as f:
+                        meta = _json.load(f)
+                        feature_names = meta.get("feature_names", feature_names)
+                importances = model.feature_importances_
+                pairs = sorted(zip(feature_names, importances), key=lambda x: x[1])
+                weak_features = [{"name": n, "importance": round(float(v), 4)} for n, v in pairs[:5]]
+                n_features = len(feature_names)
+            existing_cats = {"price", "momentum", "volatility", "volume", "macro", "sentiment", "options", "microstructure", "earnings", "fed", "geopolitical"}
+            missing = []
+            for idea in ["Volatility surface (skew, term structure)", "Cross-asset momentum divergence (bonds vs equities)",
+                         "Options flow imbalance (put/call volume ratio changes)", "Credit spreads (HY-IG spread dynamics)",
+                         "Institutional positioning (COT report features)", "Intraday momentum patterns (first/last hour returns)"]:
+                missing.append(idea)
+            regime_suggestions = {
+                "bull_trend": ["Momentum acceleration features", "Breadth thrust indicators", "Sector rotation signals"],
+                "bear_trend": ["Credit stress indicators", "Safe-haven flow ratios (gold/bonds)", "Volatility term structure inversion"],
+                "high_vol_choppy": ["Mean-reversion speed features", "Realized vs implied vol spread", "Gamma exposure estimates"],
+                "low_vol_range": ["Breakout probability features", "Volume compression indicators", "Bollinger Band squeeze duration"],
+            }
+            return {
+                "current_regime": regime, "current_features": n_features,
+                "confidence": f"{conf:.1f}%" if isinstance(conf, (int, float)) else conf,
+                "weak_features": weak_features,
+                "missing_categories": missing[:4],
+                "regime_suggestions": regime_suggestions.get(regime, ["No specific suggestions for this regime"]),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _data_explain_regime():
+        """Data-only regime explanation — indicators + rules, no LLM."""
+        try:
+            state = agent._tool_get_prediction_state()
+            regime_info = agent._tool_get_regime_history(days=14)
+            news = agent._tool_get_news_summary(days=2)
+            indicators = state.get("indicators", {})
+            prediction = state.get("prediction", {})
+            current = regime_info.get("current_regime", "unknown")
+            regime_dist = regime_info.get("regime_distribution", {})
+            # Price action
+            from src.data.db_router import get_router
+            router = get_router(_load_config())
+            prices = router.query("SELECT date, close FROM prices ORDER BY date DESC LIMIT 10")
+            pct1, pct5 = 0, 0
+            if not prices.empty and len(prices) >= 2:
+                pct1 = round((prices.iloc[0]["close"] / prices.iloc[1]["close"] - 1) * 100, 2)
+            if not prices.empty and len(prices) >= 5:
+                pct5 = round((prices.iloc[0]["close"] / prices.iloc[4]["close"] - 1) * 100, 2)
+            # Watch-for signals
+            vix = indicators.get("vix", 20)
+            rsi = indicators.get("rsi_14", 50)
+            watch = []
+            if current == "low_vol_range":
+                if vix < 14: watch.append("VIX extremely low — complacency risk, potential vol spike")
+                if abs(pct5) < 0.5: watch.append("5-day range very tight — breakout imminent")
+                watch.append("Watch for volume surge as breakout catalyst")
+            elif current == "bull_trend":
+                if rsi > 65: watch.append(f"RSI at {rsi:.0f} — approaching overbought territory")
+                if vix < 13: watch.append("VIX very low — potential mean reversion in vol")
+                watch.append("Watch for breadth divergence (fewer stocks making new highs)")
+            elif current == "bear_trend":
+                if rsi < 35: watch.append(f"RSI at {rsi:.0f} — approaching oversold, bounce possible")
+                if vix > 30: watch.append(f"VIX at {vix:.0f} — fear elevated, capitulation watch")
+                watch.append("Watch for credit spread widening as contagion signal")
+            elif current == "high_vol_choppy":
+                watch.append("Watch for VIX term structure normalization")
+                watch.append("Consecutive closes in same direction = potential regime shift")
+            return {
+                "current_regime": current,
+                "key_indicators": {
+                    "vix": indicators.get("vix"), "rsi_14": indicators.get("rsi_14"),
+                    "macd": indicators.get("macd"), "volume_ratio": indicators.get("volume_ratio"),
+                    "news_sentiment": news.get("avg_sentiment", 0),
+                    "spy_1d_pct": pct1, "spy_5d_pct": pct5,
+                },
+                "regime_distribution": regime_dist,
+                "watch_for": watch,
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
     def _run_direct_tool(tool_fn, formatter, label, **kwargs):
-        """Call a tool directly, format result, append to chat. No LLM."""
-        st.session_state.quant_messages.append({"role": "user", "content": label})
-        with st.spinner("Fetching data..."):
-            result = tool_fn(**kwargs)
-        md = formatter(result)
-        st.session_state.quant_messages.append({"role": "assistant", "content": md})
-        st.rerun()
         """Call a tool directly, format result, append to chat. No LLM."""
         st.session_state.quant_messages.append({"role": "user", "content": label})
         with st.spinner("Fetching data..."):
@@ -2940,23 +3097,23 @@ def page_quant_agent():
             _run_direct_tool(agent._tool_get_regime_history, _fmt_regime,
                              "📊 Regime History")
 
-    # ── Quick action buttons — Row 2 (direct tool calls, LLM inside tool only) ──
+    # ── Quick action buttons — Row 2 (all instant, data-only) ──
     q5, q6, q7, q8 = st.columns(4)
     with q5:
         if st.button("⚠️ Risk Assessment", key="qa_risk", use_container_width=True):
-            _run_direct_slow(agent._tool_assess_news_risk, _fmt_risk,
+            _run_direct_tool(_data_risk_assessment, _fmt_risk,
                              "⚠️ Risk Assessment")
     with q6:
         if st.button("💡 Alpha Ideas", key="qa_alpha", use_container_width=True):
-            _run_direct_slow(agent._tool_generate_alpha_hypothesis, _fmt_alpha,
-                             "💡 Alpha Ideas")
+            _run_direct_tool(_data_alpha_analysis, _fmt_alpha,
+                             "💡 Alpha Analysis")
     with q7:
         if st.button("🔗 Correlations", key="qa_corr", use_container_width=True):
             _run_direct_tool(agent._tool_analyze_feature_correlations, _fmt_correlations,
                              "🔗 Feature Correlations")
     with q8:
         if st.button("🌊 Explain Regime", key="qa_regime", use_container_width=True):
-            _run_direct_slow(agent._tool_explain_regime, _fmt_explain_regime,
+            _run_direct_tool(_data_explain_regime, _fmt_explain_regime,
                              "🌊 Explain Regime")
 
     st.divider()
