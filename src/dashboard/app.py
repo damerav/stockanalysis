@@ -3117,6 +3117,43 @@ def page_quant_agent():
             _run_direct_tool(_data_explain_regime, _fmt_explain_regime,
                              "🌊 Explain Regime")
 
+    # ── Quick action buttons — Row 3 (agentic intelligence) ──
+    def _fmt_thesis(data: dict) -> str:
+        if "error" in data:
+            return f"❌ Error: {data['error']}"
+        lines = [f"**🎯 Market Thesis** — {data.get('direction', '?')} (conf {data.get('confidence', 0):.1%})"]
+        lines.append(f"Regime: `{data.get('regime', 'unknown')}`\n")
+        for p in data.get("pillars", []):
+            icon = "✅" if p["status"] == "supporting" else ("⚠️" if p["status"] == "weakening" else "❌")
+            lines.append(f"{icon} **{p['name']}** [{p['strength']}] — {p['detail']}")
+        s = data.get("summary", {})
+        if s:
+            lines.append(f"\n**Thesis: {s.get('thesis_strength', '?').upper()}** — {s.get('conviction', '')}")
+        return "\n".join(lines)
+
+    def _fmt_vigilance(data: dict) -> str:
+        if "error" in data:
+            return f"❌ Error: {data['error']}"
+        msg = data.get("message", "")
+        alerts = data.get("alerts", [])
+        if not alerts:
+            return f"✅ {msg}"
+        lines = [f"🚨 **Vigilance Alerts** — {msg}\n"]
+        for a in alerts:
+            ts = a.get("time", "")[:19] if a.get("time") else ""
+            lines.append(f"- **{a.get('type', '?')}** ({ts}): {a.get('message', '')}")
+        return "\n".join(lines)
+
+    q9, q10, _q11, _q12 = st.columns(4)
+    with q9:
+        if st.button("🎯 Market Thesis", key="qa_thesis", use_container_width=True):
+            _run_direct_tool(agent._tool_get_market_thesis, _fmt_thesis,
+                             "🎯 Market Thesis")
+    with q10:
+        if st.button("🚨 Vigilance Alerts", key="qa_vigil", use_container_width=True):
+            _run_direct_tool(agent._tool_get_vigilance_alerts, _fmt_vigilance,
+                             "🚨 Vigilance Alerts")
+
     st.divider()
 
     # Chat history display
