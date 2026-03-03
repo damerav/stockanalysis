@@ -811,6 +811,41 @@ class SPYPredictor:
 
         return metrics
 
+    def _align_features(self, features: np.ndarray,
+                         feature_names: list[str]) -> tuple:
+        """Align input features to match the model's trained feature set.
+
+        If trained_feature_names exists, reorder/filter/pad the input so the
+        model always receives exactly the columns it expects, in the right order.
+        Missing features are filled with 0.0.
+
+        Returns:
+            (aligned_features, aligned_names) — ready for model inference.
+        """
+        if not self.trained_feature_names or not feature_names:
+            return features, feature_names
+
+        if features.ndim == 1:
+            features = features.reshape(1, -1)
+
+        # Build lookup: input feature name → column index
+        input_map = {name: i for i, name in enumerate(feature_names)}
+
+        # Create aligned array with model's expected shape
+        n_trained = len(self.trained_feature_names)
+        aligned = np.zeros((features.shape[0], n_trained), dtype=np.float64)
+
+        for out_idx, trained_name in enumerate(self.trained_feature_names):
+            if trained_name in input_map:
+                aligned[:, out_idx] = features[:, input_map[trained_name]]
+
+        matched = sum(1 for n in self.trained_feature_names if n in input_map)
+        if matched < n_trained:
+            logger.debug(f"Feature alignment: {matched}/{n_trained} matched, "
+                         f"{n_trained - matched} filled with 0.0")
+
+        return aligned, list(self.trained_feature_names)
+
     def predict(self, features: np.ndarray,
                 feature_names: list[str] = None) -> dict:
         """Generate prediction for a single feature vector.
@@ -832,6 +867,12 @@ class SPYPredictor:
 
         # Handle NaN features
         features = np.nan_to_num(features, nan=0.0)
+
+        # --- Dynamic feature alignment ---
+        # If caller provides feature_names and model has trained_feature_names,
+        # align the input to match exactly what the model expects.
+        if feature_names is not None and self.trained_feature_names:
+            features, feature_names = self._align_features(features, feature_names)
 
         # --- P2: Use ensemble if available ---
         if self.ensemble is not None and self.use_ensemble:
@@ -931,6 +972,42 @@ class SPYPredictor:
                 logger.debug(f"SHAP explanation skipped: {e}")
 
         return result
+    def _align_features(self, features: np.ndarray,
+                         feature_names: list[str]) -> tuple[np.ndarray, list[str]]:
+        """Align input features to match the model's trained feature set.
+
+        If trained_feature_names exists, reorder/filter/pad the input so the
+        model always receives exactly the columns it expects, in the right order.
+        Missing features are filled with 0.0.
+
+        Returns:
+            (aligned_features, aligned_names) — ready for model inference.
+        """
+        if not self.trained_feature_names or not feature_names:
+            return features, feature_names
+
+        if features.ndim == 1:
+            features = features.reshape(1, -1)
+
+        # Build lookup: input feature name → column index
+        input_map = {name: i for i, name in enumerate(feature_names)}
+
+        # Create aligned array with model's expected shape
+        n_trained = len(self.trained_feature_names)
+        aligned = np.zeros((features.shape[0], n_trained), dtype=np.float64)
+
+        for out_idx, trained_name in enumerate(self.trained_feature_names):
+            if trained_name in input_map:
+                aligned[:, out_idx] = features[:, input_map[trained_name]]
+            # else stays 0.0
+
+        matched = sum(1 for n in self.trained_feature_names if n in input_map)
+        if matched < n_trained:
+            logger.debug(f"Feature alignment: {matched}/{n_trained} matched, "
+                         f"{n_trained - matched} filled with 0.0")
+
+        return aligned, list(self.trained_feature_names)
+
 
     def _get_base_probs(self, features: np.ndarray) -> np.ndarray:
         """Get probabilities from distilled student, calibrated, or raw XGBoost model."""
@@ -965,6 +1042,8 @@ class SPYPredictor:
             f for f in os.listdir(self.model_dir)
             if f.startswith("xgb_spy_") and f.endswith(".json")
             and not f.endswith("_meta.json")
+            and "_binary_" not in f
+            and "_conformal" not in f
         ])
         if not models:
             logger.info("No saved models found")
