@@ -38,6 +38,18 @@ class QuantAgent:
         self.data_dir = "./data"
         self.history: list[dict] = []
 
+        # Cached system prompt (static, built once)
+        self._system_prompt = self._build_system_prompt()
+
+        # Feature vector cache (expensive to build — ~48s)
+        self._fv_cache: Optional[pd.DataFrame] = None
+        self._fv_cache_time: float = 0
+        self._FV_CACHE_TTL = 300  # 5 minutes
+
+        # FinBERT model cache for vector search
+        self._finbert_tokenizer = None
+        self._finbert_model = None
+
         # Tool registry
         self.tools = {
             "query_database": self._tool_query_database,
@@ -56,6 +68,7 @@ class QuantAgent:
             "explain_regime": self._tool_explain_regime,
             "search_similar_news": self._tool_search_similar_news,
         }
+
 
     # ── LLM Communication ──────────────────────────────────────────
 
@@ -138,8 +151,8 @@ RULES:
         """
         self.history.append({"role": "user", "content": user_message})
 
-        # Build messages for Ollama
-        messages = [{"role": "system", "content": self._build_system_prompt()}]
+        # Build messages for Ollama (use cached system prompt)
+        messages = [{"role": "system", "content": self._system_prompt}]
         # Keep last 20 messages for context
         messages.extend(self.history[-20:])
 
@@ -185,41 +198,43 @@ RULES:
         self.history.append({"role": "assistant", "content": fallback})
         return fallback, chart_data
 
+    def _get_cached_fv(self):
+        """Get feature vector with 5-minute TTL cache. Avoids repeated ~48s builds."""
+        now = time.time()
+        if self._fv_cache is not None and (now - self._fv_cache_time) < self._FV_CACHE_TTL:
+            return self._fv_cache
+        from src.data.features import build_feature_vector
+        router = get_router(self.config)
+        conn = router.get_pg() or router.get_sqlite()
+        fv = build_feature_vector(conn, config=self.config)
+        if fv is not None and not fv.empty:
+            self._fv_cache = fv
+            self._fv_cache_time = now
+        return fv
+
     def _call_llm(self, messages: list[dict]) -> Optional[str]:
         """Call Ollama chat API. Auto-starts Ollama if not running."""
-        # Try the call first
-        try:
-            resp = requests.post(
-                f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 2048},
-                },
-                timeout=300,
-            )
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": 0.3, "num_predict": 2048},
+        }
+
+        def _do_call() -> Optional[str]:
+            resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=300)
             if resp.status_code == 200:
                 return resp.json().get("message", {}).get("content", "")
             logger.warning(f"Ollama returned {resp.status_code}")
             return None
+
+        try:
+            return _do_call()
         except requests.ConnectionError:
-            # Ollama not running — try to start it
             logger.info("Ollama not responding, attempting to start...")
             if self._start_ollama():
                 try:
-                    resp = requests.post(
-                        f"{self.base_url}/api/chat",
-                        json={
-                            "model": self.model,
-                            "messages": messages,
-                            "stream": False,
-                            "options": {"temperature": 0.3, "num_predict": 2048},
-                        },
-                        timeout=300,
-                    )
-                    if resp.status_code == 200:
-                        return resp.json().get("message", {}).get("content", "")
+                    return _do_call()
                 except Exception as e:
                     logger.warning(f"Ollama call failed after start: {e}")
             return None
@@ -420,12 +435,10 @@ RULES:
     def _tool_run_backtest(self, days: int = 60) -> dict:
         """Run walk-forward backtest on recent N days."""
         try:
-            from src.data.features import build_feature_vector, get_feature_columns, get_target
+            from src.data.features import get_feature_columns, get_target
             from src.model.trainer import SPYPredictor
 
-            router = get_router(self.config)
-            conn = router.get_pg() or router.get_sqlite()
-            fv = build_feature_vector(conn, config=self.config)
+            fv = self._get_cached_fv()
             if fv is None or fv.empty:
                 return {"error": "No feature data available"}
 
@@ -488,12 +501,10 @@ RULES:
     def _tool_retrain_model(self) -> dict:
         """Retrain the XGBoost model with latest data."""
         try:
-            from src.data.features import build_feature_vector, get_feature_columns, get_target
+            from src.data.features import get_feature_columns, get_target
             from src.model.trainer import SPYPredictor
 
-            router = get_router(self.config)
-            conn = router.get_pg() or router.get_sqlite()
-            fv = build_feature_vector(conn, config=self.config)
+            fv = self._get_cached_fv()
             if fv is None or fv.empty:
                 return {"error": "No feature data"}
 
@@ -804,11 +815,9 @@ RULES:
     def _tool_compare_strategies(self, days: int = 60) -> dict:
         """Compare multiple strategy variants side-by-side."""
         try:
-            from src.data.features import build_feature_vector, get_feature_columns, get_target
+            from src.data.features import get_feature_columns, get_target
 
-            router = get_router(self.config)
-            conn = router.get_pg() or router.get_sqlite()
-            fv = build_feature_vector(conn, config=self.config)
+            fv = self._get_cached_fv()
             if fv is None or fv.empty:
                 return {"error": "No feature data available"}
 
@@ -832,61 +841,34 @@ RULES:
 
             strategies = {}
 
-            # --- Strategy A: Full ensemble (current model) ---
-            preds_a, actuals_a = [], []
+            # --- Single prediction pass (reuse predictions across all strategies) ---
+            all_preds = []  # (pred_dir, confidence, vix_val, actual)
             for i in range(len(test_fv)):
                 if pd.isna(test_target.iloc[i]):
                     continue
                 features = test_fv[available].iloc[i].values
                 pred = predictor.predict(features, feature_names=available)
                 pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
-                actual = int(test_target.iloc[i])
-                preds_a.append(pred_dir)
-                actuals_a.append(actual)
-
-            strategies["full_model"] = self._calc_strategy_metrics(preds_a, actuals_a, "Full Ensemble")
-
-            # --- Strategy B: Always bullish baseline ---
-            preds_b = [1] * len(actuals_a)
-            strategies["always_bullish"] = self._calc_strategy_metrics(preds_b, actuals_a, "Always Bullish")
-
-            # --- Strategy C: Regime-filtered (only trade in bull/low_vol regimes) ---
-            try:
-                from src.model.regime import HMMRegimeDetector
-                detector = HMMRegimeDetector()
-                preds_c, actuals_c = [], []
-                for i in range(len(test_fv)):
-                    if pd.isna(test_target.iloc[i]):
-                        continue
-                    # Simple regime check: use VIX as proxy
-                    vix_val = test_fv.iloc[i].get("vix", 20)
-                    if vix_val and float(vix_val) > 30:
-                        preds_c.append(0)  # sit out in high vol
-                    else:
-                        features = test_fv[available].iloc[i].values
-                        pred = predictor.predict(features, feature_names=available)
-                        pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
-                        preds_c.append(pred_dir)
-                    actuals_c.append(int(test_target.iloc[i]))
-                strategies["regime_filtered"] = self._calc_strategy_metrics(preds_c, actuals_c, "Regime-Filtered (VIX<30)")
-            except Exception:
-                pass
-
-            # --- Strategy D: High-confidence only (>60%) ---
-            preds_d, actuals_d = [], []
-            for i in range(len(test_fv)):
-                if pd.isna(test_target.iloc[i]):
-                    continue
-                features = test_fv[available].iloc[i].values
-                pred = predictor.predict(features, feature_names=available)
                 conf = pred.get("confidence", 0)
-                if conf >= 0.6:
-                    pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
-                    preds_d.append(pred_dir)
-                else:
-                    preds_d.append(0)  # sit out
-                actuals_d.append(int(test_target.iloc[i]))
-            strategies["high_confidence"] = self._calc_strategy_metrics(preds_d, actuals_d, "High Confidence (>60%)")
+                vix_val = test_fv.iloc[i].get("vix", 20)
+                actual = int(test_target.iloc[i])
+                all_preds.append((pred_dir, conf, float(vix_val or 20), actual))
+
+            # Strategy A: Full ensemble
+            preds_a = [p[0] for p in all_preds]
+            actuals = [p[3] for p in all_preds]
+            strategies["full_model"] = self._calc_strategy_metrics(preds_a, actuals, "Full Ensemble")
+
+            # Strategy B: Always bullish baseline
+            strategies["always_bullish"] = self._calc_strategy_metrics([1] * len(actuals), actuals, "Always Bullish")
+
+            # Strategy C: Regime-filtered (sit out when VIX > 30)
+            preds_c = [0 if p[2] > 30 else p[0] for p in all_preds]
+            strategies["regime_filtered"] = self._calc_strategy_metrics(preds_c, actuals, "Regime-Filtered (VIX<30)")
+
+            # Strategy D: High-confidence only (>60%)
+            preds_d = [p[0] if p[1] >= 0.6 else 0 for p in all_preds]
+            strategies["high_confidence"] = self._calc_strategy_metrics(preds_d, actuals, "High Confidence (>60%)")
 
             # Build chart data for comparison
             chart_data = {
@@ -952,11 +934,9 @@ RULES:
     def _tool_analyze_feature_correlations(self, threshold: float = 0.8) -> dict:
         """Analyze feature correlations and detect multicollinearity."""
         try:
-            from src.data.features import build_feature_vector, get_feature_columns
+            from src.data.features import get_feature_columns
 
-            router = get_router(self.config)
-            conn = router.get_pg() or router.get_sqlite()
-            fv = build_feature_vector(conn, config=self.config)
+            fv = self._get_cached_fv()
 
             if fv is None or fv.empty:
                 return {"error": "No feature data available"}
@@ -1135,16 +1115,16 @@ RULES:
             if embed_count == 0:
                 return {"error": "No embeddings stored yet. Run embedding pipeline first."}
 
-            # Generate embedding for the query using FinBERT
+            # Generate embedding for the query using cached FinBERT
             try:
-                from transformers import AutoTokenizer, AutoModel
                 import torch
-
-                tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
-                model = AutoModel.from_pretrained("ProsusAI/finbert")
-                inputs = tokenizer(query, return_tensors="pt", truncation=True, max_length=512)
+                if self._finbert_tokenizer is None:
+                    from transformers import AutoTokenizer, AutoModel
+                    self._finbert_tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+                    self._finbert_model = AutoModel.from_pretrained("ProsusAI/finbert")
+                inputs = self._finbert_tokenizer(query, return_tensors="pt", truncation=True, max_length=512)
                 with torch.no_grad():
-                    outputs = model(**inputs)
+                    outputs = self._finbert_model(**inputs)
                 # Use CLS token embedding
                 embedding = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
             except Exception as e:
