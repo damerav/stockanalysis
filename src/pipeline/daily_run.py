@@ -210,15 +210,16 @@ class DailyPipeline:
         return {"source": "none", "rows": 0}
 
     def _step3_news(self) -> dict:
-        """Step 3: Fetch news from expanded sources (Finnhub + company news + 17 RSS feeds)."""
+        """Step 3: Fetch news from expanded sources (Finnhub + company news + 45+ categorized RSS feeds)."""
         # Use expanded NewsFetcher (news.db) for broad coverage
         expanded_count = 0
+        category_stats = {}
         try:
             nf = NewsFetcher(self.config)
             expanded_count = nf.fetch_all()
+            category_stats = nf.get_category_sentiment_summary(days=1)
 
             # Bridge today's articles from news.db → spy.db news table
-            # so Step 4 sentiment analysis picks them all up
             recent = nf.get_recent(days=1)
             bridged = 0
             for a in recent:
@@ -239,6 +240,9 @@ class DailyPipeline:
             self.conn.commit()
             nf.close()
             logger.info(f"Expanded news: {expanded_count} new, {bridged} bridged to spy.db")
+            if category_stats:
+                cats = ", ".join(f"{k}={v['count']}" for k, v in category_stats.items())
+                logger.info(f"Category breakdown: {cats}")
         except Exception as e:
             logger.warning(f"Expanded news fetch failed: {e}")
 
@@ -262,7 +266,8 @@ class DailyPipeline:
                 pass
         self.conn.commit()
         logger.info(f"Legacy news: {len(articles)} articles")
-        return {"articles": len(articles), "expanded_articles": expanded_count}
+        return {"articles": len(articles), "expanded_articles": expanded_count,
+                "categories": category_stats}
 
     def _step4_sentiment(self) -> dict:
         """Step 4: Sentiment analysis — combines LLM analysis with expanded news.db corpus."""

@@ -31,6 +31,11 @@ CREATE INDEX IF NOT EXISTS idx_raw_articles_ticker ON raw_articles(ticker);
 CREATE INDEX IF NOT EXISTS idx_raw_articles_published ON raw_articles(published_at);
 """
 
+# Migration: add category column to existing databases
+NEWS_DB_MIGRATION = """
+ALTER TABLE raw_articles ADD COLUMN category TEXT DEFAULT 'markets';
+"""
+
 
 class NewsFetcher:
     """Fetches news from multiple sources and stores in a dedicated news.db."""
@@ -68,33 +73,72 @@ class NewsFetcher:
         "VIX": ["VIX", "volatility", "fear index", "CBOE"],
     }
 
+    # Feed categories for sentiment decomposition
+    FEED_CATEGORIES = [
+        "markets", "forex", "bonds", "commodities", "crypto",
+        "centralbanks", "economic", "ipo", "derivatives",
+        "fintech", "regulation", "institutional", "analysis",
+    ]
+
+    # (source_name, url, category) — 3-tuple format
     RSS_FEEDS = [
-        # --- Major financial news ---
-        ("cnbc_top", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147"),
-        ("cnbc_economy", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258"),
-        ("cnbc_earnings", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135"),
-        ("cnbc_finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"),
-        ("marketwatch_top", "https://feeds.marketwatch.com/marketwatch/topstories/"),
-        ("marketwatch_markets", "https://feeds.marketwatch.com/marketwatch/marketpulse/"),
-        ("marketwatch_stocks", "https://feeds.marketwatch.com/marketwatch/StockstoWatch/"),
-        # --- Google News (finance/business) ---
-        ("google_business", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en"),
-        ("google_markets", "https://news.google.com/rss/search?q=stock+market+SPY+S%26P+500&hl=en-US&gl=US&ceid=US:en"),
-        ("google_economy", "https://news.google.com/rss/search?q=US+economy+federal+reserve+inflation&hl=en-US&gl=US&ceid=US:en"),
-        # --- Yahoo Finance ---
-        ("yahoo_finance", "https://finance.yahoo.com/news/rssindex"),
-        # --- Investing.com ---
-        ("investing_news", "https://www.investing.com/rss/news.rss"),
-        ("investing_analysis", "https://www.investing.com/rss/news_301.rss"),
-        # --- Seeking Alpha ---
-        ("seekingalpha_market", "https://seekingalpha.com/market_currents.xml"),
-        ("seekingalpha_news", "https://seekingalpha.com/feed.xml"),
-        # --- Federal Reserve ---
-        ("fed_press", "https://www.federalreserve.gov/feeds/press_all.xml"),
-        # --- Reuters (business) — DNS dead as of 2025, kept as fallback ---
-        # ("reuters", "https://feeds.reuters.com/reuters/businessNews"),
-        # --- Bloomberg (may be limited) ---
-        ("bloomberg_markets", "https://feeds.bloomberg.com/markets/news.rss"),
+        # ===== MARKETS (existing + worldmonitor) =====
+        ("cnbc_top", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10001147", "markets"),
+        ("cnbc_economy", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258", "markets"),
+        ("cnbc_earnings", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135", "markets"),
+        ("cnbc_finance", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", "markets"),
+        ("marketwatch_top", "https://feeds.marketwatch.com/marketwatch/topstories/", "markets"),
+        ("marketwatch_markets", "https://feeds.marketwatch.com/marketwatch/marketpulse/", "markets"),
+        ("marketwatch_stocks", "https://feeds.marketwatch.com/marketwatch/StockstoWatch/", "markets"),
+        ("google_business", "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB?hl=en-US&gl=US&ceid=US:en", "markets"),
+        ("google_markets", "https://news.google.com/rss/search?q=stock+market+SPY+S%26P+500&hl=en-US&gl=US&ceid=US:en", "markets"),
+        ("google_economy", "https://news.google.com/rss/search?q=US+economy+federal+reserve+inflation&hl=en-US&gl=US&ceid=US:en", "markets"),
+        ("yahoo_finance", "https://finance.yahoo.com/news/rssindex", "markets"),
+        ("investing_news", "https://www.investing.com/rss/news.rss", "markets"),
+        ("investing_analysis", "https://www.investing.com/rss/news_301.rss", "markets"),
+        ("seekingalpha_market", "https://seekingalpha.com/market_currents.xml", "markets"),
+        ("seekingalpha_news", "https://seekingalpha.com/feed.xml", "markets"),
+        ("bloomberg_markets", "https://feeds.bloomberg.com/markets/news.rss", "markets"),
+        # ===== CENTRAL BANKS =====
+        ("fed_press", "https://www.federalreserve.gov/feeds/press_all.xml", "centralbanks"),
+        ("google_ecb", "https://news.google.com/rss/search?q=ECB+European+Central+Bank+interest+rate&hl=en-US&gl=US&ceid=US:en", "centralbanks"),
+        ("google_boj", "https://news.google.com/rss/search?q=Bank+of+Japan+BOJ+monetary+policy&hl=en-US&gl=US&ceid=US:en", "centralbanks"),
+        ("google_boe", "https://news.google.com/rss/search?q=Bank+of+England+BOE+interest+rate&hl=en-US&gl=US&ceid=US:en", "centralbanks"),
+        ("google_global_cb", "https://news.google.com/rss/search?q=central+bank+monetary+policy+rate+decision&hl=en-US&gl=US&ceid=US:en", "centralbanks"),
+        # ===== FOREX =====
+        ("google_forex", "https://news.google.com/rss/search?q=forex+currency+exchange+rate+USD&hl=en-US&gl=US&ceid=US:en", "forex"),
+        ("google_dollar", "https://news.google.com/rss/search?q=US+dollar+DXY+currency+strength&hl=en-US&gl=US&ceid=US:en", "forex"),
+        # ===== BONDS =====
+        ("google_bonds", "https://news.google.com/rss/search?q=bond+market+treasury+yield+fixed+income&hl=en-US&gl=US&ceid=US:en", "bonds"),
+        ("google_treasury", "https://news.google.com/rss/search?q=US+Treasury+bond+yield+curve&hl=en-US&gl=US&ceid=US:en", "bonds"),
+        # ===== COMMODITIES =====
+        ("google_oil", "https://news.google.com/rss/search?q=oil+price+crude+WTI+Brent+OPEC&hl=en-US&gl=US&ceid=US:en", "commodities"),
+        ("google_gold", "https://news.google.com/rss/search?q=gold+price+precious+metals+silver&hl=en-US&gl=US&ceid=US:en", "commodities"),
+        ("google_agriculture", "https://news.google.com/rss/search?q=agriculture+commodity+wheat+corn+soybean&hl=en-US&gl=US&ceid=US:en", "commodities"),
+        # ===== ECONOMIC DATA =====
+        ("google_econ_data", "https://news.google.com/rss/search?q=CPI+GDP+NFP+PMI+economic+data+report&hl=en-US&gl=US&ceid=US:en", "economic"),
+        ("google_trade", "https://news.google.com/rss/search?q=trade+tariff+import+export+trade+war&hl=en-US&gl=US&ceid=US:en", "economic"),
+        ("google_housing", "https://news.google.com/rss/search?q=housing+market+real+estate+mortgage+rates&hl=en-US&gl=US&ceid=US:en", "economic"),
+        # ===== IPO / EARNINGS / M&A =====
+        ("google_ipo", "https://news.google.com/rss/search?q=IPO+initial+public+offering+stock+listing&hl=en-US&gl=US&ceid=US:en", "ipo"),
+        ("google_earnings", "https://news.google.com/rss/search?q=earnings+report+quarterly+results+EPS&hl=en-US&gl=US&ceid=US:en", "ipo"),
+        ("google_ma", "https://news.google.com/rss/search?q=merger+acquisition+M%26A+deal+buyout&hl=en-US&gl=US&ceid=US:en", "ipo"),
+        # ===== DERIVATIVES =====
+        ("google_options", "https://news.google.com/rss/search?q=options+market+call+put+derivatives+trading&hl=en-US&gl=US&ceid=US:en", "derivatives"),
+        ("google_futures", "https://news.google.com/rss/search?q=futures+trading+ES+NQ+commodities+futures&hl=en-US&gl=US&ceid=US:en", "derivatives"),
+        # ===== REGULATION =====
+        ("google_sec", "https://news.google.com/rss/search?q=SEC+securities+regulation+enforcement&hl=en-US&gl=US&ceid=US:en", "regulation"),
+        ("google_finreg", "https://news.google.com/rss/search?q=financial+regulation+banking+rules+compliance&hl=en-US&gl=US&ceid=US:en", "regulation"),
+        # ===== INSTITUTIONAL =====
+        ("google_hedgefund", "https://news.google.com/rss/search?q=hedge+fund+institutional+investor+13F&hl=en-US&gl=US&ceid=US:en", "institutional"),
+        ("google_pe", "https://news.google.com/rss/search?q=private+equity+venture+capital+investment&hl=en-US&gl=US&ceid=US:en", "institutional"),
+        # ===== ANALYSIS =====
+        ("google_outlook", "https://news.google.com/rss/search?q=market+outlook+forecast+prediction+analyst&hl=en-US&gl=US&ceid=US:en", "analysis"),
+        ("google_risk", "https://news.google.com/rss/search?q=market+risk+volatility+VIX+fear+greed&hl=en-US&gl=US&ceid=US:en", "analysis"),
+        # ===== CRYPTO (useful for risk-on/risk-off signal) =====
+        ("google_crypto", "https://news.google.com/rss/search?q=bitcoin+cryptocurrency+crypto+market&hl=en-US&gl=US&ceid=US:en", "crypto"),
+        # ===== FINTECH =====
+        ("google_fintech", "https://news.google.com/rss/search?q=fintech+trading+technology+algorithmic&hl=en-US&gl=US&ceid=US:en", "fintech"),
     ]
 
     def __init__(self, config: dict = None):
@@ -106,7 +150,24 @@ class NewsFetcher:
         db_path = config.get("news_pipeline", {}).get("db_path", "./data/news.db")
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.conn = sqlite3.connect(db_path)
+        # Create base schema (without category — handles existing DBs)
         self.conn.executescript(NEWS_DB_SCHEMA)
+        # Migrate: add category column if missing
+        try:
+            self.conn.execute("SELECT category FROM raw_articles LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                self.conn.execute(NEWS_DB_MIGRATION)
+                self.conn.commit()
+                logger.info("Migrated news.db: added category column")
+            except sqlite3.OperationalError:
+                pass
+        # Create category index (safe after migration)
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_articles_category ON raw_articles(category)")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
     def fetch_finnhub(self, category: str = "general", days_back: int = 3) -> int:
         """Fetch market news from Finnhub API. Returns count of new articles."""
@@ -149,15 +210,15 @@ class NewsFetcher:
         return count
 
     def fetch_rss(self) -> int:
-        """Fetch news from RSS feeds. Returns count of new articles."""
+        """Fetch news from RSS feeds (45+ categorized feeds). Returns count of new articles."""
         count = 0
         now = datetime.now().isoformat()
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; StockAnalysis/2.0; +https://github.com/damerav/stockanalysis)"
         }
-        for source, feed_url in self.RSS_FEEDS:
+        for feed_tuple in self.RSS_FEEDS:
+            source, feed_url, category = feed_tuple
             try:
-                # Some feeds block default feedparser UA
                 resp = requests.get(feed_url, headers=headers, timeout=15)
                 feed = feedparser.parse(resp.content)
                 entries = feed.entries[:100]  # up to 100 per feed
@@ -176,7 +237,6 @@ class NewsFetcher:
                             pub_at = entry.get("published", now)
                     elif entry.get("published"):
                         raw_pub = entry["published"]
-                        # Try parsing common RSS date formats
                         for fmt in ("%a, %d %b %Y %H:%M:%S %Z",
                                     "%a, %d %b %Y %H:%M:%S %z",
                                     "%Y-%m-%dT%H:%M:%S%z",
@@ -188,24 +248,24 @@ class NewsFetcher:
                             except ValueError:
                                 continue
                         else:
-                            pub_at = raw_pub  # keep original if all parsing fails
+                            pub_at = raw_pub
                     ticker = self._match_ticker(headline + " " + summary)
                     try:
                         self.conn.execute(
                             "INSERT OR IGNORE INTO raw_articles "
-                            "(source, ticker, headline, summary, url, published_at, fetched_at) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            (source, ticker, headline, summary, article_url, pub_at, now),
+                            "(source, ticker, headline, summary, url, published_at, fetched_at, category) "
+                            "VALUES (?,?,?,?,?,?,?,?)",
+                            (source, ticker, headline, summary, article_url, pub_at, now, category),
                         )
                         src_count += 1
                     except sqlite3.IntegrityError:
                         pass
                 count += src_count
                 if src_count > 0:
-                    logger.info(f"RSS {source}: {src_count} new articles")
+                    logger.info(f"RSS {source} [{category}]: {src_count} new articles")
             except Exception as e:
                 logger.warning(f"RSS fetch failed for {source}: {e}")
-            time.sleep(0.5)  # be polite between feeds
+            time.sleep(0.3)  # be polite between feeds
         self.conn.commit()
         logger.info(f"RSS total: {count} new articles from {len(self.RSS_FEEDS)} feeds")
         return count
@@ -353,6 +413,43 @@ class NewsFetcher:
             return datetime.min
         results.sort(key=_parse_date, reverse=True)
         return results
+
+    def get_recent_by_category(self, days: int = 3, category: str = None) -> dict[str, list[dict]]:
+        """Get recent articles grouped by category. Returns {category: [articles]}."""
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        if category:
+            rows = self.conn.execute(
+                "SELECT * FROM raw_articles WHERE fetched_at >= ? AND category = ? "
+                "ORDER BY fetched_at DESC", (cutoff, category)
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM raw_articles WHERE fetched_at >= ? "
+                "ORDER BY fetched_at DESC", (cutoff,)
+            ).fetchall()
+        cols = [d[0] for d in self.conn.execute("SELECT * FROM raw_articles LIMIT 0").description]
+        grouped: dict[str, list[dict]] = {}
+        for r in rows:
+            art = dict(zip(cols, r))
+            cat = art.get("category", "markets")
+            grouped.setdefault(cat, []).append(art)
+        return grouped
+
+    def get_category_sentiment_summary(self, days: int = 1) -> dict[str, dict]:
+        """Get article counts and basic stats per category for recent articles.
+
+        Returns {category: {count, sources}} for pipeline feature computation.
+        """
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        rows = self.conn.execute(
+            "SELECT category, COUNT(*) as cnt, COUNT(DISTINCT source) as src_cnt "
+            "FROM raw_articles WHERE fetched_at >= ? GROUP BY category",
+            (cutoff,),
+        ).fetchall()
+        return {
+            r[0] or "markets": {"count": r[1], "source_count": r[2]}
+            for r in rows
+        }
 
     def close(self):
         self.conn.close()

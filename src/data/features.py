@@ -555,6 +555,7 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
         news_db_path = (config or {}).get("news_pipeline", {}).get("db_path", "./data/news.db")
         if os.path.exists(news_db_path):
             news_conn = sqlite3.connect(news_db_path)
+            # Overall volume metrics
             news_daily = pd.read_sql_query(
                 "SELECT substr(published_at, 1, 10) as date, "
                 "COUNT(*) as news_volume, "
@@ -562,12 +563,19 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
                 "FROM raw_articles GROUP BY substr(published_at, 1, 10)",
                 news_conn,
             )
+            # Category-specific volume (for sentiment decomposition)
+            cat_volume = pd.read_sql_query(
+                "SELECT substr(published_at, 1, 10) as date, category, COUNT(*) as cnt "
+                "FROM raw_articles WHERE category IS NOT NULL "
+                "GROUP BY substr(published_at, 1, 10), category",
+                news_conn,
+            )
             news_conn.close()
+
             if not news_daily.empty:
                 news_daily = news_daily.set_index("date")
                 df["news_volume"] = df["date"].map(news_daily.get("news_volume", {})).fillna(0)
                 df["news_source_count"] = df["date"].map(news_daily.get("news_source_count", {})).fillna(0)
-                # News volume spike vs 5-day average
                 nv = df["news_volume"].replace(0, np.nan)
                 df["news_volume_spike"] = nv / nv.rolling(5, min_periods=1).mean()
                 df["news_volume_spike"] = df["news_volume_spike"].fillna(1.0)
@@ -575,15 +583,38 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
                 df["news_volume"] = 0
                 df["news_source_count"] = 0
                 df["news_volume_spike"] = 1.0
+
+            # Category-specific volume features
+            cat_cols = {
+                "centralbanks": "news_cb_volume",
+                "commodities": "news_commodity_volume",
+                "forex": "news_forex_volume",
+                "bonds": "news_bond_volume",
+                "economic": "news_econ_volume",
+                "derivatives": "news_deriv_volume",
+            }
+            if not cat_volume.empty:
+                for cat_name, col_name in cat_cols.items():
+                    cat_sub = cat_volume[cat_volume["category"] == cat_name].set_index("date")["cnt"]
+                    df[col_name] = df["date"].map(cat_sub).fillna(0)
+            else:
+                for col_name in cat_cols.values():
+                    df[col_name] = 0
         else:
             df["news_volume"] = 0
             df["news_source_count"] = 0
             df["news_volume_spike"] = 1.0
+            for col_name in ["news_cb_volume", "news_commodity_volume", "news_forex_volume",
+                             "news_bond_volume", "news_econ_volume", "news_deriv_volume"]:
+                df[col_name] = 0
     except Exception as e:
         logger.debug(f"News features from news.db failed: {e}")
         df["news_volume"] = 0
         df["news_source_count"] = 0
         df["news_volume_spike"] = 1.0
+        for col_name in ["news_cb_volume", "news_commodity_volume", "news_forex_volume",
+                         "news_bond_volume", "news_econ_volume", "news_deriv_volume"]:
+            df[col_name] = 0
 
     # Sentiment momentum (3-day change in sentiment score)
     if "sentiment_score" in df.columns:
@@ -649,7 +680,9 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
                      "crude_pct_change", "crude_vs_ma20", "crude_shock",
                      "crude_momentum_5d", "gold_momentum_5d", "gold_vs_ma20",
                      "yield_change_5d", "safety_signal",
-                     "finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score"]
+                     "finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score",
+                     "news_cb_volume", "news_commodity_volume", "news_forex_volume",
+                     "news_bond_volume", "news_econ_volume", "news_deriv_volume"]
     for col in new_feat_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
@@ -711,6 +744,9 @@ def get_feature_columns() -> list[str]:
         # News-derived (expanded news.db)
         "news_volume", "news_source_count", "news_volume_spike",
         "sentiment_momentum",
+        # Category-specific news volume (worldmonitor feeds)
+        "news_cb_volume", "news_commodity_volume", "news_forex_volume",
+        "news_bond_volume", "news_econ_volume", "news_deriv_volume",
         # Geopolitical risk features
         "geo_risk_score", "geo_fear_score", "geo_recovery_score",
         "geo_net_risk", "geo_article_ratio", "geo_max_risk",
