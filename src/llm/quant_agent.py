@@ -154,7 +154,8 @@ RULES:
         return fallback, chart_data
 
     def _call_llm(self, messages: list[dict]) -> Optional[str]:
-        """Call Ollama chat API."""
+        """Call Ollama chat API. Auto-starts Ollama if not running."""
+        # Try the call first
         try:
             resp = requests.post(
                 f"{self.base_url}/api/chat",
@@ -170,9 +171,58 @@ RULES:
                 return resp.json().get("message", {}).get("content", "")
             logger.warning(f"Ollama returned {resp.status_code}")
             return None
+        except requests.ConnectionError:
+            # Ollama not running — try to start it
+            logger.info("Ollama not responding, attempting to start...")
+            if self._start_ollama():
+                try:
+                    resp = requests.post(
+                        f"{self.base_url}/api/chat",
+                        json={
+                            "model": self.model,
+                            "messages": messages,
+                            "stream": False,
+                            "options": {"temperature": 0.3, "num_predict": 2048},
+                        },
+                        timeout=300,
+                    )
+                    if resp.status_code == 200:
+                        return resp.json().get("message", {}).get("content", "")
+                except Exception as e:
+                    logger.warning(f"Ollama call failed after start: {e}")
+            return None
         except Exception as e:
             logger.warning(f"Ollama call failed: {e}")
             return None
+
+    def _start_ollama(self) -> bool:
+        """Attempt to start Ollama if not running."""
+        import subprocess
+        try:
+            subprocess.Popen(
+                ["ollama", "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            logger.error("Ollama binary not found")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to start Ollama: {e}")
+            return False
+
+        # Wait up to 15s for Ollama to become responsive
+        for _ in range(15):
+            time.sleep(1)
+            try:
+                resp = requests.get(f"{self.base_url}/api/tags", timeout=3)
+                if resp.status_code == 200:
+                    logger.info("Ollama started successfully")
+                    return True
+            except Exception:
+                pass
+        logger.error("Ollama did not respond within 15s")
+        return False
 
     def _extract_tool_call(self, text: str) -> Optional[dict]:
         """Extract a tool call JSON from LLM response."""
