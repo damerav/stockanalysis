@@ -2719,16 +2719,26 @@ def page_quant_agent():
         conf = pred.get("confidence", 0)
         scale = pred.get("scale_label", "")
         probs = pred.get("probabilities", {})
-        emoji = "🟢" if direction == "UP" else "🔴" if direction == "DOWN" else "⚪"
+        emoji = "🟢" if "BULLISH" in direction else "🔴" if "BEARISH" in direction else "⚪"
         lines = [
-            f"## {emoji} Current Prediction: **{direction}**",
-            f"**Confidence**: {conf:.1%} ({scale})" if scale else f"**Confidence**: {conf:.1%}",
+            f"## {emoji} SPY Prediction: **{scale or direction}**",
+            f"**Confidence**: {conf:.1f}%",
             f"**Updated**: {data.get('updated_at', 'N/A')}",
-            "",
-            "**Probabilities**:",
+            "", "**Probabilities**:",
         ]
         for k, v in probs.items():
-            lines.append(f"- {k}: {v:.1%}" if isinstance(v, float) else f"- {k}: {v}")
+            lines.append(f"- {k}: {v:.1f}%" if isinstance(v, (int, float)) else f"- {k}: {v}")
+        if pred.get("prediction_set"):
+            lines += ["", f"**Conformal Set**: {', '.join(pred['prediction_set'])} (size {pred.get('set_size', '?')})"]
+        if pred.get("regime"):
+            regime_emoji = {"bull_trend": "🟢", "bear_trend": "🔴", "high_vol_choppy": "🟡", "low_vol_range": "🔵"}
+            r = pred["regime"]
+            lines.append(f"**Regime**: {regime_emoji.get(r, '⚪')} {r}")
+        if pred.get("shap_drivers"):
+            lines += ["", "**Top SHAP Drivers**:"]
+            for d in pred["shap_drivers"][:5]:
+                sign = "+" if d["shap_value"] > 0 else ""
+                lines.append(f"- `{d['feature']}`: {sign}{d['shap_value']:.4f} (val={d['feature_value']:.4f})")
         if ind:
             lines += ["", "**Key Indicators**:"]
             for k, v in ind.items():
