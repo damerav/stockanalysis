@@ -2832,11 +2832,13 @@ def page_quant_agent():
             return f"⚠️ Error: {data['error']}"
         level = data.get("risk_level", "UNKNOWN")
         le = "🔴" if level == "HIGH" else "🟡" if level == "MODERATE" else "🟢"
+        avg_s = data.get('avg_sentiment') or 0
+        neg_r = data.get('negative_ratio') or 0
         lines = [
             f"## {le} News Risk Assessment: **{level}**",
             f"**Articles scanned**: {data.get('total_articles', 0)} | "
-            f"**Avg sentiment**: {data.get('avg_sentiment', 0):.4f} | "
-            f"**Negative ratio**: {data.get('negative_ratio', 0):.0%}",
+            f"**Avg sentiment**: {avg_s:.4f} | "
+            f"**Negative ratio**: {neg_r:.0%}",
         ]
         if data.get("high_impact"):
             lines += ["", "**High-Impact Headlines** (strongest sentiment):"]
@@ -2850,9 +2852,9 @@ def page_quant_agent():
                        "| Category | Articles | Avg Sentiment | Risk |",
                        "|----------|----------|---------------|------|"]
             for cr in data["category_risk"]:
-                s = cr["avg_sent"]
+                s = cr.get("avg_sent") or 0
                 rl = "🔴 HIGH" if s < -0.15 else "🟡 MED" if s < 0 else "🟢 LOW"
-                lines.append(f"| {cr['category']} | {cr['count']} | {s:+.4f} | {rl} |")
+                lines.append(f"| {cr.get('category', 'N/A')} | {cr.get('count', 0)} | {s:+.4f} | {rl} |")
         return "\n".join(lines)
 
     def _fmt_alpha(data):
