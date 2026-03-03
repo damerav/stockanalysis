@@ -433,32 +433,102 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
     # Charm normalized by close price
     df["charm_normalized"] = df["charm_exposure"] / df["close"].replace(0, np.nan)
 
-    # --- P3: Earnings calendar features ---
-    earn_features = []
-    for _, row in df.iterrows():
-        try:
-            earn_features.append(get_earnings_features(conn, row["date"]))
-        except Exception:
-            earn_features.append({"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0})
-    earn_df = pd.DataFrame(earn_features, index=df.index)
+    # --- P3: Earnings calendar features (batched) ---
+    try:
+        all_earnings = pd.read_sql_query(
+            "SELECT date, ticker FROM earnings_calendar", conn
+        )
+        if not all_earnings.empty:
+            all_earnings["date"] = pd.to_datetime(all_earnings["date"])
+            earn_dates = all_earnings["date"].values
+
+            def _earnings_for_date(date_str):
+                try:
+                    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    d_ts = pd.Timestamp(d)
+                    # density: count within ±3 days
+                    mask = (earn_dates >= (d_ts - pd.Timedelta(days=3)).to_datetime64()) & \
+                           (earn_dates <= (d_ts + pd.Timedelta(days=3)).to_datetime64())
+                    density = int(mask.sum())
+                    # days to next
+                    future = earn_dates[earn_dates >= d_ts.to_datetime64()]
+                    days_to_next = int((pd.Timestamp(future.min()) - d_ts).days) if len(future) > 0 else 30
+                    # earnings week
+                    week_start = d_ts - pd.Timedelta(days=d_ts.weekday())
+                    week_end = week_start + pd.Timedelta(days=4)
+                    week_mask = (earn_dates >= week_start.to_datetime64()) & \
+                                (earn_dates <= week_end.to_datetime64())
+                    earnings_week = 1 if week_mask.any() else 0
+                    return {"earnings_density": density, "days_to_next_mega": min(days_to_next, 30),
+                            "earnings_week": earnings_week}
+                except Exception:
+                    return {"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0}
+
+            earn_results = [_earnings_for_date(d) for d in df["date"]]
+        else:
+            earn_results = [{"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0}] * len(df)
+    except Exception:
+        earn_results = [{"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0}] * len(df)
+    earn_df = pd.DataFrame(earn_results, index=df.index)
     for col in earn_df.columns:
         df[col] = earn_df[col]
 
-    # --- P3: Fed communication features ---
-    fed_features = []
-    for _, row in df.iterrows():
-        try:
-            fed_features.append(get_fed_features(conn, row["date"]))
-        except Exception:
-            fed_features.append({"fomc_hawkish_score": 0, "beige_book_score": 0, "fed_sentiment_avg": 0})
-    fed_df = pd.DataFrame(fed_features, index=df.index)
+    # --- P3: Fed communication features (batched — single query) ---
+    try:
+        fed_all = pd.read_sql_query(
+            "SELECT date, type, hawkish_score FROM fed_communications ORDER BY date", conn
+        )
+        if not fed_all.empty:
+            fomc_scores = fed_all[fed_all["type"] == "fomc_statement"].set_index("date")["hawkish_score"]
+            bb_scores = fed_all[fed_all["type"] == "beige_book"].set_index("date")["hawkish_score"]
+
+            def _fed_for_date(date_str):
+                fomc_prev = fomc_scores[fomc_scores.index <= date_str]
+                fomc_score = float(fomc_prev.iloc[-1]) if not fomc_prev.empty else 0.0
+                bb_prev = bb_scores[bb_scores.index <= date_str]
+                bb_score = float(bb_prev.iloc[-1]) if not bb_prev.empty else 0.0
+                avg = (fomc_score + bb_score) / 2 if (fomc_score or bb_score) else 0.0
+                return {"fomc_hawkish_score": round(fomc_score, 3),
+                        "beige_book_score": round(bb_score, 3),
+                        "fed_sentiment_avg": round(avg, 3)}
+
+            fed_results = [_fed_for_date(d) for d in df["date"]]
+        else:
+            fed_results = [{"fomc_hawkish_score": 0, "beige_book_score": 0, "fed_sentiment_avg": 0}] * len(df)
+    except Exception:
+        fed_results = [{"fomc_hawkish_score": 0, "beige_book_score": 0, "fed_sentiment_avg": 0}] * len(df)
+    fed_df = pd.DataFrame(fed_results, index=df.index)
     for col in fed_df.columns:
         df[col] = fed_df[col]
 
     # --- Intraday microstructure features (Enhancement 21) ---
+    # Only compute for dates that have intraday bars (skip bulk of historical dates)
+    try:
+        try:
+            router = get_router(config)
+            bar_dates_df = router.read_analytics(
+                "SELECT DISTINCT substr(timestamp, 1, 10) as bar_date FROM intraday_bars"
+            )
+        except Exception:
+            bar_dates_df = pd.read_sql_query(
+                "SELECT DISTINCT substr(timestamp, 1, 10) as bar_date FROM intraday_bars", conn
+            )
+        bar_dates = set(bar_dates_df["bar_date"].tolist()) if not bar_dates_df.empty else set()
+    except Exception:
+        bar_dates = set()
+
     micro_features = []
+    fallback_micro = {
+        "opening_gap_pct": np.nan, "opening_range_breakout": np.nan,
+        "close_vs_high_pct": np.nan, "close_vs_low_pct": np.nan,
+        "afternoon_reversal": np.nan, "institutional_hour_vol": np.nan,
+        "tick_divergence": np.nan, "vwap_reclaim_count": np.nan,
+    }
     for _, row in df.iterrows():
-        micro_features.append(compute_intraday_microstructure(conn, row["date"], config))
+        if row["date"] in bar_dates:
+            micro_features.append(compute_intraday_microstructure(conn, row["date"], config))
+        else:
+            micro_features.append(fallback_micro)
     micro_df = pd.DataFrame(micro_features, index=df.index)
     for col in micro_df.columns:
         df[col] = micro_df[col]
@@ -657,8 +727,9 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
                 df[col] = 0.0
 
     # --- FinBERT sentiment features from news.db ---
+    # Use days_back matching actual news.db coverage (avoid scanning 730 days of empty data)
     try:
-        fb_daily = compute_daily_finbert_features(config, days_back=730)
+        fb_daily = compute_daily_finbert_features(config, days_back=90)
         if not fb_daily.empty:
             fb_daily = fb_daily.set_index("date")
             for col in ["finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score"]:
