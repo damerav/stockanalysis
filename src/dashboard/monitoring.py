@@ -23,13 +23,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Database router support (PostgreSQL primary, SQLite fallback)
-try:
-    from src.data.db_router import get_router, ANALYTICS_TABLES
-    _HAS_ROUTER = True
-except ImportError:
-    _HAS_ROUTER = False
-    ANALYTICS_TABLES = set()
+# Database router support removed — monitoring uses direct connections
+# for thread safety (Streamlit runs pages in different threads)
 
 DATA_DIR = "./data"
 LOGS_DIR = "./logs"
@@ -103,8 +98,51 @@ def _gauge_chart(value: float, title: str, min_val=0, max_val=100,
     return fig
 
 
-# ── DB query helpers ──────────────────────────────────────────────────
-def _get_db():
+# ── DB query helpers (thread-safe: fresh connection per query) ─────────
+_pg_cfg = None  # cached PostgreSQL config dict
+_pg_cfg_loaded = False
+
+
+def _load_pg_config():
+    """Load PostgreSQL config once from config.yaml, cache it."""
+    global _pg_cfg, _pg_cfg_loaded
+    if _pg_cfg_loaded:
+        return _pg_cfg
+    try:
+        import yaml
+        with open("config.yaml") as f:
+            cfg = yaml.safe_load(f) or {}
+        pg = cfg.get("database", {}).get("postgres")
+        if pg and pg.get("dbname") and pg.get("user"):
+            _pg_cfg = pg
+    except Exception:
+        pass
+    _pg_cfg_loaded = True
+    return _pg_cfg
+
+
+def _pg_connect():
+    """Create a fresh PostgreSQL connection (thread-safe)."""
+    pg = _load_pg_config()
+    if not pg:
+        return None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=pg.get("host", "localhost"),
+            port=pg.get("port", 5432),
+            dbname=pg["dbname"],
+            user=pg["user"],
+            password=pg.get("password", ""),
+        )
+        conn.autocommit = True
+        return conn
+    except Exception:
+        return None
+
+
+def _sqlite_connect():
+    """Create a fresh SQLite connection (thread-safe)."""
     db_path = os.path.join(DATA_DIR, "spy.db")
     if not os.path.exists(db_path):
         return None
@@ -113,33 +151,51 @@ def _get_db():
     return conn
 
 
-def _query_df(sql: str, params=()) -> pd.DataFrame:
-    """Query helper — routes through DbRouter (PostgreSQL → SQLite fallback)."""
-    if _HAS_ROUTER:
-        try:
-            import yaml
-            config_path = os.path.join(os.path.dirname(DATA_DIR), "config.yaml")
-            if not os.path.exists(config_path):
-                config_path = "config.yaml"
-            try:
-                with open(config_path) as f:
-                    config = yaml.safe_load(f)
-            except Exception:
-                config = None
-            router = get_router(config)
-            return router.read_analytics(sql, params if params else None)
-        except Exception:
-            pass  # Fall through to SQLite
+def _convert_sql_for_pg(sql: str) -> str:
+    """Convert ? placeholders to %s for PostgreSQL."""
+    return sql.replace("?", "%s")
 
-    conn = _get_db()
+
+def _query_df(sql: str, params=()) -> pd.DataFrame:
+    """Thread-safe query: tries PostgreSQL first, falls back to SQLite."""
+    # Try PostgreSQL
+    pg = _pg_connect()
+    if pg:
+        try:
+            pg_sql = _convert_sql_for_pg(sql)
+            df = pd.read_sql_query(pg_sql, pg, params=params if params else None)
+            pg.close()
+            return df
+        except Exception as e:
+            logger.warning(f"PG query failed: {e}")
+            try:
+                pg.close()
+            except Exception:
+                pass
+
+    # Fallback to fresh SQLite connection
+    conn = _sqlite_connect()
     if conn is None:
         return pd.DataFrame()
     try:
         df = pd.read_sql_query(sql, conn, params=params)
         conn.close()
         return df
-    except Exception:
+    except Exception as e:
+        logger.warning(f"SQLite query failed: {e}")
+        try:
+            conn.close()
+        except Exception:
+            pass
         return pd.DataFrame()
+
+
+def _query_single(sql: str, params=()) -> tuple:
+    """Thread-safe single-row query. Returns tuple or None."""
+    df = _query_df(sql, params)
+    if not df.empty:
+        return tuple(df.iloc[0])
+    return None
 
 
 def _load_es_state() -> dict:
@@ -180,7 +236,6 @@ def tab_spy_predictor(days: int = 90):
     # ── Row 1: Stat cards ──
     # Use spy_state.json for real-time metrics (same source as SPY Predictor page)
     # to avoid inconsistencies between pages. DB is used for historical charts below.
-    conn = _get_db()
     close_val = rsi_val = atr_val = vix_val = 0.0
     direction_str = "—"
     confidence_val = 0.0
@@ -203,33 +258,30 @@ def tab_spy_predictor(days: int = 90):
     vix_val = indicators.get("vix", 0) or 0
 
     # SPY close from DB (state file doesn't carry it)
-    if conn:
-        row = conn.execute("SELECT close FROM prices ORDER BY date DESC LIMIT 1").fetchone()
+    row = _query_single("SELECT close FROM prices ORDER BY date DESC LIMIT 1")
+    if row:
+        close_val = float(row[0] or 0)
+
+    # ATR from state file
+    atr_val = indicators.get("atr_14", 0) or 0
+
+    # Fall back to DB if state file has no data
+    if not direction_str or direction_str == "—":
+        row = _query_single("SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1")
         if row:
-            close_val = float(row[0] or 0)
+            direction_str = str(row[0] or "—")
+            confidence_val = float(row[1] or 0)
 
-        # ATR from DB (state file has it but let's be consistent)
-        atr_val = indicators.get("atr_14", 0) or 0
+    if not rsi_val:
+        row = _query_single("SELECT rsi_14, atr_14 FROM technicals ORDER BY date DESC LIMIT 1")
+        if row:
+            rsi_val = float(row[0] or 0)
+            atr_val = float(row[1] or 0)
 
-        # Fall back to DB if state file has no data
-        if not direction_str or direction_str == "—":
-            row = conn.execute("SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1").fetchone()
-            if row:
-                direction_str = str(row[0] or "—")
-                confidence_val = float(row[1] or 0)
-
-        if not rsi_val:
-            row = conn.execute("SELECT rsi_14, atr_14 FROM technicals ORDER BY date DESC LIMIT 1").fetchone()
-            if row:
-                rsi_val = float(row[0] or 0)
-                atr_val = float(row[1] or 0)
-
-        if not vix_val:
-            row = conn.execute("SELECT vix FROM macro ORDER BY date DESC LIMIT 1").fetchone()
-            if row:
-                vix_val = float(row[0] or 0)
-
-        conn.close()
+    if not vix_val:
+        row = _query_single("SELECT vix FROM macro ORDER BY date DESC LIMIT 1")
+        if row:
+            vix_val = float(row[0] or 0)
 
     dir_color = "green" if "BULL" in direction_str.upper() else "red" if "BEAR" in direction_str.upper() else "yellow"
     vix_color = "green" if vix_val < 20 else "yellow" if vix_val < 30 else "red"
@@ -360,35 +412,19 @@ def tab_spy_predictor(days: int = 90):
         st.plotly_chart(fig, use_container_width=True)
 
     with c2:
-        conn = _get_db()
-        if conn:
-            tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
-                       "predictions", "intraday_bars", "options_chain",
-                       "options_analytics", "intraday_features", "performance",
-                       "earnings_calendar", "fed_communications"]
-            rows = []
-            # Route through DbRouter for all tables
-            db_router = None
-            if _HAS_ROUTER:
-                try:
-                    import yaml
-                    with open("config.yaml") as f:
-                        config = yaml.safe_load(f)
-                    db_router = get_router(config)
-                except Exception:
-                    pass
-
-            for t in tables:
-                try:
-                    if db_router:
-                        cnt_df = db_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
-                        count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
-                    else:
-                        count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                    rows.append({"Table": t, "Rows": count})
-                except Exception:
-                    rows.append({"Table": t, "Rows": 0})
-            conn.close()
+        tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
+                   "predictions", "intraday_bars", "options_chain",
+                   "options_analytics", "intraday_features", "performance",
+                   "earnings_calendar", "fed_communications"]
+        rows = []
+        for t in tables:
+            try:
+                cnt_df = _query_df(f"SELECT COUNT(*) as cnt FROM {t}")
+                count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
+                rows.append({"Table": t, "Rows": count})
+            except Exception:
+                rows.append({"Table": t, "Rows": 0})
+        if rows:
             df = pd.DataFrame(rows)
             fig = go.Figure(go.Bar(
                 x=df["Rows"], y=df["Table"], orientation="h",
@@ -809,36 +845,20 @@ def tab_pipeline_status():
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Row 2: Data inventory bar chart ──
-    conn = _get_db()
-    if conn:
-        tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
-                   "predictions", "intraday_bars", "options_chain",
-                   "options_analytics", "intraday_features", "performance",
-                   "earnings_calendar", "fed_communications"]
-        rows = []
-        # Route through DbRouter for all tables
-        db_router = None
-        if _HAS_ROUTER:
-            try:
-                import yaml
-                with open("config.yaml") as f:
-                    config = yaml.safe_load(f)
-                db_router = get_router(config)
-            except Exception:
-                pass
+    tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
+               "predictions", "intraday_bars", "options_chain",
+               "options_analytics", "intraday_features", "performance",
+               "earnings_calendar", "fed_communications"]
+    rows = []
+    for t in tables:
+        try:
+            cnt_df = _query_df(f"SELECT COUNT(*) as cnt FROM {t}")
+            count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
+            rows.append({"Table": t, "Rows": count})
+        except Exception:
+            rows.append({"Table": t, "Rows": 0})
 
-        for t in tables:
-            try:
-                if db_router:
-                    cnt_df = db_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
-                    count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
-                else:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                rows.append({"Table": t, "Rows": count})
-            except Exception:
-                rows.append({"Table": t, "Rows": 0})
-        conn.close()
-
+    if rows:
         df = pd.DataFrame(rows).sort_values("Rows", ascending=True)
         colors_bar = [COLORS["green"] if r > 100 else COLORS["blue"] for r in df["Rows"]]
         fig = go.Figure(go.Bar(
@@ -1142,27 +1162,23 @@ def _ds_earnings():
     st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">EARNINGS CALENDAR</p>',
                 unsafe_allow_html=True)
 
-    conn = _get_db()
-    if not conn:
-        st.warning("Database not available")
-        return
-
     try:
-        count = conn.execute("SELECT COUNT(*) FROM earnings_calendar").fetchone()[0]
+        cnt_df = _query_df("SELECT COUNT(*) as cnt FROM earnings_calendar")
+        count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
         st.metric("Total Entries", f"{count:,}")
 
-        upcoming = pd.read_sql_query(
+        upcoming = _query_df(
             "SELECT date, ticker, market_cap_pct FROM earnings_calendar "
-            "WHERE date >= date('now') ORDER BY date ASC LIMIT 30", conn
+            "WHERE date >= CURRENT_DATE ORDER BY date ASC LIMIT 30"
         )
         if not upcoming.empty:
             st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">UPCOMING</p>',
                         unsafe_allow_html=True)
             st.dataframe(upcoming, use_container_width=True, hide_index=True)
 
-        recent = pd.read_sql_query(
+        recent = _query_df(
             "SELECT date, ticker, market_cap_pct FROM earnings_calendar "
-            "WHERE date < date('now') ORDER BY date DESC LIMIT 30", conn
+            "WHERE date < CURRENT_DATE ORDER BY date DESC LIMIT 30"
         )
         if not recent.empty:
             st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">RECENT</p>',
@@ -1170,8 +1186,6 @@ def _ds_earnings():
             st.dataframe(recent, use_container_width=True, hide_index=True)
     except Exception as e:
         st.warning(f"Earnings table not available: {e}")
-    finally:
-        conn.close()
 
 
 def _ds_fed_comms():
@@ -1179,18 +1193,14 @@ def _ds_fed_comms():
     st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">FED COMMUNICATIONS</p>',
                 unsafe_allow_html=True)
 
-    conn = _get_db()
-    if not conn:
-        st.warning("Database not available")
-        return
-
     try:
-        count = conn.execute("SELECT COUNT(*) FROM fed_communications").fetchone()[0]
+        cnt_df = _query_df("SELECT COUNT(*) as cnt FROM fed_communications")
+        count = int(cnt_df.iloc[0]["cnt"]) if not cnt_df.empty else 0
         st.metric("Total Entries", f"{count:,}")
 
-        recent = pd.read_sql_query(
+        recent = _query_df(
             "SELECT date, type, hawkish_score, summary "
-            "FROM fed_communications ORDER BY date DESC LIMIT 30", conn
+            "FROM fed_communications ORDER BY date DESC LIMIT 30"
         )
         if not recent.empty:
             # Sentiment chart
@@ -1209,8 +1219,6 @@ def _ds_fed_comms():
             st.caption("No fed communications stored yet")
     except Exception as e:
         st.warning(f"Fed comms table not available: {e}")
-    finally:
-        conn.close()
 
 
 def _ds_all_news_db():
@@ -1218,15 +1226,10 @@ def _ds_all_news_db():
     st.markdown(f'<p style="color:{COLORS["text_secondary"]};font-weight:600;font-size:0.85rem;">ALL NEWS (DATABASE)</p>',
                 unsafe_allow_html=True)
 
-    conn = _get_db()
-    if not conn:
-        st.warning("Database not available")
-        return
-
     try:
         # Source breakdown
-        sources = pd.read_sql_query(
-            "SELECT source, COUNT(*) as count FROM news GROUP BY source ORDER BY count DESC", conn
+        sources = _query_df(
+            "SELECT source, COUNT(*) as count FROM news GROUP BY source ORDER BY count DESC"
         )
         if not sources.empty:
             fig = go.Figure(go.Bar(
@@ -1250,25 +1253,24 @@ def _ds_all_news_db():
             limit = st.slider("Rows", 10, 200, 50, key="ds_news_limit")
 
         if sel_source == "All":
-            df = pd.read_sql_query(
-                f"SELECT date, source, headline, url FROM news ORDER BY id DESC LIMIT {limit}", conn
+            df = _query_df(
+                f"SELECT date, source, headline, url FROM news ORDER BY id DESC LIMIT {limit}"
             )
         else:
-            df = pd.read_sql_query(
-                f"SELECT date, source, headline, url FROM news WHERE source = ? ORDER BY id DESC LIMIT {limit}",
-                conn, params=(sel_source,)
+            df = _query_df(
+                "SELECT date, source, headline, url FROM news WHERE source = ? ORDER BY id DESC LIMIT %d" % limit,
+                (sel_source,)
             )
 
         if not df.empty:
-            total = conn.execute("SELECT COUNT(*) FROM news").fetchone()[0]
+            total_df = _query_df("SELECT COUNT(*) as cnt FROM news")
+            total = int(total_df.iloc[0]["cnt"]) if not total_df.empty else 0
             st.caption(f"Showing {len(df)} of {total:,} total articles")
             st.dataframe(df, use_container_width=True, hide_index=True)
         else:
             st.caption("No articles in database")
     except Exception as e:
         st.warning(f"News query error: {e}")
-    finally:
-        conn.close()
 
 
 # ══════════════════════════════════════════════════════════════════════
