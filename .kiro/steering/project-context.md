@@ -62,8 +62,20 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
 | Metrics Exporter | 9190 | `http://192.168.1.211:9190` |
 | External Access | 8501 | `trading.aiagenticinternational.org` (reverse-proxied) |
 
-### Restarting Dashboard
+### Scheduler (src/launcher.py)
+- Runs as background process on DGX via `python -m src.launcher --spy`
+- Full pipeline at 4:30 PM ET (Mon-Fri)
+- Intraday updates at 8:30 AM, 12:00 PM, 1:30 PM, 3:00 PM ET
+- Also manages dashboard process (starts Streamlit on port 8501)
+- Health monitoring loop restarts crashed processes automatically
+- Dashboard Admin page detects scheduler via `pgrep -af src.launcher`
+
+### Starting/Restarting System
 ```bash
+# Start scheduler + dashboard (recommended — manages both)
+ssh abidamera@192.168.1.211 "cd ~/stockanalysis && source .venv/bin/activate && nohup python -m src.launcher --spy --config config.yaml > logs/scheduler.log 2>&1 &"
+
+# Dashboard only (standalone, no scheduler)
 ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stockanalysis && source .venv/bin/activate && nohup streamlit run src/dashboard/app.py --server.port 8501 --server.headless true > logs/dashboard.log 2>&1 &"
 ```
 
@@ -98,7 +110,8 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry, ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine, indicators, position management, RL trailing, labeling
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 via Ollama), Quant Agent with multi-model routing (14B fast + 70B deep) and tool-based architecture
-- `src/pipeline/` — Daily pipeline orchestration, alerts, and news pipeline runner
+- `src/pipeline/` — Daily pipeline orchestration (fully thread-safe — all DB ops via `_db_execute`/`_db_query`/`_db_fetchone` router helpers), alerts, and news pipeline runner
+- `src/launcher.py` — System launcher with background scheduler (pipeline + intraday updates), process manager, health monitoring
 - `src/api/` — Confidence API server, Prometheus metrics exporter
 - `src/auth/` — Google OAuth + local auth with bcrypt, server-side session files
 - `src/sync/` — Cloud relay publisher/server
@@ -132,6 +145,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - SPY close price comes from the `prices` table (not in state file)
 - VIX in summary cards falls back to live FRED macro data
 - Monitoring page uses thread-safe fresh connections per query (not the DbRouter singleton) to avoid SQLite cross-thread errors in Streamlit
+- Pipeline (`daily_run.py`) uses thread-safe DB helpers (`_db_execute`, `_db_query`, `_db_fetchone`) routed through a fresh `DbRouter` instance per run. External functions that need a raw connection get `router.get_sqlite()` via `_get_conn()` (thread-safe, created in pipeline thread). No direct `self.conn` usage in any step method.
 - Quick-action buttons in Quant Agent bypass LLM entirely — call tool methods directly for instant results
 
 ## Docker / Cloud
@@ -179,3 +193,5 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Monitoring page PostgreSQL migration**: All 6 monitoring tabs now query PostgreSQL via thread-safe fresh connections per query (not the DbRouter singleton). Fixes SQLite "objects created in a thread" errors in Streamlit's multi-threaded rendering. Direct `_pg_connect()` / `_sqlite_connect()` helpers create and close connections per query.
 - **None sentiment fix**: `_fmt_risk` handles NULL sentiment values from PostgreSQL categories with no data.
 - **Streamlit 1.54 compatibility**: Running on DGX with sklearn 1.8.0.
+- **Pipeline thread-safety migration**: All 13 pipeline steps now use router-based DB helpers (`_db_execute`, `_db_query`, `_db_fetchone`) instead of direct `self.conn`. Fresh `DbRouter` instance created per pipeline run (not the singleton). External functions (`store_technicals`, `build_feature_vector`, `evaluate_past_prediction`, `store_earnings`, `update_fed_communications`) receive `router.get_sqlite()` via `_get_conn()`. Fixes "SQLite objects created in a thread" errors when pipeline is triggered from Streamlit Admin page.
+- **Scheduler activated**: `src/launcher.py --spy` runs as background process on DGX. Manages dashboard process + scheduled pipeline runs (4:30 PM ET daily, intraday at 8:30/12:00/13:30/15:00). Admin page detects scheduler status via `pgrep`.
