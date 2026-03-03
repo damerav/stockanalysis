@@ -48,6 +48,11 @@ class QuantAgent:
             "get_news_summary": self._tool_get_news_summary,
             "get_regime_history": self._tool_get_regime_history,
             "get_pipeline_status": self._tool_get_pipeline_status,
+            "assess_news_risk": self._tool_assess_news_risk,
+            "generate_alpha_hypothesis": self._tool_generate_alpha_hypothesis,
+            "compare_strategies": self._tool_compare_strategies,
+            "analyze_feature_correlations": self._tool_analyze_feature_correlations,
+            "explain_regime": self._tool_explain_regime,
         }
 
     # ── LLM Communication ──────────────────────────────────────────
@@ -87,6 +92,26 @@ TOOLS:
 
 9. get_pipeline_status() — Get latest pipeline run results
    Example: {"tool": "get_pipeline_status", "args": {}}
+
+10. assess_news_risk(days=1, category=null) — Use DeepSeek to score news risk 1-5 (inspired by FinRL-DeepSeek).
+    Returns per-article risk scores + aggregate risk level. Complements sentiment with a risk dimension.
+    Example: {"tool": "assess_news_risk", "args": {"days": 1, "category": "markets"}}
+
+11. generate_alpha_hypothesis(context=null) — Propose new alpha factor ideas based on current regime, model performance,
+    and feature gaps. Inspired by RD-Agent's hypothesis-backtest loop. Returns hypotheses with rationale.
+    Example: {"tool": "generate_alpha_hypothesis", "args": {"context": "model accuracy dropped to 48%"}}
+
+12. compare_strategies(days=60) — Run multiple strategy variants (full ensemble, XGB-only, binary-only, regime-filtered)
+    and compare Sharpe, max drawdown, win rate, and profit factor side-by-side.
+    Example: {"tool": "compare_strategies", "args": {"days": 90}}
+
+13. analyze_feature_correlations(threshold=0.8) — Compute feature correlation matrix, detect multicollinearity,
+    and suggest features to drop. Returns top correlated pairs and VIF analysis.
+    Example: {"tool": "analyze_feature_correlations", "args": {"threshold": 0.7}}
+
+14. explain_regime() — Use DeepSeek to explain WHY we're in the current HMM regime based on indicators,
+    recent price action, VIX, volume, and news sentiment. Goes beyond just showing the state label.
+    Example: {"tool": "explain_regime", "args": {}}
 
 RULES:
 - To use a tool, respond with EXACTLY one JSON block: {"tool": "name", "args": {...}}
@@ -585,6 +610,489 @@ RULES:
                 "total_elapsed": results.get("total_elapsed", 0),
                 "steps": steps,
                 "file": os.path.basename(latest),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ── New Tools (Alpha-Agent / FinRL-DeepSeek inspired) ─────────
+
+    def _tool_assess_news_risk(self, days: int = 1, category: str = None) -> dict:
+        """Use DeepSeek to score news risk 1-5 per article (FinRL-DeepSeek pattern)."""
+        try:
+            db_path = self.config.get("news_pipeline", {}).get("db_path", "./data/news.db")
+            if not os.path.exists(db_path):
+                return {"error": "news.db not found"}
+
+            conn = sqlite3.connect(db_path)
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+            where = f"WHERE published_at >= '{cutoff}'"
+            if category:
+                where += f" AND category = '{category}'"
+
+            articles = pd.read_sql_query(
+                f"SELECT headline, source, category, sentiment_compound, published_at "
+                f"FROM raw_articles {where} "
+                f"ORDER BY published_at DESC LIMIT 20", conn
+            )
+            conn.close()
+
+            if articles.empty:
+                return {"error": "No articles found for the given period"}
+
+            # Build few-shot risk assessment prompt for DeepSeek
+            headlines = articles["headline"].tolist()
+            numbered = "\n".join(f"{i+1}. {h}" for i, h in enumerate(headlines))
+
+            risk_prompt = [
+                {"role": "system", "content": (
+                    "You are a financial risk assessment expert. "
+                    "Score each news headline for market risk on a scale of 1-5:\n"
+                    "1=very low risk, 2=low risk, 3=moderate risk, "
+                    "4=high risk, 5=very high risk.\n"
+                    "Consider: geopolitical impact, market volatility potential, "
+                    "systemic risk, sector contagion, and urgency.\n"
+                    "Respond with ONLY comma-separated integers, one per headline."
+                )},
+                {"role": "user", "content": (
+                    "1. Apple reports record Q4 earnings beating estimates\n"
+                    "2. Federal Reserve signals emergency rate hike amid inflation surge\n"
+                    "3. Microsoft announces new AI partnership"
+                )},
+                {"role": "assistant", "content": "1, 5, 2"},
+                {"role": "user", "content": numbered},
+            ]
+
+            risk_response = self._call_llm(risk_prompt)
+            risk_response = self._strip_thinking(risk_response or "")
+
+            # Parse risk scores
+            risk_scores = []
+            for s in risk_response.replace("\n", ",").split(","):
+                s = s.strip()
+                try:
+                    val = int(s)
+                    if 1 <= val <= 5:
+                        risk_scores.append(val)
+                except ValueError:
+                    continue
+
+            # Pad or truncate to match article count
+            while len(risk_scores) < len(headlines):
+                risk_scores.append(3)  # default moderate
+            risk_scores = risk_scores[:len(headlines)]
+
+            # Build results
+            assessed = []
+            for i, row in articles.iterrows():
+                idx = articles.index.get_loc(i)
+                assessed.append({
+                    "headline": row["headline"],
+                    "source": row["source"],
+                    "category": row["category"],
+                    "sentiment": round(float(row["sentiment_compound"] or 0), 3),
+                    "risk_score": risk_scores[idx],
+                    "risk_label": {1: "very_low", 2: "low", 3: "moderate",
+                                   4: "high", 5: "very_high"}.get(risk_scores[idx], "moderate"),
+                })
+
+            avg_risk = round(np.mean(risk_scores), 2)
+            high_risk_count = sum(1 for r in risk_scores if r >= 4)
+
+            return {
+                "period_days": days,
+                "articles_assessed": len(assessed),
+                "avg_risk_score": avg_risk,
+                "risk_level": "HIGH" if avg_risk >= 3.5 else ("MODERATE" if avg_risk >= 2.5 else "LOW"),
+                "high_risk_articles": high_risk_count,
+                "assessed_articles": assessed[:15],
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _tool_generate_alpha_hypothesis(self, context: str = None) -> dict:
+        """Generate alpha factor hypotheses using DeepSeek (RD-Agent pattern)."""
+        try:
+            # Gather current system state for context
+            state_info = self._tool_get_prediction_state()
+            model_info = self._tool_get_model_info()
+            regime_info = self._tool_get_regime_history(days=14)
+
+            current_regime = regime_info.get("current_regime", "unknown")
+            feature_names = model_info.get("feature_names", [])
+            prediction = state_info.get("prediction", {})
+            indicators = state_info.get("indicators", {})
+
+            system_ctx = (
+                "You are a quantitative researcher proposing new alpha factors for a "
+                "SPY/SPX prediction model. The model uses XGBoost + BiLSTM + LightGBM stacking ensemble.\n\n"
+                f"Current features ({len(feature_names)}): {', '.join(feature_names[:20])}{'...' if len(feature_names) > 20 else ''}\n"
+                f"Current regime: {current_regime}\n"
+                f"Current prediction: {prediction.get('direction', 'N/A')} "
+                f"(confidence: {prediction.get('confidence', 'N/A')})\n"
+                f"VIX: {indicators.get('vix', 'N/A')}, RSI: {indicators.get('rsi_14', 'N/A')}\n"
+            )
+            if context:
+                system_ctx += f"Additional context: {context}\n"
+
+            hypothesis_prompt = [
+                {"role": "system", "content": system_ctx},
+                {"role": "user", "content": (
+                    "Propose 3-5 new alpha factor hypotheses that could improve prediction accuracy. "
+                    "For each hypothesis, provide:\n"
+                    "1. Factor name (snake_case)\n"
+                    "2. Formula or computation description\n"
+                    "3. Rationale (why it should have predictive power)\n"
+                    "4. Data source (what data is needed)\n"
+                    "5. Expected signal (how it relates to SPY direction)\n\n"
+                    "Focus on factors NOT already in the model. Consider:\n"
+                    "- Cross-asset signals (bonds, gold, dollar index)\n"
+                    "- Microstructure (bid-ask spread dynamics, order flow imbalance)\n"
+                    "- Volatility surface features (skew, term structure)\n"
+                    "- Intermarket momentum divergences\n"
+                    "- Sentiment regime shifts (not just level, but rate of change)\n\n"
+                    "Format as JSON array: [{\"name\": ..., \"formula\": ..., \"rationale\": ..., "
+                    "\"data_source\": ..., \"expected_signal\": ...}, ...]"
+                )},
+            ]
+
+            response = self._call_llm(hypothesis_prompt)
+            response = self._strip_thinking(response or "")
+
+            # Try to parse JSON from response
+            hypotheses = []
+            try:
+                import re
+                json_match = re.search(r'\[.*\]', response, re.DOTALL)
+                if json_match:
+                    hypotheses = json.loads(json_match.group())
+            except (json.JSONDecodeError, AttributeError):
+                # If JSON parsing fails, return raw text
+                return {
+                    "current_regime": current_regime,
+                    "current_features": len(feature_names),
+                    "raw_hypotheses": response,
+                    "parse_note": "Could not parse structured JSON — raw LLM output included",
+                }
+
+            return {
+                "current_regime": current_regime,
+                "current_features": len(feature_names),
+                "hypotheses_count": len(hypotheses),
+                "hypotheses": hypotheses,
+                "note": "These are AI-generated hypotheses. Validate via backtest before adding to production.",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _tool_compare_strategies(self, days: int = 60) -> dict:
+        """Compare multiple strategy variants side-by-side."""
+        try:
+            from src.data.features import build_feature_vector, get_feature_columns, get_target
+
+            conn = get_connection(self.config)
+            fv = build_feature_vector(conn, config=self.config)
+            if fv is None or fv.empty:
+                conn.close()
+                return {"error": "No feature data available"}
+
+            feature_cols = get_feature_columns()
+            available = [c for c in feature_cols if c in fv.columns]
+            target = get_target(fv)
+
+            days = min(days, len(fv) - 120)
+            test_start = len(fv) - days
+
+            test_fv = fv.iloc[test_start:]
+            test_target = target.iloc[test_start:]
+
+            # Get price returns for P&L calculation
+            test_prices = test_fv[["date", "close"]].copy() if "close" in test_fv.columns else None
+
+            # Strategy 1: Full model predictions
+            from src.model.trainer import SPYPredictor
+            predictor = SPYPredictor(self.config)
+            predictor.load_latest()
+
+            strategies = {}
+
+            # --- Strategy A: Full ensemble (current model) ---
+            preds_a, actuals_a = [], []
+            for i in range(len(test_fv)):
+                if pd.isna(test_target.iloc[i]):
+                    continue
+                features = test_fv[available].iloc[i].values
+                pred = predictor.predict(features, feature_names=available)
+                pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
+                actual = int(test_target.iloc[i])
+                preds_a.append(pred_dir)
+                actuals_a.append(actual)
+
+            strategies["full_model"] = self._calc_strategy_metrics(preds_a, actuals_a, "Full Ensemble")
+
+            # --- Strategy B: Always bullish baseline ---
+            preds_b = [1] * len(actuals_a)
+            strategies["always_bullish"] = self._calc_strategy_metrics(preds_b, actuals_a, "Always Bullish")
+
+            # --- Strategy C: Regime-filtered (only trade in bull/low_vol regimes) ---
+            try:
+                from src.model.regime import HMMRegimeDetector
+                detector = HMMRegimeDetector()
+                preds_c, actuals_c = [], []
+                for i in range(len(test_fv)):
+                    if pd.isna(test_target.iloc[i]):
+                        continue
+                    # Simple regime check: use VIX as proxy
+                    vix_val = test_fv.iloc[i].get("vix", 20)
+                    if vix_val and float(vix_val) > 30:
+                        preds_c.append(0)  # sit out in high vol
+                    else:
+                        features = test_fv[available].iloc[i].values
+                        pred = predictor.predict(features, feature_names=available)
+                        pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
+                        preds_c.append(pred_dir)
+                    actuals_c.append(int(test_target.iloc[i]))
+                strategies["regime_filtered"] = self._calc_strategy_metrics(preds_c, actuals_c, "Regime-Filtered (VIX<30)")
+            except Exception:
+                pass
+
+            # --- Strategy D: High-confidence only (>60%) ---
+            preds_d, actuals_d = [], []
+            for i in range(len(test_fv)):
+                if pd.isna(test_target.iloc[i]):
+                    continue
+                features = test_fv[available].iloc[i].values
+                pred = predictor.predict(features, feature_names=available)
+                conf = pred.get("confidence", 0)
+                if conf >= 0.6:
+                    pred_dir = 1 if "BULLISH" in pred.get("direction", "") else (-1 if "BEARISH" in pred.get("direction", "") else 0)
+                    preds_d.append(pred_dir)
+                else:
+                    preds_d.append(0)  # sit out
+                actuals_d.append(int(test_target.iloc[i]))
+            strategies["high_confidence"] = self._calc_strategy_metrics(preds_d, actuals_d, "High Confidence (>60%)")
+
+            conn.close()
+
+            # Build chart data for comparison
+            chart_data = {
+                "data": [
+                    {
+                        "type": "bar",
+                        "x": list(strategies.keys()),
+                        "y": [s["accuracy"] for s in strategies.values()],
+                        "name": "Accuracy",
+                        "marker": {"color": "#2962FF"},
+                    }
+                ],
+                "layout": {"title": "Strategy Comparison — Accuracy", "yaxis": {"title": "Accuracy", "tickformat": ".1%"}},
+            }
+
+            return {
+                "days_tested": days,
+                "strategies": strategies,
+                "chart": chart_data,
+                "best_strategy": max(strategies, key=lambda k: strategies[k]["accuracy"]),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _calc_strategy_metrics(self, predictions: list, actuals: list, name: str) -> dict:
+        """Calculate strategy performance metrics."""
+        if not predictions or not actuals:
+            return {"name": name, "accuracy": 0, "trades": 0}
+
+        total = len(predictions)
+        trades = sum(1 for p in predictions if p != 0)
+        correct = sum(1 for p, a in zip(predictions, actuals) if p == a and p != 0)
+        wrong = sum(1 for p, a in zip(predictions, actuals) if p != a and p != 0)
+
+        accuracy = correct / max(trades, 1)
+        win_rate = correct / max(trades, 1)
+
+        # Simulated P&L (1 unit per trade)
+        pnl = sum(p * a for p, a in zip(predictions, actuals))
+
+        # Max drawdown (cumulative)
+        cum = np.cumsum([p * a for p, a in zip(predictions, actuals)])
+        peak = np.maximum.accumulate(cum) if len(cum) > 0 else np.array([0])
+        drawdown = peak - cum
+        max_dd = float(np.max(drawdown)) if len(drawdown) > 0 else 0
+
+        # Profit factor
+        gross_profit = sum(p * a for p, a in zip(predictions, actuals) if p * a > 0)
+        gross_loss = abs(sum(p * a for p, a in zip(predictions, actuals) if p * a < 0))
+        profit_factor = gross_profit / max(gross_loss, 0.01)
+
+        return {
+            "name": name,
+            "accuracy": round(accuracy, 3),
+            "win_rate": round(win_rate, 3),
+            "trades": trades,
+            "skipped": total - trades,
+            "pnl_units": round(float(pnl), 2),
+            "max_drawdown": round(max_dd, 2),
+            "profit_factor": round(profit_factor, 2),
+        }
+
+    def _tool_analyze_feature_correlations(self, threshold: float = 0.8) -> dict:
+        """Analyze feature correlations and detect multicollinearity."""
+        try:
+            from src.data.features import build_feature_vector, get_feature_columns
+
+            conn = get_connection(self.config)
+            fv = build_feature_vector(conn, config=self.config)
+            conn.close()
+
+            if fv is None or fv.empty:
+                return {"error": "No feature data available"}
+
+            feature_cols = get_feature_columns()
+            available = [c for c in feature_cols if c in fv.columns]
+            feat_df = fv[available].dropna()
+
+            if feat_df.empty or len(feat_df) < 30:
+                return {"error": "Not enough data for correlation analysis"}
+
+            # Correlation matrix
+            corr = feat_df.corr()
+
+            # Find highly correlated pairs
+            high_corr_pairs = []
+            for i in range(len(available)):
+                for j in range(i + 1, len(available)):
+                    c = abs(corr.iloc[i, j])
+                    if c >= threshold:
+                        high_corr_pairs.append({
+                            "feature_1": available[i],
+                            "feature_2": available[j],
+                            "correlation": round(float(corr.iloc[i, j]), 3),
+                            "abs_correlation": round(float(c), 3),
+                        })
+
+            high_corr_pairs.sort(key=lambda x: x["abs_correlation"], reverse=True)
+
+            # VIF (Variance Inflation Factor) for top features
+            vif_results = []
+            try:
+                from numpy.linalg import LinAlgError
+                X = feat_df.values
+                # Standardize
+                X_std = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-10)
+                corr_matrix = np.corrcoef(X_std.T)
+                try:
+                    inv_corr = np.linalg.inv(corr_matrix)
+                    vifs = np.diag(inv_corr)
+                    for idx, (feat, vif) in enumerate(zip(available, vifs)):
+                        vif_results.append({"feature": feat, "vif": round(float(vif), 2)})
+                    vif_results.sort(key=lambda x: x["vif"], reverse=True)
+                except LinAlgError:
+                    vif_results = [{"note": "Correlation matrix is singular — severe multicollinearity detected"}]
+            except Exception:
+                vif_results = [{"note": "VIF calculation failed"}]
+
+            # Suggest drops: for each high-corr pair, suggest dropping the one with lower importance
+            drop_suggestions = []
+            seen = set()
+            for pair in high_corr_pairs[:10]:
+                f1, f2 = pair["feature_1"], pair["feature_2"]
+                if f1 not in seen and f2 not in seen:
+                    # Suggest dropping the one that appears more often in high-corr pairs
+                    count_f1 = sum(1 for p in high_corr_pairs if f1 in (p["feature_1"], p["feature_2"]))
+                    count_f2 = sum(1 for p in high_corr_pairs if f2 in (p["feature_1"], p["feature_2"]))
+                    drop = f1 if count_f1 > count_f2 else f2
+                    drop_suggestions.append(drop)
+                    seen.add(drop)
+
+            return {
+                "total_features": len(available),
+                "threshold": threshold,
+                "high_corr_pairs": high_corr_pairs[:15],
+                "high_corr_count": len(high_corr_pairs),
+                "vif_top10": vif_results[:10],
+                "drop_suggestions": drop_suggestions,
+                "note": "Features with VIF > 10 indicate severe multicollinearity. Consider dropping suggested features.",
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _tool_explain_regime(self) -> dict:
+        """Use DeepSeek to explain the current market regime with full context."""
+        try:
+            # Gather all relevant data
+            state = self._tool_get_prediction_state()
+            regime_info = self._tool_get_regime_history(days=14)
+            news = self._tool_get_news_summary(days=2)
+
+            indicators = state.get("indicators", {})
+            prediction = state.get("prediction", {})
+            current_regime = regime_info.get("current_regime", "unknown")
+            regime_dist = regime_info.get("regime_distribution", {})
+            avg_sentiment = news.get("avg_sentiment", 0)
+            article_count = news.get("total_articles", 0)
+
+            # Get recent price action
+            try:
+                conn = get_connection(self.config)
+                prices = pd.read_sql_query(
+                    "SELECT date, close, volume FROM prices ORDER BY date DESC LIMIT 10", conn
+                )
+                conn.close()
+                recent_prices = prices.to_dict(orient="records") if not prices.empty else []
+                if len(recent_prices) >= 2:
+                    pct_change_1d = round((recent_prices[0]["close"] / recent_prices[1]["close"] - 1) * 100, 2)
+                else:
+                    pct_change_1d = 0
+                if len(recent_prices) >= 5:
+                    pct_change_5d = round((recent_prices[0]["close"] / recent_prices[4]["close"] - 1) * 100, 2)
+                else:
+                    pct_change_5d = 0
+            except Exception:
+                recent_prices = []
+                pct_change_1d = 0
+                pct_change_5d = 0
+
+            # Build explanation prompt
+            explain_prompt = [
+                {"role": "system", "content": (
+                    "You are a senior market strategist. Explain the current market regime "
+                    "in 3-5 concise paragraphs. Be specific with numbers. "
+                    "Cover: 1) What regime we're in and why, 2) Key drivers, "
+                    "3) What to watch for regime change, 4) Trading implications."
+                )},
+                {"role": "user", "content": (
+                    f"Current HMM Regime: {current_regime}\n"
+                    f"Regime distribution (14d): {json.dumps(regime_dist)}\n"
+                    f"SPY 1-day change: {pct_change_1d}%, 5-day change: {pct_change_5d}%\n"
+                    f"VIX: {indicators.get('vix', 'N/A')}, VIX change: {indicators.get('vix_change', 'N/A')}\n"
+                    f"RSI(14): {indicators.get('rsi_14', 'N/A')}\n"
+                    f"MACD: {indicators.get('macd', 'N/A')}\n"
+                    f"ATR(14): {indicators.get('atr_14', 'N/A')}\n"
+                    f"Volume ratio: {indicators.get('volume_ratio', 'N/A')}\n"
+                    f"News sentiment (2d avg): {avg_sentiment} ({article_count} articles)\n"
+                    f"Model prediction: {prediction.get('direction', 'N/A')} "
+                    f"(confidence: {prediction.get('confidence', 'N/A')})\n"
+                    f"Probabilities: {json.dumps(prediction.get('probabilities', {}))}\n\n"
+                    f"Explain this regime and its implications."
+                )},
+            ]
+
+            explanation = self._call_llm(explain_prompt)
+            explanation = self._strip_thinking(explanation or "No explanation available.")
+
+            return {
+                "current_regime": current_regime,
+                "regime_distribution_14d": regime_dist,
+                "key_indicators": {
+                    "vix": indicators.get("vix"),
+                    "rsi_14": indicators.get("rsi_14"),
+                    "macd": indicators.get("macd"),
+                    "volume_ratio": indicators.get("volume_ratio"),
+                    "spy_1d_pct": pct_change_1d,
+                    "spy_5d_pct": pct_change_5d,
+                    "news_sentiment": avg_sentiment,
+                },
+                "explanation": explanation,
             }
         except Exception as e:
             return {"error": str(e)}

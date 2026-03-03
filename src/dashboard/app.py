@@ -2626,7 +2626,7 @@ def page_quant_agent():
 
     agent = st.session_state.quant_agent
 
-    # Quick action buttons
+    # Quick action buttons — Row 1
     q1, q2, q3, q4 = st.columns(4)
     with q1:
         if st.button("📊 Current Prediction", key="qa_pred", use_container_width=True):
@@ -2647,6 +2647,29 @@ def page_quant_agent():
         if st.button("🧪 Backtest 60d", key="qa_bt", use_container_width=True):
             st.session_state.quant_messages.append(
                 {"role": "user", "content": "Run a 60-day backtest and show me the results"})
+            st.rerun()
+
+    # Quick action buttons — Row 2 (new Alpha-Agent inspired tools)
+    q5, q6, q7, q8 = st.columns(4)
+    with q5:
+        if st.button("⚠️ Risk Assessment", key="qa_risk", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Assess the risk level of today's news headlines"})
+            st.rerun()
+    with q6:
+        if st.button("💡 Alpha Ideas", key="qa_alpha", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Generate new alpha factor hypotheses based on current market conditions"})
+            st.rerun()
+    with q7:
+        if st.button("⚔️ Compare Strategies", key="qa_compare", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Compare all strategy variants over the last 60 days"})
+            st.rerun()
+    with q8:
+        if st.button("🌊 Explain Regime", key="qa_regime", use_container_width=True):
+            st.session_state.quant_messages.append(
+                {"role": "user", "content": "Explain the current market regime and its implications"})
             st.rerun()
 
     st.divider()
