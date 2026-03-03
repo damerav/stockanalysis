@@ -2691,15 +2691,13 @@ def page_quant_agent():
                 fig.update_layout(**get_plotly_layout())
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Chat input
-    if prompt := st.chat_input("Ask the quant agent anything..."):
-        st.session_state.quant_messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
+    # Process pending user message (from quick-action buttons)
+    if (st.session_state.quant_messages
+            and st.session_state.quant_messages[-1]["role"] == "user"):
+        pending = st.session_state.quant_messages[-1]["content"]
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                response, chart_data = agent.chat(prompt)
+                response, chart_data = agent.chat(pending)
             st.markdown(response)
             msg_data = {"role": "assistant", "content": response}
             if chart_data:
@@ -2709,6 +2707,13 @@ def page_quant_agent():
                 fig.update_layout(**get_plotly_layout())
                 st.plotly_chart(fig, use_container_width=True)
             st.session_state.quant_messages.append(msg_data)
+
+    # Chat input
+    if prompt := st.chat_input("Ask the quant agent anything..."):
+        st.session_state.quant_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.rerun()
 
     # Sidebar controls
     st.sidebar.markdown("---")
