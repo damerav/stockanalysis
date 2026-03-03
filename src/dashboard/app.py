@@ -1057,10 +1057,10 @@ def _render_spy_comparison(result):
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Original Prediction**")
-        _prediction_card(orig)
+        _prediction_card(orig, key_suffix="orig")
     with col2:
         st.markdown("**Modified Prediction**")
-        _prediction_card(mod)
+        _prediction_card(mod, key_suffix="mod")
     overrides = result.get("overrides", {})
     if overrides:
         st.markdown("**Features Changed:**")
@@ -1070,7 +1070,7 @@ def _render_spy_comparison(result):
         st.info(desc)
 
 
-def _prediction_card(pred):
+def _prediction_card(pred, key_suffix=""):
     direction = pred.get("direction", "N/A")
     confidence = pred.get("confidence", 0)
     probs = pred.get("probabilities", {})
@@ -1083,7 +1083,7 @@ def _prediction_card(pred):
             orientation="h", marker_color=["red", "gray", "green"],
         ))
         fig.update_layout(height=200, margin=dict(l=0, r=0, t=0, b=0), xaxis_title="%")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"pred_card_{key_suffix}")
 
 
 def _render_ablation(result):
