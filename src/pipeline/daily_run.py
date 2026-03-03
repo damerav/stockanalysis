@@ -58,13 +58,20 @@ class DailyPipeline:
 
     def _init_components(self):
         """Initialise all pipeline components."""
-        self.conn = get_connection(self.config)
-        # Database router (PostgreSQL primary, SQLite fallback)
+        # Create a FRESH DbRouter for this pipeline run (thread-safe).
+        # Don't use the singleton get_router() — it may hold connections
+        # from a different thread (e.g. when triggered from Streamlit UI).
+        from src.data.db_router import DbRouter
         try:
-            self.router = get_router(self.config)
+            self.router = DbRouter(self.config)
+            logger.info(f"Pipeline DbRouter: {'PostgreSQL' if self.router.using_postgres else 'SQLite'}")
         except Exception as e:
             logger.warning(f"Database router unavailable: {e}")
             self.router = None
+
+        # Legacy self.conn — only used as fallback if router is None
+        self.conn = get_connection(self.config)
+
         api_key = self.config.get("polygon", {}).get("api_key", "")
         if api_key and api_key != "YOUR_POLYGON_KEY":
             self.polygon = PolygonFetcher(api_key)
@@ -75,6 +82,30 @@ class DailyPipeline:
         # P2 components
         self.feature_store = FeatureStore(self.config)
         self.regime_detector = HMMRegimeDetector()
+
+    # ── Thread-safe DB helpers ────────────────────────────────────────
+    def _db_execute(self, sql: str, params: tuple = None):
+        """Execute a write query via router (PostgreSQL primary, SQLite fallback)."""
+        if self.router:
+            self.router.execute(sql, params)
+        elif self.conn:
+            self.conn.execute(sql, params or ())
+            self.conn.commit()
+
+    def _db_query(self, sql: str, params: tuple = None) -> pd.DataFrame:
+        """Execute a read query via router, return DataFrame."""
+        if self.router:
+            return self.router.query(sql, params)
+        elif self.conn:
+            return pd.read_sql_query(sql, self.conn, params=params or ())
+        return pd.DataFrame()
+
+    def _db_fetchone(self, sql: str, params: tuple = None):
+        """Fetch a single row via router, return tuple or None."""
+        df = self._db_query(sql, params)
+        if not df.empty:
+            return tuple(df.iloc[0])
+        return None
 
     def run(self, skip_llm: bool = False) -> dict:
         """Execute the full 13-step pipeline.
@@ -131,7 +162,9 @@ class DailyPipeline:
         logger.info(f"PIPELINE COMPLETE — {total:.0f}s total")
         logger.info(f"{'='*50}")
 
-        if self.conn:
+        if self.router:
+            self.router.close()
+        elif self.conn:
             self.conn.close()
 
         self.results["total_elapsed"] = round(total, 1)
@@ -155,10 +188,20 @@ class DailyPipeline:
         counts = run_daily_pull(self.config)
         return {"table_counts": counts}
 
+    def _get_conn(self):
+        """Return a usable SQLite connection for external functions.
+        External functions (evaluate_past_prediction, store_earnings, etc.)
+        use '?' placeholders and conn.execute() directly — they need SQLite.
+        Functions like build_feature_vector/store_technicals already call
+        get_router() internally for PostgreSQL routing."""
+        if self.router:
+            return self.router.get_sqlite()
+        return self.conn
+
     def _step1_evaluate(self) -> dict:
         """Step 1: Evaluate yesterday's prediction accuracy."""
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        result = evaluate_past_prediction(self.conn, yesterday)
+        result = evaluate_past_prediction(self._get_conn(), yesterday)
         if result:
             logger.info(f"Yesterday's prediction: {result['predicted']} → "
                         f"Actual: {result['actual']} — "
@@ -180,14 +223,13 @@ class DailyPipeline:
                      row["low"], row["close"], row["volume"]),
                 )
             else:
-                self.conn.execute(
+                self._db_execute(
                     """INSERT OR REPLACE INTO prices
                        (date, open, high, low, close, volume)
                        VALUES (?,?,?,?,?,?)""",
                     (row["date"], row["open"], row["high"],
                      row["low"], row["close"], row["volume"]),
                 )
-                self.conn.commit()
 
         if self.polygon:
             try:
@@ -226,7 +268,7 @@ class DailyPipeline:
                 pub = a.get("published_at", "")
                 date_str = pub[:10] if pub else self.today
                 try:
-                    self.conn.execute(
+                    self._db_execute(
                         """INSERT OR IGNORE INTO news
                            (date, source, headline, summary, url, fetched_at)
                            VALUES (?,?,?,?,?,?)""",
@@ -235,11 +277,10 @@ class DailyPipeline:
                          a.get("fetched_at", "")),
                     )
                     bridged += 1
-                except (sqlite3.IntegrityError, sqlite3.OperationalError):
+                except Exception:
                     pass
-            self.conn.commit()
             nf.close()
-            logger.info(f"Expanded news: {expanded_count} new, {bridged} bridged to spy.db")
+            logger.info(f"Expanded news: {expanded_count} new, {bridged} bridged to DB")
             if category_stats:
                 cats = ", ".join(f"{k}={v['count']}" for k, v in category_stats.items())
                 logger.info(f"Category breakdown: {cats}")
@@ -255,16 +296,15 @@ class DailyPipeline:
 
         for a in articles:
             try:
-                self.conn.execute(
+                self._db_execute(
                     """INSERT OR IGNORE INTO news
                        (date, source, headline, summary, url, fetched_at)
                        VALUES (?,?,?,?,?,?)""",
                     (a["date"], a["source"], a["headline"],
                      a["summary"], a.get("url", ""), a.get("fetched_at", "")),
                 )
-            except (sqlite3.IntegrityError, sqlite3.OperationalError):
+            except Exception:
                 pass
-        self.conn.commit()
         logger.info(f"Legacy news: {len(articles)} articles")
         return {"articles": len(articles), "expanded_articles": expanded_count,
                 "categories": category_stats}
@@ -328,12 +368,12 @@ class DailyPipeline:
             self._store_sentiment(sentiment)
             return {"skipped_llm": True, "expanded_articles": expanded_sentiment.get("article_count", 0), "sentiment": sentiment}
 
-        # Get today's articles from spy.db
-        rows = self.conn.execute(
+        # Get today's articles from DB
+        news_df = self._db_query(
             "SELECT headline, summary FROM news WHERE date = ? LIMIT 200",
             (self.today,),
-        ).fetchall()
-        articles = [{"headline": r[0], "summary": r[1]} for r in rows]
+        )
+        articles = [{"headline": r["headline"], "summary": r["summary"]} for _, r in news_df.iterrows()]
 
         if not articles:
             logger.info("No articles in spy.db — using expanded sentiment")
@@ -376,10 +416,10 @@ class DailyPipeline:
 
         # Compute sentiment velocity (change vs yesterday)
         try:
-            prev = self.conn.execute(
+            prev = self._db_fetchone(
                 "SELECT score FROM daily_sentiment WHERE date < ? ORDER BY date DESC LIMIT 1",
                 (self.today,),
-            ).fetchone()
+            )
             if prev and prev[0] is not None:
                 daily["sentiment_velocity"] = round(daily["score"] - prev[0], 4)
             else:
@@ -405,7 +445,7 @@ class DailyPipeline:
                 "sentiment": daily, "finbert": finbert_result}
 
     def _store_sentiment(self, sentiment: dict):
-        self.conn.execute(
+        self._db_execute(
             """INSERT OR REPLACE INTO daily_sentiment
                (date, score, confidence, article_count,
                 positive_ratio, negative_ratio, neutral_ratio,
@@ -419,7 +459,6 @@ class DailyPipeline:
              sentiment.get("geopolitical_sentiment", 0), sentiment.get("technical_sentiment", 0),
              sentiment.get("sentiment_dispersion", 0), sentiment.get("sentiment_velocity", 0)),
         )
-        self.conn.commit()
 
     def _step5_macro(self) -> dict:
         """Step 5: Fetch macro data (VIX, yields, DXY, fed funds, gold, crude)
@@ -465,7 +504,7 @@ class DailyPipeline:
                  macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
             )
         else:
-            self.conn.execute(
+            self._db_execute(
                 """INSERT OR REPLACE INTO macro
                    (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
                     vix9d, vix3m, vix6m, vvix, skew_index,
@@ -481,7 +520,6 @@ class DailyPipeline:
                  macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
                  macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
             )
-            self.conn.commit()
         return macro
 
 
@@ -509,7 +547,7 @@ class DailyPipeline:
                     )
             else:
                 for _, row in chain.iterrows():
-                    self.conn.execute(
+                    self._db_execute(
                         """INSERT OR REPLACE INTO options_chain
                            (date, contract_symbol, strike, expiry, option_type,
                             last_price, bid, ask, volume, open_interest,
@@ -521,7 +559,6 @@ class DailyPipeline:
                          row["open_interest"], row["iv"], row["delta"],
                          row["gamma"], row["theta"], row["vega"]),
                     )
-                self.conn.commit()
             return {"rows": len(chain)}
         except Exception as e:
             logger.warning(f"Options chain fetch failed: {e}")
@@ -534,7 +571,7 @@ class DailyPipeline:
             return {"skipped": True}
         try:
             analytics = self.polygon.get_options_analytics("SPY")
-            self.conn.execute(
+            self._db_execute(
                 """INSERT OR REPLACE INTO options_analytics
                    (date, put_call_ratio, max_pain, iv_skew, gex,
                     vanna_exposure, charm_exposure, zero_dte_pcr)
@@ -544,7 +581,6 @@ class DailyPipeline:
                  analytics.get("gex"), analytics.get("vanna_exposure"),
                  analytics.get("charm_exposure"), analytics.get("zero_dte_pcr")),
             )
-            self.conn.commit()
             return analytics
         except Exception as e:
             logger.warning(f"Options analytics failed: {e}")
@@ -559,12 +595,12 @@ class DailyPipeline:
         else:
             df = pd.read_sql_query(
                 "SELECT date, open, high, low, close, volume FROM prices ORDER BY date",
-                self.conn,
+                self._get_conn(),
             )
         if df.empty:
             return {"rows": 0}
         tech_df = compute_all_technicals(df, self.config)
-        store_technicals(self.conn, tech_df, self.config)
+        store_technicals(self._get_conn(), tech_df, self.config)
         return {"rows": len(tech_df)}
 
     def _step9_intraday(self) -> dict:
@@ -578,21 +614,20 @@ class DailyPipeline:
             )
             bar_count = int(df_cnt.iloc[0]["cnt"]) if not df_cnt.empty else 0
         else:
-            row = self.conn.execute(
+            row = self._db_fetchone(
                 "SELECT COUNT(*) FROM intraday_bars WHERE timestamp LIKE ?",
                 (f"{self.today}%",),
-            ).fetchone()
+            )
             bar_count = row[0] if row else 0
 
         if bar_count == 0:
-            # No intraday data — store zeros (operational table stays in SQLite)
-            self.conn.execute(
+            # No intraday data — store zeros
+            self._db_execute(
                 """INSERT OR REPLACE INTO intraday_features
                    (date, vwap_spread, intraday_momentum, intraday_range, volume_ratio)
                    VALUES (?,?,?,?,?)""",
                 (self.today, 0, 0, 0, 1.0),
             )
-            self.conn.commit()
             return {"bars": 0, "features": "default"}
 
         # Compute from intraday bars
@@ -604,7 +639,7 @@ class DailyPipeline:
         else:
             bars = pd.read_sql_query(
                 "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
-                self.conn, params=(f"{self.today}%",),
+                self._get_conn(), params=(f"{self.today}%",),
             )
         if bars.empty:
             return {"bars": 0}
@@ -617,14 +652,13 @@ class DailyPipeline:
         avg_vol = bars["volume"].mean() or 1
         volume_ratio = bars["volume"].iloc[-10:].mean() / avg_vol if len(bars) >= 10 else 1.0
 
-        self.conn.execute(
+        self._db_execute(
             """INSERT OR REPLACE INTO intraday_features
                (date, vwap_spread, intraday_momentum, intraday_range, volume_ratio)
                VALUES (?,?,?,?,?)""",
             (self.today, round(vwap_spread, 6), round(momentum, 6),
              round(intraday_range, 6), round(volume_ratio, 4)),
         )
-        self.conn.commit()
         return {"bars": bar_count, "features": "computed"}
 
     def _step95_earnings(self) -> dict:
@@ -632,7 +666,7 @@ class DailyPipeline:
         try:
             earnings = fetch_earnings_yf()
             if earnings:
-                store_earnings(self.conn, earnings)
+                store_earnings(self._get_conn(), earnings)
                 logger.info(f"Stored {len(earnings)} earnings dates")
             return {"earnings_fetched": len(earnings)}
         except Exception as e:
@@ -643,7 +677,7 @@ class DailyPipeline:
         """Step 9.6: Fetch and score latest Fed communications."""
         try:
             llm_analyzer = self.llm if (self.llm and self.llm.llm_available) else None
-            results = update_fed_communications(self.conn, llm_analyzer)
+            results = update_fed_communications(self._get_conn(), llm_analyzer)
             logger.info(f"Fed comms update: {results}")
             return results
         except Exception as e:
@@ -657,17 +691,18 @@ class DailyPipeline:
         # P2: Try feature store for cached features
         fv = None
         try:
-            all_dates = [r[0] for r in self.conn.execute(
-                "SELECT date FROM prices ORDER BY date").fetchall()]
+            date_df = self._db_query("SELECT date FROM prices ORDER BY date")
+            all_dates = date_df["date"].tolist() if not date_df.empty else []
+            conn_for_build = self._get_conn()
             fv = self.feature_store.get_features(
                 feature_cols, all_dates=all_dates,
-                build_fn=lambda missing: build_feature_vector(self.conn, config=self.config),
+                build_fn=lambda missing: build_feature_vector(conn_for_build, config=self.config),
             )
         except Exception as e:
             logger.warning(f"Feature store failed, falling back to direct build: {e}")
 
         if fv is None or fv.empty:
-            fv = build_feature_vector(self.conn, config=self.config)
+            fv = build_feature_vector(self._get_conn(), config=self.config)
 
         if fv is None or len(fv) < 50:
             logger.warning("Insufficient data for training")
@@ -703,7 +738,7 @@ class DailyPipeline:
             if not self.predictor.load_latest_model():
                 return {"error": "no model available"}
 
-        fv = build_feature_vector(self.conn, date=self.today, config=self.config)
+        fv = build_feature_vector(self._get_conn(), date=self.today, config=self.config)
         if fv is None or fv.empty:
             return {"error": "no features for today"}
 
@@ -717,7 +752,7 @@ class DailyPipeline:
             # Auto-retrain with curated feature set
             logger.info(f"Feature mismatch ({self.predictor.model.n_features_in_} vs {len(available)}) — auto-retraining...")
             from src.data.features import get_target
-            full_fv = build_feature_vector(self.conn, config=self.config)
+            full_fv = build_feature_vector(self._get_conn(), config=self.config)
             if full_fv is not None and not full_fv.empty:
                 train_cols = [c for c in feature_cols if c in full_fv.columns]
                 target = get_target(full_fv)
@@ -744,10 +779,10 @@ class DailyPipeline:
             else:
                 price_df = pd.read_sql_query(
                     "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60",
-                    self.conn,
+                    self._get_conn(),
                 )
                 macro_df = pd.read_sql_query(
-                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", self.conn
+                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", self._get_conn()
                 )
             price_df["vix"] = macro_df.get("vix", 18.0)
             regime = self.regime_detector.predict(price_df)
@@ -759,7 +794,7 @@ class DailyPipeline:
         prediction["ensemble_used"] = self.predictor.ensemble is not None and self.predictor.use_ensemble
 
         # Store prediction
-        self.conn.execute(
+        self._db_execute(
             """INSERT OR REPLACE INTO predictions
                (date, direction, confidence, factors, predicted_at)
                VALUES (?,?,?,?,?)""",
@@ -767,7 +802,6 @@ class DailyPipeline:
              json.dumps(prediction["probabilities"]),
              datetime.now().isoformat()),
         )
-        self.conn.commit()
 
         # Update dashboard state
         macro = self.fallback.get_macro_fred() if self.fallback else {}
@@ -778,10 +812,10 @@ class DailyPipeline:
             )
             tech_row = tech_df.iloc[0] if not tech_df.empty else None
         else:
-            tech_row = self.conn.execute(
+            tech_row = self._db_fetchone(
                 "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals WHERE date = ?",
                 (self.today,),
-            ).fetchone()
+            )
         indicators = {}
         if tech_row:
             indicators = {"rsi_14": tech_row[0], "macd": tech_row[1],
@@ -797,38 +831,44 @@ class DailyPipeline:
     def _step12_report(self) -> dict:
         """Step 12: Generate LLM daily report."""
         # Gather context
-        tech_row = self.conn.execute(
+        tech_row = self._db_fetchone(
             "SELECT * FROM technicals WHERE date = ?", (self.today,),
-        ).fetchone()
-        sent_row = self.conn.execute(
+        )
+        sent_row = self._db_fetchone(
             "SELECT * FROM daily_sentiment WHERE date = ?", (self.today,),
-        ).fetchone()
-        macro_row = self.conn.execute(
+        )
+        macro_row = self._db_fetchone(
             "SELECT * FROM macro WHERE date = ?", (self.today,),
-        ).fetchone()
-        pred_row = self.conn.execute(
+        )
+        pred_row = self._db_fetchone(
             "SELECT direction, confidence FROM predictions WHERE date = ?",
             (self.today,),
-        ).fetchone()
+        )
 
         context = {
             "prediction": {"direction": pred_row[0] if pred_row else "N/A",
                            "confidence": pred_row[1] if pred_row else 0},
-            "technicals": dict(tech_row) if tech_row else {},
-            "sentiment": dict(sent_row) if sent_row else {},
-            "macro": dict(macro_row) if macro_row else {},
+            "technicals": {},
+            "sentiment": {},
+            "macro": {},
         }
+        # _db_fetchone returns tuples, not sqlite3.Row — use _db_query for dict access
+        for key, sql in [("technicals", "SELECT * FROM technicals WHERE date = ?"),
+                         ("sentiment", "SELECT * FROM daily_sentiment WHERE date = ?"),
+                         ("macro", "SELECT * FROM macro WHERE date = ?")]:
+            df = self._db_query(sql, (self.today,))
+            if not df.empty:
+                context[key] = df.iloc[0].to_dict()
 
         report = self.reporter.generate_report(
             context, llm_available=self.llm.llm_available,
         )
 
         # Store report text
-        self.conn.execute(
+        self._db_execute(
             "UPDATE predictions SET report_text = ? WHERE date = ?",
             (report, self.today),
         )
-        self.conn.commit()
         logger.info(f"Report generated ({len(report)} chars)")
         return {"length": len(report)}
 
@@ -836,10 +876,10 @@ class DailyPipeline:
         """Step 13: Send alerts (Telegram + email)."""
         try:
             from src.pipeline.alerts import send_alerts
-            pred_row = self.conn.execute(
+            pred_row = self._db_fetchone(
                 "SELECT direction, confidence, report_text FROM predictions WHERE date = ?",
                 (self.today,),
-            ).fetchone()
+            )
             if not pred_row:
                 return {"sent": False, "reason": "no prediction"}
 
