@@ -59,11 +59,11 @@ class DailyPipeline:
     def _init_components(self):
         """Initialise all pipeline components."""
         self.conn = get_connection(self.config)
-        # Enhancement 26: DuckDB router for analytics tables
+        # Database router (PostgreSQL primary, SQLite fallback)
         try:
             self.router = get_router(self.config)
         except Exception as e:
-            logger.warning(f"DuckDB router unavailable: {e}")
+            logger.warning(f"Database router unavailable: {e}")
             self.router = None
         api_key = self.config.get("polygon", {}).get("api_key", "")
         if api_key and api_key != "YOUR_POLYGON_KEY":
@@ -494,9 +494,8 @@ class DailyPipeline:
             if chain.empty:
                 return {"rows": 0}
             if self.router:
-                duck = self.router.get_analytics_conn()
                 for _, row in chain.iterrows():
-                    duck.execute(
+                    self.router.execute(
                         """INSERT OR REPLACE INTO options_chain
                            (date, contract_symbol, strike, expiry, option_type,
                             last_price, bid, ask, volume, open_interest,

@@ -75,7 +75,12 @@ whatif:
 
 database:
   path: "./data/spy.db"
-  analytics_path: "./data/analytics.duckdb"
+  postgres:
+    host: "localhost"
+    port: 5432
+    dbname: "stockanalysis"
+    user: "stockapp"
+    password: "stockapp_secure_2024"
 
 # Authentication
 auth:

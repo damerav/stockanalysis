@@ -135,7 +135,7 @@ def get_db_path(config: dict = None) -> str:
 
 def init_db(config: dict = None) -> str:
     """Initialize the SQLite database with all tables. Returns db path.
-    Also initializes DuckDB analytics database if duckdb is available."""
+    Also verifies PostgreSQL connection if configured."""
     db_path = get_db_path(config)
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
@@ -144,18 +144,15 @@ def init_db(config: dict = None) -> str:
     conn.close()
     logger.info(f"Database initialized at {db_path}")
 
-    # Enhancement 26: Initialize DuckDB analytics database
+    # Initialize PostgreSQL connection (if configured)
     try:
-        from src.data.db_router import DbRouter, _get_duckdb_path
-        duckdb_path = _get_duckdb_path(config)
-        os.makedirs(os.path.dirname(duckdb_path) or ".", exist_ok=True)
+        from src.data.db_router import DbRouter
         router = DbRouter(config)
+        if router.using_postgres:
+            logger.info("PostgreSQL connection verified")
         router.close()
-        logger.info(f"DuckDB analytics initialized at {duckdb_path}")
-    except ImportError:
-        logger.debug("duckdb not installed — analytics layer skipped")
     except Exception as e:
-        logger.warning(f"DuckDB init failed (non-fatal): {e}")
+        logger.debug(f"PostgreSQL not available (non-fatal): {e}")
 
     return db_path
 

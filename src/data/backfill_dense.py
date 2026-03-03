@@ -22,7 +22,6 @@ import pandas as pd
 import requests
 
 from src.data.init_db import init_db, get_connection, load_config
-from src.data.db_router import get_router
 
 logger = logging.getLogger(__name__)
 

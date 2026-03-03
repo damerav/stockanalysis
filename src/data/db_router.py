@@ -1,42 +1,30 @@
-"""Database Router — Routes queries between DuckDB (analytics) and SQLite (operational).
+"""Database Router - Routes queries to PostgreSQL (primary) with SQLite fallback.
 
-Enhancement 26: Analytics tables (prices, technicals, macro, intraday_bars, options_chain)
-are stored in DuckDB for fast columnar reads. Operational tables remain in SQLite.
-
-Usage:
-    router = get_router(config)
-    df = router.read_analytics("SELECT * FROM prices WHERE date >= '2025-01-01'")
-    router.write_analytics("INSERT INTO prices VALUES (?, ...)", params)
-    conn = router.get_sqlite()  # for operational tables
-    router.close()
+PostgreSQL is the primary database with pgvector support for semantic search.
+SQLite is kept as a fallback for environments without PostgreSQL.
 """
 
 import os
+import re
 import sqlite3
 import logging
 from typing import Optional
 
-import duckdb
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Tables stored in DuckDB (high-volume, read-heavy analytics)
-ANALYTICS_TABLES = {"prices", "technicals", "macro", "intraday_bars", "options_chain"}
-
-# Tables remaining in SQLite (write-heavy operational)
-SQLITE_TABLES = {
-    "daily_sentiment", "predictions", "performance", "news",
-    "options_analytics", "intraday_features",
-    "earnings_calendar", "fed_communications",
-    "model_registry", "feature_cache",
+_TABLE_PKS = {
+    "prices": "date", "technicals": "date", "macro": "date",
+    "intraday_bars": "timestamp, ticker", "options_chain": "date, contract_symbol",
+    "daily_sentiment": "date", "predictions": "date", "options_analytics": "date",
+    "intraday_features": "date", "performance": "date", "feature_cache": "date",
+    "earnings_calendar": "date, ticker", "fed_communications": "date",
+    "users": "username", "news": "id", "raw_articles": "id",
+    "finbert_cache": "article_id", "model_registry": "id",
 }
 
-
-def _get_duckdb_path(config: dict = None) -> str:
-    if config:
-        return config.get("database", {}).get("analytics_path", "./data/analytics.duckdb")
-    return "./data/analytics.duckdb"
+ANALYTICS_TABLES = {"prices", "technicals", "macro", "intraday_bars", "options_chain"}
 
 
 def _get_sqlite_path(config: dict = None) -> str:
@@ -45,122 +33,130 @@ def _get_sqlite_path(config: dict = None) -> str:
     return "./data/spy.db"
 
 
-# DuckDB schema for analytics tables
-DUCKDB_SCHEMA = """
-CREATE TABLE IF NOT EXISTS prices (
-    date VARCHAR PRIMARY KEY,
-    open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-    volume BIGINT, adjusted_close DOUBLE
-);
+def _get_pg_config(config: dict = None) -> Optional[dict]:
+    if not config:
+        return None
+    pg = config.get("database", {}).get("postgres")
+    if not pg:
+        return None
+    if pg.get("dbname") and pg.get("user"):
+        return pg
+    return None
 
-CREATE TABLE IF NOT EXISTS technicals (
-    date VARCHAR PRIMARY KEY,
-    sma_20 DOUBLE, sma_50 DOUBLE, rsi_14 DOUBLE,
-    macd DOUBLE, macd_signal DOUBLE, macd_hist DOUBLE,
-    bb_upper DOUBLE, bb_lower DOUBLE, bb_mid DOUBLE,
-    atr_14 DOUBLE
-);
 
-CREATE TABLE IF NOT EXISTS macro (
-    date VARCHAR PRIMARY KEY,
-    vix DOUBLE, vix_change DOUBLE,
-    us10y_yield DOUBLE, dxy DOUBLE, fed_funds DOUBLE,
-    gold DOUBLE, crude DOUBLE,
-    vix9d DOUBLE, vix3m DOUBLE, vix6m DOUBLE, vvix DOUBLE, skew_index DOUBLE,
-    hy_spread DOUBLE, tlt_spy_ratio DOUBLE, eem_spy_ratio DOUBLE,
-    copper_gold_ratio DOUBLE, xlk_xlf_ratio DOUBLE, xlk_xle_ratio DOUBLE
-);
-
-CREATE TABLE IF NOT EXISTS intraday_bars (
-    timestamp VARCHAR, ticker VARCHAR,
-    open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
-    volume BIGINT, vwap DOUBLE,
-    PRIMARY KEY (timestamp, ticker)
-);
-
-CREATE TABLE IF NOT EXISTS options_chain (
-    date VARCHAR, contract_symbol VARCHAR,
-    strike DOUBLE, expiry VARCHAR, option_type VARCHAR,
-    last_price DOUBLE, bid DOUBLE, ask DOUBLE,
-    volume BIGINT, open_interest BIGINT,
-    iv DOUBLE, delta DOUBLE, gamma DOUBLE, theta DOUBLE, vega DOUBLE,
-    PRIMARY KEY (date, contract_symbol)
-);
-"""
+def _sqlite_sql_to_pg(sql: str, params: tuple = None) -> tuple[str, tuple]:
+    """Convert SQLite SQL to PostgreSQL (INSERT OR REPLACE -> ON CONFLICT, ? -> %s)."""
+    converted = sql
+    if re.search(r'INSERT\s+OR\s+IGNORE', converted, re.IGNORECASE):
+        converted = re.sub(r'INSERT\s+OR\s+IGNORE', 'INSERT', converted, flags=re.IGNORECASE)
+        converted = converted.rstrip().rstrip(';') + " ON CONFLICT DO NOTHING"
+    elif re.search(r'INSERT\s+OR\s+REPLACE', converted, re.IGNORECASE):
+        converted = re.sub(r'INSERT\s+OR\s+REPLACE', 'INSERT', converted, flags=re.IGNORECASE)
+        m = re.search(r'INSERT\s+INTO\s+(\w+)\s*\(([^)]+)\)', converted, re.IGNORECASE)
+        if m:
+            table = m.group(1).lower()
+            cols = [c.strip() for c in m.group(2).split(',')]
+            pk_str = _TABLE_PKS.get(table, "")
+            pk_cols = [c.strip() for c in pk_str.split(',')] if pk_str else []
+            update_cols = [c for c in cols if c not in pk_cols]
+            converted = converted.rstrip().rstrip(';')
+            if pk_cols and update_cols:
+                set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+                converted += f" ON CONFLICT ({pk_str}) DO UPDATE SET {set_clause}"
+            elif pk_cols:
+                converted += f" ON CONFLICT ({pk_str}) DO NOTHING"
+    converted = converted.replace('?', '%s')
+    return converted, params
 
 
 class DbRouter:
-    """Routes queries between DuckDB (analytics) and SQLite (operational)."""
+    """Routes queries to PostgreSQL (primary) with SQLite fallback."""
 
     def __init__(self, config: dict = None):
         self.config = config or {}
-        self._duckdb_path = _get_duckdb_path(config)
         self._sqlite_path = _get_sqlite_path(config)
-
-        # Ensure directories exist
-        os.makedirs(os.path.dirname(self._duckdb_path) or ".", exist_ok=True)
+        self._pg_config = _get_pg_config(config)
+        self._pg_conn = None
+        self._sqlite = None
         os.makedirs(os.path.dirname(self._sqlite_path) or ".", exist_ok=True)
-
-        # Open connections
-        self._duck = duckdb.connect(self._duckdb_path)
-        self._sqlite = sqlite3.connect(self._sqlite_path)
+        if self._pg_config:
+            try:
+                import psycopg2
+                self._pg_conn = psycopg2.connect(
+                    host=self._pg_config.get("host", "localhost"),
+                    port=self._pg_config.get("port", 5432),
+                    dbname=self._pg_config["dbname"],
+                    user=self._pg_config["user"],
+                    password=self._pg_config.get("password", ""),
+                )
+                self._pg_conn.autocommit = True
+                logger.info(f"DbRouter: PostgreSQL connected ({self._pg_config['dbname']})")
+            except Exception as e:
+                logger.warning(f"PostgreSQL unavailable, falling back to SQLite: {e}")
+                self._pg_conn = None
+        self._sqlite = sqlite3.connect(self._sqlite_path, timeout=10)
         self._sqlite.row_factory = sqlite3.Row
         self._sqlite.execute("PRAGMA journal_mode=WAL")
         self._sqlite.execute("PRAGMA busy_timeout=5000")
+        backend = "PostgreSQL" if self._pg_conn else "SQLite"
+        logger.info(f"DbRouter ready: primary={backend}, SQLite={self._sqlite_path}")
 
-        # Initialize DuckDB schema
-        self._init_duckdb()
-        logger.info(f"DbRouter ready: DuckDB={self._duckdb_path}, SQLite={self._sqlite_path}")
+    @property
+    def using_postgres(self) -> bool:
+        return self._pg_conn is not None
 
-    def _init_duckdb(self):
-        """Create analytics tables in DuckDB if they don't exist."""
-        for stmt in DUCKDB_SCHEMA.strip().split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                self._duck.execute(stmt)
-
-    # --- Analytics (DuckDB) operations ---
-
-    def read_analytics(self, sql: str, params: tuple = None) -> pd.DataFrame:
-        """Execute a SELECT on DuckDB analytics tables, return DataFrame."""
-        try:
-            if params:
-                return self._duck.execute(sql, params).fetchdf()
-            return self._duck.execute(sql).fetchdf()
-        except Exception as e:
-            logger.error(f"DuckDB read error: {e}")
-            return pd.DataFrame()
-
-    def write_analytics(self, sql: str, params: tuple = None):
-        """Execute an INSERT/UPDATE/DELETE on DuckDB analytics tables."""
-        try:
-            if params:
-                self._duck.execute(sql, params)
-            else:
-                self._duck.execute(sql)
-        except Exception as e:
-            logger.error(f"DuckDB write error: {e}")
-            raise
-
-    def execute_analytics(self, sql: str, params: tuple = None):
-        """Execute arbitrary SQL on DuckDB (for DDL, etc.)."""
-        if params:
-            self._duck.execute(sql, params)
-        else:
-            self._duck.execute(sql)
-
-    def get_analytics_conn(self) -> duckdb.DuckDBPyConnection:
-        """Return the raw DuckDB connection for advanced usage."""
-        return self._duck
-
-    # --- Operational (SQLite) operations ---
+    def get_pg(self):
+        return self._pg_conn
 
     def get_sqlite(self) -> sqlite3.Connection:
-        """Return the SQLite connection for operational tables."""
+        return self._sqlite
+
+    def query(self, sql: str, params: tuple = None) -> pd.DataFrame:
+        if self._pg_conn:
+            try:
+                pg_sql, pg_params = _sqlite_sql_to_pg(sql, params)
+                return pd.read_sql_query(pg_sql, self._pg_conn,
+                                         params=pg_params if pg_params else None)
+            except Exception as e:
+                logger.warning(f"PostgreSQL query failed, falling back: {e}")
+        try:
+            return pd.read_sql_query(sql, self._sqlite,
+                                     params=params if params else None)
+        except Exception as e:
+            logger.error(f"SQLite query also failed: {e}")
+            return pd.DataFrame()
+
+    def execute(self, sql: str, params: tuple = None):
+        if self._pg_conn:
+            try:
+                pg_sql, pg_params = _sqlite_sql_to_pg(sql, params)
+                cur = self._pg_conn.cursor()
+                cur.execute(pg_sql, pg_params)
+                cur.close()
+                return
+            except Exception as e:
+                logger.warning(f"PostgreSQL execute failed, falling back: {e}")
+        if params:
+            self._sqlite.execute(sql, params)
+        else:
+            self._sqlite.execute(sql)
+        self._sqlite.commit()
+
+    def read_analytics(self, sql: str, params: tuple = None) -> pd.DataFrame:
+        return self.query(sql, params)
+
+    def write_analytics(self, sql: str, params: tuple = None):
+        self.execute(sql, params)
+
+    def execute_analytics(self, sql: str, params: tuple = None):
+        self.execute(sql, params)
+
+    def get_analytics_conn(self):
+        if self._pg_conn:
+            return self._pg_conn
         return self._sqlite
 
     def read_sqlite(self, sql: str, params: tuple = None) -> pd.DataFrame:
-        """Execute a SELECT on SQLite operational tables, return DataFrame."""
         try:
             if params:
                 return pd.read_sql_query(sql, self._sqlite, params=params)
@@ -169,19 +165,11 @@ class DbRouter:
             logger.error(f"SQLite read error: {e}")
             return pd.DataFrame()
 
-    # --- Cross-database join helper ---
-
     def read_feature_join(self, date: str = None) -> pd.DataFrame:
-        """Read analytics tables from DuckDB and operational tables from SQLite,
-        then merge in Python. This replaces the old single-JOIN query."""
-        # Analytics from DuckDB
         date_filter = f" WHERE p.date = '{date}'" if date else ""
-        analytics_sql = f"""
-        SELECT
-            p.date,
-            p.open, p.high, p.low, p.close, p.volume,
-            t.sma_20, t.sma_50, t.rsi_14,
-            t.macd, t.macd_signal, t.macd_hist,
+        sql = f"""
+        SELECT p.date, p.open, p.high, p.low, p.close, p.volume,
+            t.sma_20, t.sma_50, t.rsi_14, t.macd, t.macd_signal, t.macd_hist,
             t.bb_upper, t.bb_lower, t.atr_14,
             m.vix, m.vix_change, m.us10y_yield, m.dxy, m.fed_funds, m.gold, m.crude,
             m.vix9d, m.vix3m, m.vix6m, m.vvix, m.skew_index,
@@ -190,92 +178,113 @@ class DbRouter:
         FROM prices p
         LEFT JOIN technicals t ON p.date = t.date
         LEFT JOIN macro m ON p.date = m.date
-        {date_filter}
-        ORDER BY p.date
-        """
-        df_analytics = self.read_analytics(analytics_sql)
-        if df_analytics.empty:
+        {date_filter} ORDER BY p.date"""
+        df = self.query(sql)
+        if df.empty:
             return pd.DataFrame()
-
-        # Operational from SQLite
-        dates_list = df_analytics["date"].tolist()
+        dates_list = df["date"].tolist()
         if not dates_list:
-            return df_analytics
-
-        placeholders = ",".join(["?"] * len(dates_list))
-
-        # Sentiment
-        df_sent = pd.read_sql_query(
-            f"""SELECT date, score as sentiment_score, confidence as sentiment_confidence,
-                article_count, positive_ratio, negative_ratio,
-                macro_sentiment, earnings_sentiment, geopolitical_sentiment,
-                technical_sentiment, sentiment_dispersion, sentiment_velocity
-            FROM daily_sentiment WHERE date IN ({placeholders})""",
-            self._sqlite, params=dates_list,
-        )
-
-        # Intraday features
-        df_intra = pd.read_sql_query(
-            f"""SELECT date, vwap_spread, intraday_momentum, intraday_range, volume_ratio
-            FROM intraday_features WHERE date IN ({placeholders})""",
-            self._sqlite, params=dates_list,
-        )
-
-        # Options analytics
-        df_opts = pd.read_sql_query(
-            f"""SELECT date, put_call_ratio, max_pain, iv_skew, gex,
-                vanna_exposure, charm_exposure, zero_dte_pcr
-            FROM options_analytics WHERE date IN ({placeholders})""",
-            self._sqlite, params=dates_list,
-        )
-
-        # Merge all
-        df = df_analytics
-        if not df_sent.empty:
-            df = df.merge(df_sent, on="date", how="left")
+            return df
+        if self._pg_conn:
+            try:
+                df_sent = pd.read_sql_query(
+                    "SELECT date, score as sentiment_score, confidence as sentiment_confidence, "
+                    "article_count, positive_ratio, negative_ratio, macro_sentiment, "
+                    "earnings_sentiment, geopolitical_sentiment, technical_sentiment, "
+                    "sentiment_dispersion, sentiment_velocity "
+                    "FROM daily_sentiment WHERE date = ANY(%s)", self._pg_conn, params=(dates_list,))
+                df_intra = pd.read_sql_query(
+                    "SELECT date, vwap_spread, intraday_momentum, intraday_range, volume_ratio "
+                    "FROM intraday_features WHERE date = ANY(%s)", self._pg_conn, params=(dates_list,))
+                df_opts = pd.read_sql_query(
+                    "SELECT date, put_call_ratio, max_pain, iv_skew, gex, "
+                    "vanna_exposure, charm_exposure, zero_dte_pcr "
+                    "FROM options_analytics WHERE date = ANY(%s)", self._pg_conn, params=(dates_list,))
+            except Exception:
+                df_sent = df_intra = df_opts = pd.DataFrame()
         else:
-            for c in ["sentiment_score", "sentiment_confidence", "article_count",
+            ph = ",".join(["?"] * len(dates_list))
+            df_sent = pd.read_sql_query(
+                f"SELECT date, score as sentiment_score, confidence as sentiment_confidence, "
+                f"article_count, positive_ratio, negative_ratio, macro_sentiment, "
+                f"earnings_sentiment, geopolitical_sentiment, technical_sentiment, "
+                f"sentiment_dispersion, sentiment_velocity "
+                f"FROM daily_sentiment WHERE date IN ({ph})", self._sqlite, params=dates_list)
+            df_intra = pd.read_sql_query(
+                f"SELECT date, vwap_spread, intraday_momentum, intraday_range, volume_ratio "
+                f"FROM intraday_features WHERE date IN ({ph})", self._sqlite, params=dates_list)
+            df_opts = pd.read_sql_query(
+                f"SELECT date, put_call_ratio, max_pain, iv_skew, gex, "
+                f"vanna_exposure, charm_exposure, zero_dte_pcr "
+                f"FROM options_analytics WHERE date IN ({ph})", self._sqlite, params=dates_list)
+        for src_df, cols in [
+            (df_sent, ["sentiment_score", "sentiment_confidence", "article_count",
                        "positive_ratio", "negative_ratio", "macro_sentiment",
                        "earnings_sentiment", "geopolitical_sentiment",
-                       "technical_sentiment", "sentiment_dispersion", "sentiment_velocity"]:
-                df[c] = None
-
-        if not df_intra.empty:
-            df = df.merge(df_intra, on="date", how="left")
-        else:
-            for c in ["vwap_spread", "intraday_momentum", "intraday_range", "volume_ratio"]:
-                df[c] = None
-
-        if not df_opts.empty:
-            df = df.merge(df_opts, on="date", how="left")
-        else:
-            for c in ["put_call_ratio", "max_pain", "iv_skew", "gex",
-                       "vanna_exposure", "charm_exposure", "zero_dte_pcr"]:
-                df[c] = None
-
+                       "technical_sentiment", "sentiment_dispersion", "sentiment_velocity"]),
+            (df_intra, ["vwap_spread", "intraday_momentum", "intraday_range", "volume_ratio"]),
+            (df_opts, ["put_call_ratio", "max_pain", "iv_skew", "gex",
+                       "vanna_exposure", "charm_exposure", "zero_dte_pcr"]),
+        ]:
+            if not src_df.empty:
+                df = df.merge(src_df, on="date", how="left")
+            else:
+                for c in cols:
+                    df[c] = None
         return df
 
-    # --- Lifecycle ---
+    def store_embedding(self, article_id: int, embedding: list[float]):
+        if not self._pg_conn:
+            return
+        try:
+            cur = self._pg_conn.cursor()
+            cur.execute("UPDATE raw_articles SET embedding = %s WHERE id = %s",
+                        (str(embedding), article_id))
+            cur.close()
+        except Exception as e:
+            logger.error(f"store_embedding failed: {e}")
+
+    def vector_search(self, embedding: list[float], limit: int = 10,
+                      category: str = None, days_back: int = 30) -> pd.DataFrame:
+        if not self._pg_conn:
+            return pd.DataFrame()
+        try:
+            from datetime import datetime, timedelta
+            cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+            embed_str = str(embedding)
+            where = "WHERE embedding IS NOT NULL AND published_at >= %s"
+            params = [cutoff]
+            if category:
+                where += " AND category = %s"
+                params.append(category)
+            sql = f"""SELECT id, headline, source, category, published_at,
+                   sentiment_compound, 1 - (embedding <=> %s::vector) as similarity
+            FROM raw_articles {where}
+            ORDER BY embedding <=> %s::vector LIMIT %s"""
+            params_full = [embed_str] + params + [embed_str, limit]
+            return pd.read_sql_query(sql, self._pg_conn, params=params_full)
+        except Exception as e:
+            logger.error(f"vector_search failed: {e}")
+            return pd.DataFrame()
 
     def close(self):
-        """Close both connections."""
-        try:
-            self._duck.close()
-        except Exception:
-            pass
-        try:
-            self._sqlite.close()
-        except Exception:
-            pass
+        if self._pg_conn:
+            try:
+                self._pg_conn.close()
+            except Exception:
+                pass
+        if self._sqlite:
+            try:
+                self._sqlite.close()
+            except Exception:
+                pass
         logger.info("DbRouter connections closed")
 
 
-# Module-level singleton
 _router_instance: Optional[DbRouter] = None
 
 
 def get_router(config: dict = None) -> DbRouter:
-    """Get or create the module-level DbRouter singleton."""
     global _router_instance
     if _router_instance is None:
         _router_instance = DbRouter(config)
@@ -283,7 +292,6 @@ def get_router(config: dict = None) -> DbRouter:
 
 
 def reset_router():
-    """Reset the singleton (for testing)."""
     global _router_instance
     if _router_instance:
         _router_instance.close()

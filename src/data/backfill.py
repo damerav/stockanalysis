@@ -13,10 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 def _insert_prices_duck(router, df):
-    """Insert price rows into DuckDB prices table."""
-    duck = router.get_analytics_conn()
+    """Insert price rows into the analytics database (PostgreSQL or DuckDB)."""
     for _, row in df.iterrows():
-        duck.execute(
+        router.execute(
             """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (row["date"], row["open"], row["high"], row["low"],

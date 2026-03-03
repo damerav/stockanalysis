@@ -130,12 +130,11 @@ def backfill_macro(conn: sqlite3.Connection, gaps: list[str],
 
 
 def _insert_prices(conn: sqlite3.Connection, df: pd.DataFrame, config: dict = None):
-    """Insert price rows. Enhancement 26: Writes to DuckDB if available."""
+    """Insert price rows. Uses router.execute() which auto-converts SQL for PostgreSQL."""
     try:
         router = get_router(config)
-        duck = router.get_analytics_conn()
         for _, row in df.iterrows():
-            duck.execute(
+            router.execute(
                 """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (row["date"], row["open"], row["high"], row["low"],
@@ -143,7 +142,7 @@ def _insert_prices(conn: sqlite3.Connection, df: pd.DataFrame, config: dict = No
             )
         return
     except Exception as e:
-        logger.warning(f"DuckDB price insert failed, using SQLite: {e}")
+        logger.warning(f"Router price insert failed, using SQLite: {e}")
 
     for _, row in df.iterrows():
         conn.execute(

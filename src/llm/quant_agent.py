@@ -53,6 +53,7 @@ class QuantAgent:
             "compare_strategies": self._tool_compare_strategies,
             "analyze_feature_correlations": self._tool_analyze_feature_correlations,
             "explain_regime": self._tool_explain_regime,
+            "search_similar_news": self._tool_search_similar_news,
         }
 
     # ── LLM Communication ──────────────────────────────────────────
@@ -62,10 +63,11 @@ class QuantAgent:
 You have access to these tools (call them by responding with a JSON block):
 
 TOOLS:
-1. query_database(sql, db="spy") — Run read-only SQL on spy.db, analytics.duckdb, or news.db
-   Tables in spy.db: prices, technicals, macro, daily_sentiment, predictions, options_analytics,
-   options_chain, intraday_features, intraday_bars, earnings_calendar, fed_communications, news, users
-   Tables in news.db: raw_articles (headline, source, published_at, category, sentiment_compound, finbert_score)
+1. query_database(sql, db="spy") — Run read-only SQL on PostgreSQL (primary) or SQLite (fallback).
+   All tables: prices, technicals, macro, daily_sentiment, predictions, options_analytics,
+   options_chain, intraday_features, intraday_bars, earnings_calendar, fed_communications, news, users,
+   raw_articles (headline, source, published_at, category, sentiment_compound), finbert_cache
+   Use db="news" for raw_articles/finbert_cache queries.
    Example: {"tool": "query_database", "args": {"sql": "SELECT date, close FROM prices ORDER BY date DESC LIMIT 5"}}
 
 2. get_prediction_state() — Get current prediction from spy_state.json (direction, confidence, probabilities, regime)
@@ -112,6 +114,10 @@ TOOLS:
 14. explain_regime() — Use DeepSeek to explain WHY we're in the current HMM regime based on indicators,
     recent price action, VIX, volume, and news sentiment. Goes beyond just showing the state label.
     Example: {"tool": "explain_regime", "args": {}}
+
+15. search_similar_news(query, limit=10, category=null, days_back=30) — Semantic vector search for similar articles
+    using pgvector FinBERT embeddings. Finds historically similar news patterns.
+    Example: {"tool": "search_similar_news", "args": {"query": "Fed rate hike inflation", "limit": 5}}
 
 RULES:
 - To use a tool, respond with EXACTLY one JSON block: {"tool": "name", "args": {...}}
@@ -275,41 +281,63 @@ RULES:
     # ── Tool Implementations ──────────────────────────────────────
 
     def _tool_query_database(self, sql: str, db: str = "spy") -> dict:
-        """Run read-only SQL query against spy.db, news.db, or analytics.duckdb."""
+        """Run read-only SQL query against PostgreSQL (primary) or SQLite (fallback)."""
         sql_clean = sql.strip().upper()
         if not sql_clean.startswith("SELECT"):
             return {"error": "Only SELECT queries are allowed."}
 
         try:
             if db == "news":
+                # Try PostgreSQL first for news (raw_articles table)
+                try:
+                    from src.data.db_router import get_router
+                    router = get_router(self.config)
+                    if router.using_postgres:
+                        df = router.query(sql)
+                        if not df.empty:
+                            if len(df) > 50:
+                                return {
+                                    "rows": len(df), "columns": list(df.columns),
+                                    "data": df.head(50).to_dict(orient="records"),
+                                    "truncated": True, "note": f"Showing first 50 of {len(df)} rows",
+                                }
+                            return {"rows": len(df), "columns": list(df.columns),
+                                    "data": df.to_dict(orient="records")}
+                except Exception:
+                    pass
+                # Fallback to news.db SQLite
                 db_path = self.config.get("news_pipeline", {}).get("db_path", "./data/news.db")
                 conn = sqlite3.connect(db_path)
-            elif db == "duckdb":
-                try:
-                    import duckdb
-                    conn = duckdb.connect("./data/analytics.duckdb", read_only=True)
-                except Exception as e:
-                    return {"error": f"DuckDB unavailable: {e}"}
             else:
+                # Try PostgreSQL first
+                try:
+                    from src.data.db_router import get_router
+                    router = get_router(self.config)
+                    if router.using_postgres:
+                        df = router.query(sql)
+                        if len(df) > 50:
+                            return {
+                                "rows": len(df), "columns": list(df.columns),
+                                "data": df.head(50).to_dict(orient="records"),
+                                "truncated": True, "note": f"Showing first 50 of {len(df)} rows",
+                            }
+                        return {"rows": len(df), "columns": list(df.columns),
+                                "data": df.to_dict(orient="records")}
+                except Exception:
+                    pass
                 conn = get_connection(self.config)
 
             df = pd.read_sql_query(sql, conn)
             conn.close()
 
-            # Limit output size
             if len(df) > 50:
                 return {
-                    "rows": len(df),
-                    "columns": list(df.columns),
+                    "rows": len(df), "columns": list(df.columns),
                     "data": df.head(50).to_dict(orient="records"),
-                    "truncated": True,
-                    "note": f"Showing first 50 of {len(df)} rows",
+                    "truncated": True, "note": f"Showing first 50 of {len(df)} rows",
                 }
-            return {
-                "rows": len(df),
-                "columns": list(df.columns),
-                "data": df.to_dict(orient="records"),
-            }
+            return {"rows": len(df), "columns": list(df.columns),
+                    "data": df.to_dict(orient="records")}
         except Exception as e:
             return {"error": str(e)}
 
@@ -1093,6 +1121,56 @@ RULES:
                     "news_sentiment": avg_sentiment,
                 },
                 "explanation": explanation,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _tool_search_similar_news(self, query: str, limit: int = 10,
+                                   category: str = None, days_back: int = 30) -> dict:
+        """Search for semantically similar news articles using pgvector embeddings."""
+        try:
+            from src.data.db_router import get_router
+            router = get_router(self.config)
+
+            if not router.using_postgres:
+                return {"error": "Vector search requires PostgreSQL+pgvector (not available)"}
+
+            # Check if embeddings exist
+            count_df = router.query(
+                "SELECT COUNT(*) as cnt FROM raw_articles WHERE embedding IS NOT NULL"
+            )
+            embed_count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+            if embed_count == 0:
+                return {"error": "No embeddings stored yet. Run embedding pipeline first."}
+
+            # Generate embedding for the query using FinBERT
+            try:
+                from transformers import AutoTokenizer, AutoModel
+                import torch
+
+                tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+                model = AutoModel.from_pretrained("ProsusAI/finbert")
+                inputs = tokenizer(query, return_tensors="pt", truncation=True, max_length=512)
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                # Use CLS token embedding
+                embedding = outputs.last_hidden_state[:, 0, :].squeeze().tolist()
+            except Exception as e:
+                return {"error": f"FinBERT embedding failed: {e}"}
+
+            # Vector similarity search
+            results = router.vector_search(
+                embedding, limit=limit, category=category, days_back=days_back
+            )
+
+            if results.empty:
+                return {"query": query, "results": [], "total": 0}
+
+            return {
+                "query": query,
+                "total_embeddings": embed_count,
+                "results": results.to_dict(orient="records"),
+                "total": len(results),
             }
         except Exception as e:
             return {"error": str(e)}

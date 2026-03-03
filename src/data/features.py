@@ -157,7 +157,7 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
 
 def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: dict = None):
     """Store computed technicals in the database.
-    Enhancement 26: Writes to DuckDB analytics if available, falls back to SQLite."""
+    Routes to PostgreSQL if available, falls back to SQLite."""
     cols = ("date", "sma_20", "sma_50", "rsi_14", "macd", "macd_signal", "macd_hist",
             "bb_upper", "bb_lower", "bb_mid", "atr_14",
             "obv", "garman_klass_vol", "stoch_k", "stoch_d")
@@ -173,14 +173,29 @@ def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: di
 
     try:
         router = get_router(config)
-        duck = router.get_analytics_conn()
-        for _, row in tech_df.iterrows():
-            if pd.isna(row.get("sma_20")):
-                continue
-            duck.execute(sql, _row_vals(row))
-        logger.debug("Technicals stored in DuckDB")
+        if router.using_postgres:
+            # Use PostgreSQL upsert
+            pg_placeholders = ",".join(["%s"] * len(all_cols))
+            update_cols = [c for c in all_cols if c != "date"]
+            update_str = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+            pg_sql = (f"INSERT INTO technicals ({col_names}) VALUES ({pg_placeholders}) "
+                      f"ON CONFLICT (date) DO UPDATE SET {update_str}")
+            cur = router.get_pg().cursor()
+            for _, row in tech_df.iterrows():
+                if pd.isna(row.get("sma_20")):
+                    continue
+                cur.execute(pg_sql, _row_vals(row))
+            cur.close()
+            logger.debug("Technicals stored in PostgreSQL")
+        else:
+            for _, row in tech_df.iterrows():
+                if pd.isna(row.get("sma_20")):
+                    continue
+                conn.execute(sql, _row_vals(row))
+            conn.commit()
+            logger.debug("Technicals stored in SQLite")
     except Exception as e:
-        logger.warning(f"DuckDB write failed, falling back to SQLite: {e}")
+        logger.warning(f"Router write failed, falling back to SQLite: {e}")
         for _, row in tech_df.iterrows():
             if pd.isna(row.get("sma_20")):
                 continue
@@ -188,13 +203,13 @@ def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: di
             conn.commit()
 
 
+
 # --- 3A: Feature Vector Construction ---
 
 def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config: dict = None) -> dict:
     """Compute 8 intraday microstructure features from intraday_bars for a given date.
 
-    Enhancement 26: Reads intraday_bars from DuckDB, prev close from DuckDB prices.
-    Falls back to SQLite conn if DuckDB unavailable.
+    Reads intraday_bars and prices via DbRouter (PostgreSQL primary, SQLite fallback).
 
     Returns dict with keys: opening_gap_pct, opening_range_breakout,
     close_vs_high_pct, close_vs_low_pct, afternoon_reversal,
@@ -208,7 +223,7 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         "tick_divergence": np.nan, "vwap_reclaim_count": np.nan,
     }
     try:
-        # Try DuckDB first for analytics tables
+        # Try router first (PostgreSQL → SQLite fallback)
         try:
             router = get_router(config)
             bars = router.read_analytics(
@@ -224,7 +239,7 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
             day_low = float(bars["low"].min())
             day_close = float(bars.iloc[-1]["close"])
 
-            # Previous day close from DuckDB prices
+            # Previous day close from prices table
             prev_df = router.read_analytics(
                 "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
                 (date,),
@@ -329,17 +344,16 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
 def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dict = None) -> Optional[pd.DataFrame]:
     """Build the 35+ feature vector for model training/prediction.
 
-    Enhancement 26: Reads analytics tables from DuckDB, operational from SQLite,
-    merges in Python. Falls back to single SQLite JOIN if DuckDB unavailable.
+    Reads all tables via DbRouter (PostgreSQL primary, SQLite fallback).
 
     Returns DataFrame with one row per date, all features as columns.
     """
-    # Try DuckDB router first
+    # Try router first (PostgreSQL → SQLite)
     try:
         router = get_router(config)
         df = router.read_feature_join(date)
     except Exception as e:
-        logger.warning(f"DuckDB feature join failed, falling back to SQLite: {e}")
+        logger.warning(f"Router feature join failed, falling back to SQLite: {e}")
         df = pd.DataFrame()
 
     if df.empty:

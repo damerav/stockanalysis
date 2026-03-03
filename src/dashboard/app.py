@@ -1242,25 +1242,41 @@ def _admin_status_tab():
     with col1:
         st.markdown("**Database**")
         db_path = os.path.join(DATA_DIR, "spy.db")
-        duck_path = os.path.join(DATA_DIR, "analytics.duckdb")
-        if os.path.exists(db_path):
-            size_mb = os.path.getsize(db_path) / (1024 * 1024)
-            duck_size = ""
-            if os.path.exists(duck_path):
-                duck_mb = os.path.getsize(duck_path) / (1024 * 1024)
-                duck_size = f" + 🦆 {duck_mb:.1f} MB"
-            st.success(f"Online — SQLite {size_mb:.1f} MB{duck_size}")
-            try:
-                conn = sqlite3.connect(db_path)
-                tables = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                ).fetchall()
-                conn.close()
-                st.caption(f"{len(tables)} SQLite tables" + (" + 5 DuckDB" if os.path.exists(duck_path) else ""))
-            except Exception as e:
-                st.warning(f"Read error: {e}")
-        else:
-            st.error("Database not found")
+        try:
+            config = _load_config()
+            router = get_router(config)
+            if router.using_postgres:
+                # Get PostgreSQL database size
+                try:
+                    size_df = router.read_analytics(
+                        "SELECT pg_size_pretty(pg_database_size(current_database())) as size"
+                    )
+                    pg_size = size_df.iloc[0]["size"] if not size_df.empty else "?"
+                except Exception:
+                    pg_size = "connected"
+                sqlite_mb = os.path.getsize(db_path) / (1024 * 1024) if os.path.exists(db_path) else 0
+                st.success(f"🐘 PostgreSQL ({pg_size}) + SQLite {sqlite_mb:.1f} MB")
+                try:
+                    tbl_df = router.read_analytics(
+                        "SELECT COUNT(*) as cnt FROM information_schema.tables "
+                        "WHERE table_schema = 'public'"
+                    )
+                    tbl_count = int(tbl_df.iloc[0]["cnt"]) if not tbl_df.empty else 0
+                    st.caption(f"{tbl_count} PostgreSQL tables")
+                except Exception:
+                    pass
+            else:
+                if os.path.exists(db_path):
+                    size_mb = os.path.getsize(db_path) / (1024 * 1024)
+                    st.success(f"Online — SQLite {size_mb:.1f} MB")
+                else:
+                    st.error("Database not found")
+        except Exception:
+            if os.path.exists(db_path):
+                size_mb = os.path.getsize(db_path) / (1024 * 1024)
+                st.warning(f"SQLite only — {size_mb:.1f} MB (PostgreSQL unavailable)")
+            else:
+                st.error("Database not found")
 
     # LLM status
     with col2:
@@ -1304,49 +1320,40 @@ def _admin_status_tab():
     # Table row counts
     st.subheader("Data Inventory")
     db_path = os.path.join(DATA_DIR, "spy.db")
-    if os.path.exists(db_path):
-        try:
-            conn = sqlite3.connect(db_path)
-            # Enhancement 26: Check DuckDB for analytics tables
-            duck_router = None
-            try:
-                config = _load_config()
-                duck_router = get_router(config)
-            except Exception:
-                pass
+    try:
+        config = _load_config()
+        router = get_router(config)
 
-            tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
-                       "predictions", "intraday_bars", "options_chain",
-                       "options_analytics", "intraday_features", "performance",
-                       "earnings_calendar", "fed_communications"]
-            rows = []
-            for t in tables:
-                try:
-                    if duck_router and t in ANALYTICS_TABLES:
-                        count_df = duck_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
-                        count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
-                        if t != "intraday_bars":
-                            min_df = duck_router.read_analytics(f"SELECT MIN(date) as d FROM {t}")
-                            max_df = duck_router.read_analytics(f"SELECT MAX(date) as d FROM {t}")
-                            min_date = min_df.iloc[0]["d"] if not min_df.empty else "—"
-                            max_date = max_df.iloc[0]["d"] if not max_df.empty else "—"
-                        else:
-                            min_date, max_date = "—", "—"
-                        source = "🦆"
-                    else:
-                        count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                        min_date = conn.execute(f"SELECT MIN(date) FROM {t}").fetchone()[0] if t != "intraday_bars" else "—"
-                        max_date = conn.execute(f"SELECT MAX(date) FROM {t}").fetchone()[0] if t != "intraday_bars" else "—"
-                        source = "📦"
-                except Exception:
-                    count, min_date, max_date, source = 0, "—", "—", "?"
-                rows.append({"Table": t, "Rows": count, "From": min_date or "—",
-                             "To": max_date or "—", "DB": source})
-            conn.close()
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-            st.caption("🦆 = DuckDB analytics, 📦 = SQLite operational")
-        except Exception as e:
-            st.error(f"Error reading database: {e}")
+        tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
+                   "predictions", "intraday_bars", "options_chain",
+                   "options_analytics", "intraday_features", "performance",
+                   "earnings_calendar", "fed_communications"]
+        rows = []
+        for t in tables:
+            try:
+                count_df = router.read_analytics(f"SELECT COUNT(*) as cnt FROM {t}")
+                count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+                if t != "intraday_bars":
+                    min_df = router.read_analytics(f"SELECT MIN(date) as d FROM {t}")
+                    max_df = router.read_analytics(f"SELECT MAX(date) as d FROM {t}")
+                    min_date = min_df.iloc[0]["d"] if not min_df.empty else "—"
+                    max_date = max_df.iloc[0]["d"] if not max_df.empty else "—"
+                    # Convert date objects to strings
+                    if hasattr(min_date, "strftime"):
+                        min_date = min_date.strftime("%Y-%m-%d")
+                    if hasattr(max_date, "strftime"):
+                        max_date = max_date.strftime("%Y-%m-%d")
+                else:
+                    min_date, max_date = "—", "—"
+                source = "🐘" if router.using_postgres else "📦"
+            except Exception:
+                count, min_date, max_date, source = 0, "—", "—", "?"
+            rows.append({"Table": t, "Rows": count, "From": min_date or "—",
+                         "To": max_date or "—", "DB": source})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.caption("🐘 = PostgreSQL" + (" (primary)" if router.using_postgres else "") + ", 📦 = SQLite")
+    except Exception as e:
+        st.error(f"Error reading database: {e}")
 
     # Latest prediction
     st.subheader("Latest Prediction")
@@ -1667,7 +1674,7 @@ def _admin_actions_tab():
                     fetcher = FallbackFetcher(config=config)
                     macro = fetcher.get_macro_fred()
                     today = datetime.now().strftime("%Y-%m-%d")
-                    # Enhancement 26: Write to DuckDB
+                    # Write to database (PostgreSQL or SQLite via router)
                     try:
                         config = _load_config()
                         router = get_router(config)
@@ -2168,34 +2175,42 @@ def _admin_db_tab():
     st.subheader("Database Explorer")
 
     db_path = os.path.join(DATA_DIR, "spy.db")
-    if not os.path.exists(db_path):
-        st.error("Database not found")
-        return
 
-    conn = sqlite3.connect(db_path)
-
-    # Enhancement 26: Get tables from both DBs
-    duck_router = None
     try:
         config = _load_config()
-        duck_router = get_router(config)
+        router = get_router(config)
     except Exception:
-        pass
+        router = None
 
-    sqlite_tables = [r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-    ).fetchall()]
+    # Get table list from the active database
+    all_tables = []
+    if router and router.using_postgres:
+        try:
+            tbl_df = router.read_analytics(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public' ORDER BY table_name"
+            )
+            if not tbl_df.empty:
+                all_tables = tbl_df["table_name"].tolist()
+        except Exception:
+            pass
 
-    # Combine: analytics tables from DuckDB, rest from SQLite
-    all_tables = sorted(set(sqlite_tables) | ANALYTICS_TABLES)
+    if not all_tables:
+        # Fallback to SQLite table list
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            all_tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            ).fetchall()]
+            conn.close()
+
+    if not all_tables:
+        st.error("No database tables found")
+        return
 
     selected = st.selectbox("Table", all_tables, key="db_table")
-    is_duck_table = duck_router and selected in ANALYTICS_TABLES
-
-    if is_duck_table:
-        st.caption(f"🦆 Reading from DuckDB analytics")
-    else:
-        st.caption(f"📦 Reading from SQLite")
+    db_label = "🐘 PostgreSQL" if (router and router.using_postgres) else "📦 SQLite"
+    st.caption(f"Reading from {db_label}")
 
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -2207,22 +2222,23 @@ def _admin_db_tab():
     date_col = "date"
     if selected == "intraday_bars":
         date_col = "timestamp"
-    elif selected == "news":
+    elif selected in ("news", "raw_articles", "model_registry"):
         date_col = "id"
 
     try:
-        if is_duck_table:
-            df = duck_router.read_analytics(
+        if router:
+            df = router.read_analytics(
                 f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}"
             )
-            count_df = duck_router.read_analytics(f"SELECT COUNT(*) as cnt FROM {selected}")
+            count_df = router.read_analytics(f"SELECT COUNT(*) as cnt FROM {selected}")
             total = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
         else:
+            conn = sqlite3.connect(db_path)
             df = pd.read_sql_query(
-                f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}",
-                conn,
+                f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}", conn
             )
             total = conn.execute(f"SELECT COUNT(*) FROM {selected}").fetchone()[0]
+            conn.close()
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.caption(f"Showing {len(df)} of {total} rows")
     except Exception as e:
@@ -2232,33 +2248,24 @@ def _admin_db_tab():
 
     # Custom SQL query
     st.subheader("Custom Query")
-    db_target = st.radio("Target", ["Auto-detect", "DuckDB", "SQLite"], horizontal=True, key="db_target")
     query = st.text_area("SQL (read-only, SELECT only)", value=f"SELECT * FROM {selected} LIMIT 10", key="db_query", height=80)
     if st.button("Run Query", key="run_query"):
         if not query.strip().upper().startswith("SELECT"):
             st.error("Only SELECT queries are allowed")
         else:
             try:
-                use_duck = False
-                if db_target == "DuckDB" and duck_router:
-                    use_duck = True
-                elif db_target == "Auto-detect" and duck_router:
-                    # Check if query references analytics tables
-                    q_upper = query.upper()
-                    use_duck = any(t.upper() in q_upper for t in ANALYTICS_TABLES)
-
-                if use_duck:
-                    df = duck_router.read_analytics(query)
-                    st.caption("🦆 Executed on DuckDB")
+                if router:
+                    df = router.read_analytics(query)
+                    st.caption(f"{db_label} query executed")
                 else:
+                    conn = sqlite3.connect(db_path)
                     df = pd.read_sql_query(query, conn)
+                    conn.close()
                     st.caption("📦 Executed on SQLite")
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 st.caption(f"{len(df)} rows returned")
             except Exception as e:
                 st.error(f"Query error: {e}")
-
-    conn.close()
 
     st.divider()
 
