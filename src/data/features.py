@@ -816,8 +816,9 @@ def get_feature_columns() -> list[str]:
         "news_volume", "news_source_count", "news_volume_spike",
         "sentiment_momentum",
         # Category-specific news volume (worldmonitor feeds)
-        "news_cb_volume", "news_commodity_volume", "news_forex_volume",
-        "news_bond_volume", "news_econ_volume", "news_deriv_volume",
+        # NOTE: Disabled until enough historical data accumulates (all zeros for historical dates)
+        # "news_cb_volume", "news_commodity_volume", "news_forex_volume",
+        # "news_bond_volume", "news_econ_volume", "news_deriv_volume",
         # Geopolitical risk features
         "geo_risk_score", "geo_fear_score", "geo_recovery_score",
         "geo_net_risk", "geo_article_ratio", "geo_max_risk",

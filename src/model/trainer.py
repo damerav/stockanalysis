@@ -715,7 +715,7 @@ class SPYPredictor:
         if not force_save:
             if accuracy < 0.45:
                 gated = True
-                gate_reason = f"val accuracy {accuracy:.3f} < 0.52 threshold"
+                gate_reason = f"val accuracy {accuracy:.3f} < 0.45 threshold"
             elif self.prior_accuracy is not None and accuracy < self.prior_accuracy - 0.02:
                 gated = True
                 gate_reason = (f"val accuracy {accuracy:.3f} degraded > 2% "

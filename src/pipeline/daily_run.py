@@ -723,7 +723,7 @@ class DailyPipeline:
                 train_cols = [c for c in feature_cols if c in full_fv.columns]
                 target = get_target(full_fv)
                 result = self.predictor.train(full_fv[train_cols], target,
-                                              feature_names=train_cols, force_save=True)
+                                              feature_names=train_cols, force_save=False)
                 if result.get("error"):
                     return {"error": f"Auto-retrain failed: {result['error']}"}
                 logger.info(f"Auto-retrained: accuracy={result.get('accuracy', 0):.3f}")
