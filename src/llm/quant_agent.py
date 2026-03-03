@@ -19,6 +19,7 @@ import pandas as pd
 import requests
 
 from src.data.init_db import get_connection, load_config
+from src.data.db_router import get_router
 
 logger = logging.getLogger(__name__)
 
@@ -422,10 +423,10 @@ RULES:
             from src.data.features import build_feature_vector, get_feature_columns, get_target
             from src.model.trainer import SPYPredictor
 
-            conn = get_connection(self.config)
+            router = get_router(self.config)
+            conn = router.get_pg() or router.get_sqlite()
             fv = build_feature_vector(conn, config=self.config)
             if fv is None or fv.empty:
-                conn.close()
                 return {"error": "No feature data available"}
 
             feature_cols = get_feature_columns()
@@ -444,7 +445,6 @@ RULES:
                                      feature_names=available, force_save=False)
 
             if result.get("error"):
-                conn.close()
                 return {"error": f"Training failed: {result['error']}"}
 
             # Predict on test period
@@ -472,7 +472,6 @@ RULES:
                     "confidence": pred.get("confidence", 0),
                 })
 
-            conn.close()
             accuracy = correct / max(total, 1)
 
             return {
@@ -492,10 +491,10 @@ RULES:
             from src.data.features import build_feature_vector, get_feature_columns, get_target
             from src.model.trainer import SPYPredictor
 
-            conn = get_connection(self.config)
+            router = get_router(self.config)
+            conn = router.get_pg() or router.get_sqlite()
             fv = build_feature_vector(conn, config=self.config)
             if fv is None or fv.empty:
-                conn.close()
                 return {"error": "No feature data"}
 
             feature_cols = get_feature_columns()
@@ -505,7 +504,6 @@ RULES:
             predictor = SPYPredictor(self.config)
             result = predictor.train(fv[available], target,
                                      feature_names=available, force_save=False)
-            conn.close()
 
             return {
                 "val_accuracy": result.get("accuracy", 0),
@@ -521,13 +519,9 @@ RULES:
             return {"error": str(e)}
 
     def _tool_get_news_summary(self, days: int = 1, category: str = None) -> dict:
-        """Get news sentiment summary from news.db."""
+        """Get news sentiment summary via PostgreSQL router."""
         try:
-            db_path = self.config.get("news_pipeline", {}).get("db_path", "./data/news.db")
-            if not os.path.exists(db_path):
-                return {"error": "news.db not found"}
-
-            conn = sqlite3.connect(db_path)
+            router = get_router(self.config)
             cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
             where = f"WHERE published_at >= '{cutoff}'"
@@ -535,28 +529,26 @@ RULES:
                 where += f" AND category = '{category}'"
 
             # Overall stats
-            stats = pd.read_sql_query(
+            stats = router.query(
                 f"SELECT COUNT(*) as count, "
                 f"AVG(sentiment_compound) as avg_sentiment, "
                 f"COUNT(DISTINCT source) as sources "
-                f"FROM raw_articles {where}", conn
+                f"FROM raw_articles {where}"
             )
 
             # Top headlines by absolute sentiment
-            top = pd.read_sql_query(
+            top = router.query(
                 f"SELECT headline, source, category, sentiment_compound, published_at "
                 f"FROM raw_articles {where} "
-                f"ORDER BY ABS(sentiment_compound) DESC LIMIT 10", conn
+                f"ORDER BY ABS(sentiment_compound) DESC LIMIT 10"
             )
 
             # Category breakdown
-            cats = pd.read_sql_query(
+            cats = router.query(
                 f"SELECT category, COUNT(*) as count, AVG(sentiment_compound) as avg_sent "
                 f"FROM raw_articles {where} AND category IS NOT NULL "
-                f"GROUP BY category ORDER BY count DESC", conn
+                f"GROUP BY category ORDER BY count DESC"
             )
-
-            conn.close()
 
             return {
                 "period_days": days,
@@ -573,19 +565,20 @@ RULES:
     def _tool_get_regime_history(self, days: int = 30) -> dict:
         """Get HMM regime detection history."""
         try:
-            conn = get_connection(self.config)
-            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            router = get_router(self.config)
+            # Fetch extra days to account for weekends/holidays + HMM needs history
+            fetch_days = max(days * 2, 90)
+            cutoff = (datetime.now() - timedelta(days=fetch_days)).strftime("%Y-%m-%d")
 
             # Get price + macro data for regime detection
-            df = pd.read_sql_query(
+            df = router.query(
                 f"SELECT p.date, p.close, p.volume, m.vix "
                 f"FROM prices p LEFT JOIN macro m ON p.date = m.date "
-                f"WHERE p.date >= '{cutoff}' ORDER BY p.date", conn
+                f"WHERE p.date >= '{cutoff}' ORDER BY p.date"
             )
-            conn.close()
 
-            if df.empty or len(df) < 10:
-                return {"error": "Not enough data for regime detection"}
+            if df.empty or len(df) < 5:
+                return {"error": f"Not enough data for regime detection (got {len(df)} rows)"}
 
             from src.model.regime import HMMRegimeDetector
             detector = HMMRegimeDetector()
@@ -647,23 +640,18 @@ RULES:
     def _tool_assess_news_risk(self, days: int = 1, category: str = None) -> dict:
         """Use DeepSeek to score news risk 1-5 per article (FinRL-DeepSeek pattern)."""
         try:
-            db_path = self.config.get("news_pipeline", {}).get("db_path", "./data/news.db")
-            if not os.path.exists(db_path):
-                return {"error": "news.db not found"}
-
-            conn = sqlite3.connect(db_path)
+            router = get_router(self.config)
             cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
             where = f"WHERE published_at >= '{cutoff}'"
             if category:
                 where += f" AND category = '{category}'"
 
-            articles = pd.read_sql_query(
+            articles = router.query(
                 f"SELECT headline, source, category, sentiment_compound, published_at "
                 f"FROM raw_articles {where} "
-                f"ORDER BY published_at DESC LIMIT 20", conn
+                f"ORDER BY published_at DESC LIMIT 20"
             )
-            conn.close()
 
             if articles.empty:
                 return {"error": "No articles found for the given period"}
@@ -818,10 +806,10 @@ RULES:
         try:
             from src.data.features import build_feature_vector, get_feature_columns, get_target
 
-            conn = get_connection(self.config)
+            router = get_router(self.config)
+            conn = router.get_pg() or router.get_sqlite()
             fv = build_feature_vector(conn, config=self.config)
             if fv is None or fv.empty:
-                conn.close()
                 return {"error": "No feature data available"}
 
             feature_cols = get_feature_columns()
@@ -900,8 +888,6 @@ RULES:
                 actuals_d.append(int(test_target.iloc[i]))
             strategies["high_confidence"] = self._calc_strategy_metrics(preds_d, actuals_d, "High Confidence (>60%)")
 
-            conn.close()
-
             # Build chart data for comparison
             chart_data = {
                 "data": [
@@ -968,16 +954,23 @@ RULES:
         try:
             from src.data.features import build_feature_vector, get_feature_columns
 
-            conn = get_connection(self.config)
+            router = get_router(self.config)
+            conn = router.get_pg() or router.get_sqlite()
             fv = build_feature_vector(conn, config=self.config)
-            conn.close()
 
             if fv is None or fv.empty:
                 return {"error": "No feature data available"}
 
             feature_cols = get_feature_columns()
             available = [c for c in feature_cols if c in fv.columns]
-            feat_df = fv[available].dropna()
+            feat_df = fv[available].copy()
+            # Drop columns that are entirely NaN (e.g. microstructure, options)
+            feat_df = feat_df.dropna(axis=1, how="all")
+            # Drop columns with >50% NaN
+            thresh = int(len(feat_df) * 0.5)
+            feat_df = feat_df.dropna(axis=1, thresh=thresh)
+            available = list(feat_df.columns)
+            feat_df = feat_df.dropna()
 
             if feat_df.empty or len(feat_df) < 30:
                 return {"error": "Not enough data for correlation analysis"}
@@ -1061,11 +1054,10 @@ RULES:
 
             # Get recent price action
             try:
-                conn = get_connection(self.config)
-                prices = pd.read_sql_query(
-                    "SELECT date, close, volume FROM prices ORDER BY date DESC LIMIT 10", conn
+                router_local = get_router(self.config)
+                prices = router_local.query(
+                    "SELECT date, close, volume FROM prices ORDER BY date DESC LIMIT 10"
                 )
-                conn.close()
                 recent_prices = prices.to_dict(orient="records") if not prices.empty else []
                 if len(recent_prices) >= 2:
                     pct_change_1d = round((recent_prices[0]["close"] / recent_prices[1]["close"] - 1) * 100, 2)
