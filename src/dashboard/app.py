@@ -3159,7 +3159,7 @@ def page_quant_agent():
         st.session_state.quant_messages = []
         st.session_state.quant_agent = None
         st.rerun()
-    st.sidebar.caption(f"Model: {agent.model}")
+    st.sidebar.caption(f"Models: {agent.model_fast} (fast) / {agent.model} (deep)")
     st.sidebar.caption(f"History: {len(st.session_state.quant_messages)} messages")
 
 

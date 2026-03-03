@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE = "http://localhost:11434"
 OLLAMA_MODEL = "deepseek-r1:70b"
+OLLAMA_MODEL_FAST = "deepseek-r1:14b"
 
 
 class QuantAgent:
@@ -35,6 +36,7 @@ class QuantAgent:
         llm_cfg = self.config.get("llm", {})
         self.base_url = llm_cfg.get("base_url", OLLAMA_BASE)
         self.model = llm_cfg.get("model", OLLAMA_MODEL)
+        self.model_fast = llm_cfg.get("model_fast", OLLAMA_MODEL_FAST)
         self.data_dir = "./data"
         self.history: list[dict] = []
 
@@ -136,7 +138,7 @@ RULES:
     def chat(self, user_message: str) -> tuple[str, Optional[dict]]:
         """Process a user message. Returns (response_text, chart_data_or_none).
 
-        May make multiple LLM calls if tool use is needed.
+        Uses fast model (14B) for tool routing, big model (70B) for final answer.
         """
         self.history.append({"role": "user", "content": user_message})
 
@@ -146,13 +148,22 @@ RULES:
         messages.extend(self.history[-20:])
 
         # LLM call loop (max 3 tool calls per turn)
+        # Use fast model for tool routing, big model for final interpretation
         chart_data = None
-        for _ in range(4):
-            response_text = self._call_llm(messages)
+        tool_was_called = False
+        for iteration in range(4):
+            # First iterations: fast model for tool selection
+            # After tool results come back: big model for final analysis
+            use_model = self.model if tool_was_called else self.model_fast
+            response_text = self._call_llm(messages, model=use_model)
             if response_text is None:
-                err = "LLM is unavailable. Make sure Ollama is running with DeepSeek R1."
-                self.history.append({"role": "assistant", "content": err})
-                return err, None
+                # Fast model failed? Try big model as fallback
+                if use_model == self.model_fast:
+                    response_text = self._call_llm(messages, model=self.model)
+                if response_text is None:
+                    err = "LLM is unavailable. Make sure Ollama is running."
+                    self.history.append({"role": "assistant", "content": err})
+                    return err, None
 
             # Check if response contains a tool call
             tool_call = self._extract_tool_call(response_text)
@@ -163,6 +174,7 @@ RULES:
                 if tool_name in self.tools:
                     # Execute tool
                     tool_result = self.tools[tool_name](**tool_args)
+                    tool_was_called = True
 
                     # Check if tool returned chart data
                     if isinstance(tool_result, dict) and "chart" in tool_result:
@@ -201,10 +213,16 @@ RULES:
             self._fv_cache_time = now
         return fv
 
-    def _call_llm(self, messages: list[dict]) -> Optional[str]:
-        """Call Ollama chat API. Auto-starts Ollama if not running."""
+    def _call_llm(self, messages: list[dict], model: str = None) -> Optional[str]:
+        """Call Ollama chat API. Auto-starts Ollama if not running.
+        
+        Args:
+            messages: Chat messages.
+            model: Override model name. Defaults to self.model (70B).
+                   Use self.model_fast for quick tasks.
+        """
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": 0.3, "num_predict": 2048},
@@ -719,7 +737,7 @@ RULES:
                 {"role": "user", "content": numbered},
             ]
 
-            risk_response = self._call_llm(risk_prompt)
+            risk_response = self._call_llm(risk_prompt, model=self.model_fast)
             risk_response = self._strip_thinking(risk_response or "")
 
             # Parse risk scores
@@ -812,7 +830,7 @@ RULES:
                 )},
             ]
 
-            response = self._call_llm(hypothesis_prompt)
+            response = self._call_llm(hypothesis_prompt, model=self.model_fast)
             response = self._strip_thinking(response or "")
 
             # Try to parse JSON from response
@@ -1106,7 +1124,7 @@ RULES:
                 )},
             ]
 
-            explanation = self._call_llm(explain_prompt)
+            explanation = self._call_llm(explain_prompt, model=self.model_fast)
             explanation = self._strip_thinking(explanation or "No explanation available.")
 
             return {
