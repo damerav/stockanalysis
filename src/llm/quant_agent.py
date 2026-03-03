@@ -50,20 +50,17 @@ class QuantAgent:
         self._finbert_tokenizer = None
         self._finbert_model = None
 
-        # Tool registry
+        # Tool registry (inference-only — no training/backtest in chatbot)
         self.tools = {
             "query_database": self._tool_query_database,
             "get_prediction_state": self._tool_get_prediction_state,
             "get_model_info": self._tool_get_model_info,
             "get_feature_importance": self._tool_get_feature_importance,
-            "run_backtest": self._tool_run_backtest,
-            "retrain_model": self._tool_retrain_model,
             "get_news_summary": self._tool_get_news_summary,
             "get_regime_history": self._tool_get_regime_history,
             "get_pipeline_status": self._tool_get_pipeline_status,
             "assess_news_risk": self._tool_assess_news_risk,
             "generate_alpha_hypothesis": self._tool_generate_alpha_hypothesis,
-            "compare_strategies": self._tool_compare_strategies,
             "analyze_feature_correlations": self._tool_analyze_feature_correlations,
             "explain_regime": self._tool_explain_regime,
             "search_similar_news": self._tool_search_similar_news,
@@ -93,43 +90,33 @@ TOOLS:
 4. get_feature_importance(top_n=15) — Get top feature importances from the current model
    Example: {"tool": "get_feature_importance", "args": {"top_n": 10}}
 
-5. run_backtest(days=60) — Run walk-forward backtest on recent N days, returns accuracy metrics
-   Example: {"tool": "run_backtest", "args": {"days": 60}}
-
-6. retrain_model() — Retrain the XGBoost model with latest data (GPU). Returns accuracy metrics.
-   Example: {"tool": "retrain_model", "args": {}}
-
-7. get_news_summary(days=1, category=null) — Get news sentiment summary
+5. get_news_summary(days=1, category=null) — Get news sentiment summary
    Categories: markets, forex, bonds, commodities, crypto, centralbanks, economic, ipo, derivatives, fintech, regulation, institutional, analysis
    Example: {"tool": "get_news_summary", "args": {"days": 3, "category": "markets"}}
 
-8. get_regime_history(days=30) — Get HMM regime detection history
+6. get_regime_history(days=30) — Get HMM regime detection history
    Example: {"tool": "get_regime_history", "args": {"days": 30}}
 
-9. get_pipeline_status() — Get latest pipeline run results
+7. get_pipeline_status() — Get latest pipeline run results
    Example: {"tool": "get_pipeline_status", "args": {}}
 
-10. assess_news_risk(days=1, category=null) — Use DeepSeek to score news risk 1-5 (inspired by FinRL-DeepSeek).
+8. assess_news_risk(days=1, category=null) — Use DeepSeek to score news risk 1-5 (inspired by FinRL-DeepSeek).
     Returns per-article risk scores + aggregate risk level. Complements sentiment with a risk dimension.
     Example: {"tool": "assess_news_risk", "args": {"days": 1, "category": "markets"}}
 
-11. generate_alpha_hypothesis(context=null) — Propose new alpha factor ideas based on current regime, model performance,
+9. generate_alpha_hypothesis(context=null) — Propose new alpha factor ideas based on current regime, model performance,
     and feature gaps. Inspired by RD-Agent's hypothesis-backtest loop. Returns hypotheses with rationale.
     Example: {"tool": "generate_alpha_hypothesis", "args": {"context": "model accuracy dropped to 48%"}}
 
-12. compare_strategies(days=60) — Run multiple strategy variants (full ensemble, XGB-only, binary-only, regime-filtered)
-    and compare Sharpe, max drawdown, win rate, and profit factor side-by-side.
-    Example: {"tool": "compare_strategies", "args": {"days": 90}}
-
-13. analyze_feature_correlations(threshold=0.8) — Compute feature correlation matrix, detect multicollinearity,
+10. analyze_feature_correlations(threshold=0.8) — Compute feature correlation matrix, detect multicollinearity,
     and suggest features to drop. Returns top correlated pairs and VIF analysis.
     Example: {"tool": "analyze_feature_correlations", "args": {"threshold": 0.7}}
 
-14. explain_regime() — Use DeepSeek to explain WHY we're in the current HMM regime based on indicators,
+11. explain_regime() — Use DeepSeek to explain WHY we're in the current HMM regime based on indicators,
     recent price action, VIX, volume, and news sentiment. Goes beyond just showing the state label.
     Example: {"tool": "explain_regime", "args": {}}
 
-15. search_similar_news(query, limit=10, category=null, days_back=30) — Semantic vector search for similar articles
+12. search_similar_news(query, limit=10, category=null, days_back=30) — Semantic vector search for similar articles
     using pgvector FinBERT embeddings. Finds historically similar news patterns.
     Example: {"tool": "search_similar_news", "args": {"query": "Fed rate hike inflation", "limit": 5}}
 
@@ -141,7 +128,7 @@ RULES:
 - For SQL queries, use SELECT only (no INSERT/UPDATE/DELETE).
 - When showing numbers, round to 2-3 decimal places.
 - Be concise and quantitative. Use specific numbers, not vague language.
-- If asked to retrain, confirm the results and compare with previous accuracy.
+- If asked to retrain or backtest, explain that retraining and backtesting are admin-only operations run via the daily pipeline or Admin panel.
 - You can chain multiple tool calls across turns to answer complex questions.
 """
         return tool_descriptions

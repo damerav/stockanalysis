@@ -2622,7 +2622,7 @@ def page_quant_agent():
         return
 
     st.caption("Conversational AI assistant powered by DeepSeek R1 70B. "
-               "Ask about predictions, run backtests, query databases, or retrain models.")
+               "Ask about predictions, news sentiment, query databases, or analyze features.")
 
     # Initialize agent in session state
     if "quant_agent" not in st.session_state:
@@ -2651,9 +2651,9 @@ def page_quant_agent():
                 {"role": "user", "content": "Summarize today's news sentiment across all categories"})
             st.rerun()
     with q4:
-        if st.button("🧪 Backtest 60d", key="qa_bt", use_container_width=True):
+        if st.button("📊 Regime History", key="qa_regime_hist", use_container_width=True):
             st.session_state.quant_messages.append(
-                {"role": "user", "content": "Run a 60-day backtest and show me the results"})
+                {"role": "user", "content": "Show me the regime history for the last 30 days"})
             st.rerun()
 
     # Quick action buttons — Row 2 (new Alpha-Agent inspired tools)
@@ -2669,9 +2669,9 @@ def page_quant_agent():
                 {"role": "user", "content": "Generate new alpha factor hypotheses based on current market conditions"})
             st.rerun()
     with q7:
-        if st.button("⚔️ Compare Strategies", key="qa_compare", use_container_width=True):
+        if st.button("🔗 Correlations", key="qa_corr", use_container_width=True):
             st.session_state.quant_messages.append(
-                {"role": "user", "content": "Compare all strategy variants over the last 60 days"})
+                {"role": "user", "content": "Analyze feature correlations and detect multicollinearity"})
             st.rerun()
     with q8:
         if st.button("🌊 Explain Regime", key="qa_regime", use_container_width=True):
