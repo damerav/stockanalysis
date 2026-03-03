@@ -104,20 +104,37 @@ def compute_geopolitical_score(text: str) -> dict:
 
 
 def compute_daily_geopolitical_features(config: dict = None) -> pd.DataFrame:
-    """Compute daily geopolitical features from news.db articles.
+    """Compute daily geopolitical features from news articles.
 
+    Routes through PostgreSQL (primary) with SQLite news.db fallback.
     Returns DataFrame with columns: date, geo_risk_score, geo_fear_score,
     geo_recovery_score, geo_net_risk, geo_article_ratio, geo_max_risk
     """
-    db_path = (config or {}).get("news_pipeline", {}).get("db_path", "./data/news.db")
-    if not os.path.exists(db_path):
-        return pd.DataFrame()
-
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT published_at, headline, summary FROM raw_articles"
-    ).fetchall()
-    conn.close()
+    # Try PostgreSQL router first
+    try:
+        from src.data.db_router import get_router
+        router = get_router(config)
+        cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        df_articles = router.query(
+            f"SELECT published_at, headline, summary FROM raw_articles "
+            f"WHERE published_at >= '{cutoff}'"
+        )
+        if not df_articles.empty:
+            rows = list(df_articles.itertuples(index=False, name=None))
+        else:
+            rows = []
+    except Exception:
+        # Fallback to SQLite news.db
+        db_path = (config or {}).get("news_pipeline", {}).get("db_path", "./data/news.db")
+        if not os.path.exists(db_path):
+            return pd.DataFrame()
+        conn = sqlite3.connect(db_path)
+        cutoff = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        rows = conn.execute(
+            "SELECT published_at, headline, summary FROM raw_articles WHERE published_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        conn.close()
 
     if not rows:
         return pd.DataFrame()
@@ -208,12 +225,75 @@ def compute_finbert_sentiment(texts: list[str], batch_size: int = 32) -> list[di
 
 
 def compute_daily_finbert_features(config: dict = None, days_back: int = 7) -> pd.DataFrame:
-    """Compute daily FinBERT sentiment features from recent news.db articles.
+    """Compute daily FinBERT sentiment features from recent news articles.
 
-    Uses a cache table (finbert_cache) in news.db to avoid re-scoring articles.
+    Uses PostgreSQL (primary) with SQLite news.db fallback.
+    Uses a cache table (finbert_cache) to avoid re-scoring articles.
     Returns DataFrame with: date, finbert_positive, finbert_negative,
     finbert_neutral, finbert_score (positive - negative)
     """
+    cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    # Try PostgreSQL router first
+    try:
+        from src.data.db_router import get_router
+        router = get_router(config)
+        if router.using_postgres:
+            # Ensure cache table exists in PostgreSQL
+            router.execute("""
+                CREATE TABLE IF NOT EXISTS finbert_cache (
+                    article_id INTEGER PRIMARY KEY,
+                    fb_positive REAL,
+                    fb_negative REAL,
+                    fb_neutral REAL
+                )
+            """)
+            # Get uncached articles
+            uncached_df = router.query(
+                "SELECT a.id, a.published_at, a.headline, a.summary "
+                "FROM raw_articles a LEFT JOIN finbert_cache c ON a.id = c.article_id "
+                f"WHERE c.article_id IS NULL AND a.published_at >= '{cutoff}' "
+                "ORDER BY a.published_at"
+            )
+            if not uncached_df.empty:
+                logger.info(f"FinBERT: scoring {len(uncached_df)} uncached articles...")
+                texts = [(row.headline or "") + " " + (row.summary or "")
+                         for row in uncached_df.itertuples()]
+                texts = [t.strip() or "neutral" for t in texts]
+                sentiments = compute_finbert_sentiment(texts)
+                for (_, row), sent in zip(uncached_df.iterrows(), sentiments):
+                    router.execute(
+                        "INSERT INTO finbert_cache (article_id, fb_positive, fb_negative, fb_neutral) "
+                        "VALUES (%s, %s, %s, %s) ON CONFLICT (article_id) DO NOTHING",
+                        (int(row["id"]), sent["positive"], sent["negative"], sent["neutral"]),
+                    )
+                logger.info(f"FinBERT: cached {len(uncached_df)} scores")
+
+            # Read all cached scores with dates
+            result_df = router.query(
+                "SELECT a.published_at, c.fb_positive, c.fb_negative, c.fb_neutral "
+                "FROM raw_articles a JOIN finbert_cache c ON a.id = c.article_id "
+                f"WHERE a.published_at >= '{cutoff}' ORDER BY a.published_at"
+            )
+            if result_df.empty:
+                return pd.DataFrame()
+
+            result_df["date"] = result_df["published_at"].apply(_parse_date_str)
+            result_df = result_df[result_df["date"] != ""]
+            if result_df.empty:
+                return pd.DataFrame()
+
+            daily = result_df.groupby("date").agg(
+                finbert_positive=("fb_positive", "mean"),
+                finbert_negative=("fb_negative", "mean"),
+                finbert_neutral=("fb_neutral", "mean"),
+            ).reset_index()
+            daily["finbert_score"] = daily["finbert_positive"] - daily["finbert_negative"]
+            return daily
+    except Exception as e:
+        logger.debug(f"PostgreSQL FinBERT path failed, falling back: {e}")
+
+    # Fallback to SQLite news.db
     db_path = (config or {}).get("news_pipeline", {}).get("db_path", "./data/news.db")
     if not os.path.exists(db_path):
         return pd.DataFrame()

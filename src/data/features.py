@@ -447,73 +447,69 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
     # Charm normalized by close price
     df["charm_normalized"] = df["charm_exposure"] / df["close"].replace(0, np.nan)
 
-    # --- P3: Earnings calendar features (batched) ---
+    # --- P3: Earnings calendar features (batched, vectorized) ---
     try:
         all_earnings = pd.read_sql_query(
             "SELECT date, ticker FROM earnings_calendar", conn
         )
         if not all_earnings.empty:
             all_earnings["date"] = pd.to_datetime(all_earnings["date"])
-            earn_dates = all_earnings["date"].values
+            earn_dates_sorted = np.sort(all_earnings["date"].values)
 
-            def _earnings_for_date(date_str):
-                try:
-                    d = datetime.strptime(date_str, "%Y-%m-%d").date()
-                    d_ts = pd.Timestamp(d)
-                    # density: count within ±3 days
-                    mask = (earn_dates >= (d_ts - pd.Timedelta(days=3)).to_datetime64()) & \
-                           (earn_dates <= (d_ts + pd.Timedelta(days=3)).to_datetime64())
-                    density = int(mask.sum())
-                    # days to next
-                    future = earn_dates[earn_dates >= d_ts.to_datetime64()]
-                    days_to_next = int((pd.Timestamp(future.min()) - d_ts).days) if len(future) > 0 else 30
-                    # earnings week
-                    week_start = d_ts - pd.Timedelta(days=d_ts.weekday())
-                    week_end = week_start + pd.Timedelta(days=4)
-                    week_mask = (earn_dates >= week_start.to_datetime64()) & \
-                                (earn_dates <= week_end.to_datetime64())
-                    earnings_week = 1 if week_mask.any() else 0
-                    return {"earnings_density": density, "days_to_next_mega": min(days_to_next, 30),
-                            "earnings_week": earnings_week}
-                except Exception:
-                    return {"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0}
-
-            earn_results = [_earnings_for_date(d) for d in df["date"]]
+            df_dates = pd.to_datetime(df["date"])
+            # Vectorized: density = count within ±3 days
+            densities = []
+            days_to_next_list = []
+            earnings_week_list = []
+            for d_ts in df_dates:
+                mask = (earn_dates_sorted >= (d_ts - pd.Timedelta(days=3))) & \
+                       (earn_dates_sorted <= (d_ts + pd.Timedelta(days=3)))
+                densities.append(int(mask.sum()))
+                future = earn_dates_sorted[earn_dates_sorted >= d_ts]
+                days_to_next_list.append(min(int((pd.Timestamp(future[0]) - d_ts).days), 30) if len(future) > 0 else 30)
+                week_start = d_ts - pd.Timedelta(days=d_ts.weekday())
+                week_end = week_start + pd.Timedelta(days=4)
+                week_mask = (earn_dates_sorted >= week_start) & (earn_dates_sorted <= week_end)
+                earnings_week_list.append(1 if week_mask.any() else 0)
+            df["earnings_density"] = densities
+            df["days_to_next_mega"] = days_to_next_list
+            df["earnings_week"] = earnings_week_list
         else:
-            earn_results = [{"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0}] * len(df)
+            df["earnings_density"] = 0
+            df["days_to_next_mega"] = 30
+            df["earnings_week"] = 0
     except Exception:
-        earn_results = [{"earnings_density": 0, "days_to_next_mega": 30, "earnings_week": 0}] * len(df)
-    earn_df = pd.DataFrame(earn_results, index=df.index)
-    for col in earn_df.columns:
-        df[col] = earn_df[col]
+        df["earnings_density"] = 0
+        df["days_to_next_mega"] = 30
+        df["earnings_week"] = 0
 
-    # --- P3: Fed communication features (batched — single query) ---
+    # --- P3: Fed communication features (batched — vectorized merge+ffill) ---
     try:
         fed_all = pd.read_sql_query(
             "SELECT date, type, hawkish_score FROM fed_communications ORDER BY date", conn
         )
         if not fed_all.empty:
-            fomc_scores = fed_all[fed_all["type"] == "fomc_statement"].set_index("date")["hawkish_score"]
-            bb_scores = fed_all[fed_all["type"] == "beige_book"].set_index("date")["hawkish_score"]
-
-            def _fed_for_date(date_str):
-                fomc_prev = fomc_scores[fomc_scores.index <= date_str]
-                fomc_score = float(fomc_prev.iloc[-1]) if not fomc_prev.empty else 0.0
-                bb_prev = bb_scores[bb_scores.index <= date_str]
-                bb_score = float(bb_prev.iloc[-1]) if not bb_prev.empty else 0.0
-                avg = (fomc_score + bb_score) / 2 if (fomc_score or bb_score) else 0.0
-                return {"fomc_hawkish_score": round(fomc_score, 3),
-                        "beige_book_score": round(bb_score, 3),
-                        "fed_sentiment_avg": round(avg, 3)}
-
-            fed_results = [_fed_for_date(d) for d in df["date"]]
+            # Pivot to get latest score per type per date, then ffill
+            fomc_df = fed_all[fed_all["type"] == "fomc_statement"][["date", "hawkish_score"]].rename(
+                columns={"hawkish_score": "fomc_hawkish_score"}).set_index("date")
+            bb_df = fed_all[fed_all["type"] == "beige_book"][["date", "hawkish_score"]].rename(
+                columns={"hawkish_score": "beige_book_score"}).set_index("date")
+            # Merge onto df dates and forward-fill (carry last known score)
+            df = df.set_index("date")
+            df = df.join(fomc_df, how="left")
+            df = df.join(bb_df, how="left")
+            df["fomc_hawkish_score"] = df["fomc_hawkish_score"].ffill().fillna(0).round(3)
+            df["beige_book_score"] = df["beige_book_score"].ffill().fillna(0).round(3)
+            df["fed_sentiment_avg"] = ((df["fomc_hawkish_score"] + df["beige_book_score"]) / 2).round(3)
+            df = df.reset_index()
         else:
-            fed_results = [{"fomc_hawkish_score": 0, "beige_book_score": 0, "fed_sentiment_avg": 0}] * len(df)
+            df["fomc_hawkish_score"] = 0
+            df["beige_book_score"] = 0
+            df["fed_sentiment_avg"] = 0
     except Exception:
-        fed_results = [{"fomc_hawkish_score": 0, "beige_book_score": 0, "fed_sentiment_avg": 0}] * len(df)
-    fed_df = pd.DataFrame(fed_results, index=df.index)
-    for col in fed_df.columns:
-        df[col] = fed_df[col]
+        df["fomc_hawkish_score"] = 0
+        df["beige_book_score"] = 0
+        df["fed_sentiment_avg"] = 0
 
     # --- Intraday microstructure features (Enhancement 21) ---
     # Only compute for dates that have intraday bars (skip bulk of historical dates)
@@ -598,17 +594,14 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
     realised_vol_20d = df["close"].pct_change().rolling(20).std() * np.sqrt(252) * 100
     df["vix_realised_ratio"] = df["vix"] / realised_vol_20d.replace(0, np.nan)
 
-    # --- Calendar / event features (P1) ---
-    cal_features = []
-    for _, row in df.iterrows():
-        try:
-            d = datetime.strptime(row["date"], "%Y-%m-%d").date()
-            cal_features.append(get_event_features(d))
-        except Exception:
-            cal_features.append(get_event_features())
-    cal_df = pd.DataFrame(cal_features, index=df.index)
-    for col in cal_df.columns:
-        df[col] = cal_df[col]
+    # --- Calendar / event features (P1) — vectorized ---
+    try:
+        date_objs = pd.to_datetime(df["date"]).dt.date
+        cal_results = [get_event_features(d) for d in date_objs]
+    except Exception:
+        cal_results = [get_event_features() for _ in range(len(df))]
+    cal_df = pd.DataFrame(cal_results, index=df.index)
+    df = pd.concat([df, cal_df], axis=1)
 
     # --- GAP 8: Context features ---
     # VIX percentile (90-day rolling)
@@ -634,65 +627,53 @@ def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dic
         ), axis=1
     )
 
-    # --- News-derived features from expanded news.db ---
+    # --- News-derived features from PostgreSQL (or news.db fallback) ---
     try:
-        news_db_path = (config or {}).get("news_pipeline", {}).get("db_path", "./data/news.db")
-        if os.path.exists(news_db_path):
-            news_conn = sqlite3.connect(news_db_path)
-            # Overall volume metrics
-            news_daily = pd.read_sql_query(
-                "SELECT substr(published_at, 1, 10) as date, "
-                "COUNT(*) as news_volume, "
-                "COUNT(DISTINCT source) as news_source_count "
-                "FROM raw_articles GROUP BY substr(published_at, 1, 10)",
-                news_conn,
-            )
-            # Category-specific volume (for sentiment decomposition)
-            cat_volume = pd.read_sql_query(
-                "SELECT substr(published_at, 1, 10) as date, category, COUNT(*) as cnt "
-                "FROM raw_articles WHERE category IS NOT NULL "
-                "GROUP BY substr(published_at, 1, 10), category",
-                news_conn,
-            )
-            news_conn.close()
+        router = get_router(config)
+        # Overall volume metrics
+        news_daily = router.query(
+            "SELECT substr(published_at, 1, 10) as date, "
+            "COUNT(*) as news_volume, "
+            "COUNT(DISTINCT source) as news_source_count "
+            "FROM raw_articles GROUP BY substr(published_at, 1, 10)"
+        )
+        # Category-specific volume
+        cat_volume = router.query(
+            "SELECT substr(published_at, 1, 10) as date, category, COUNT(*) as cnt "
+            "FROM raw_articles WHERE category IS NOT NULL "
+            "GROUP BY substr(published_at, 1, 10), category"
+        )
 
-            if not news_daily.empty:
-                news_daily = news_daily.set_index("date")
-                df["news_volume"] = df["date"].map(news_daily.get("news_volume", {})).fillna(0)
-                df["news_source_count"] = df["date"].map(news_daily.get("news_source_count", {})).fillna(0)
-                nv = df["news_volume"].replace(0, np.nan)
-                df["news_volume_spike"] = nv / nv.rolling(5, min_periods=1).mean()
-                df["news_volume_spike"] = df["news_volume_spike"].fillna(1.0)
-            else:
-                df["news_volume"] = 0
-                df["news_source_count"] = 0
-                df["news_volume_spike"] = 1.0
-
-            # Category-specific volume features
-            cat_cols = {
-                "centralbanks": "news_cb_volume",
-                "commodities": "news_commodity_volume",
-                "forex": "news_forex_volume",
-                "bonds": "news_bond_volume",
-                "economic": "news_econ_volume",
-                "derivatives": "news_deriv_volume",
-            }
-            if not cat_volume.empty:
-                for cat_name, col_name in cat_cols.items():
-                    cat_sub = cat_volume[cat_volume["category"] == cat_name].set_index("date")["cnt"]
-                    df[col_name] = df["date"].map(cat_sub).fillna(0)
-            else:
-                for col_name in cat_cols.values():
-                    df[col_name] = 0
+        if not news_daily.empty:
+            news_daily = news_daily.set_index("date")
+            df["news_volume"] = df["date"].map(news_daily.get("news_volume", {})).fillna(0)
+            df["news_source_count"] = df["date"].map(news_daily.get("news_source_count", {})).fillna(0)
+            nv = df["news_volume"].replace(0, np.nan)
+            df["news_volume_spike"] = nv / nv.rolling(5, min_periods=1).mean()
+            df["news_volume_spike"] = df["news_volume_spike"].fillna(1.0)
         else:
             df["news_volume"] = 0
             df["news_source_count"] = 0
             df["news_volume_spike"] = 1.0
-            for col_name in ["news_cb_volume", "news_commodity_volume", "news_forex_volume",
-                             "news_bond_volume", "news_econ_volume", "news_deriv_volume"]:
+
+        # Category-specific volume features
+        cat_cols = {
+            "centralbanks": "news_cb_volume",
+            "commodities": "news_commodity_volume",
+            "forex": "news_forex_volume",
+            "bonds": "news_bond_volume",
+            "economic": "news_econ_volume",
+            "derivatives": "news_deriv_volume",
+        }
+        if not cat_volume.empty:
+            for cat_name, col_name in cat_cols.items():
+                cat_sub = cat_volume[cat_volume["category"] == cat_name].set_index("date")["cnt"]
+                df[col_name] = df["date"].map(cat_sub).fillna(0)
+        else:
+            for col_name in cat_cols.values():
                 df[col_name] = 0
     except Exception as e:
-        logger.debug(f"News features from news.db failed: {e}")
+        logger.debug(f"News features failed: {e}")
         df["news_volume"] = 0
         df["news_source_count"] = 0
         df["news_volume_spike"] = 1.0

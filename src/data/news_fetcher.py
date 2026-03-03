@@ -210,24 +210,23 @@ class NewsFetcher:
         return count
 
     def fetch_rss(self) -> int:
-        """Fetch news from RSS feeds (45+ categorized feeds). Returns count of new articles."""
-        count = 0
+        """Fetch news from RSS feeds (45+ categorized feeds) in parallel. Returns count of new articles."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         now = datetime.now().isoformat()
         headers = {
             "User-Agent": "Mozilla/5.0 (compatible; StockAnalysis/2.0; +https://github.com/damerav/stockanalysis)"
         }
-        for feed_tuple in self.RSS_FEEDS:
+
+        def _fetch_one_feed(feed_tuple):
             source, feed_url, category = feed_tuple
+            articles = []
             try:
                 resp = requests.get(feed_url, headers=headers, timeout=15)
                 feed = feedparser.parse(resp.content)
-                entries = feed.entries[:100]  # up to 100 per feed
-                src_count = 0
-                for entry in entries:
+                for entry in feed.entries[:100]:
                     headline = entry.get("title", "")
                     summary = entry.get("summary", "")[:500]
                     article_url = entry.get("link", "")
-                    # Normalize published date to ISO format for consistent sorting
                     pub_at = now
                     if hasattr(entry, "published_parsed") and entry.published_parsed:
                         try:
@@ -250,22 +249,33 @@ class NewsFetcher:
                         else:
                             pub_at = raw_pub
                     ticker = self._match_ticker(headline + " " + summary)
-                    try:
-                        self.conn.execute(
-                            "INSERT OR IGNORE INTO raw_articles "
-                            "(source, ticker, headline, summary, url, published_at, fetched_at, category) "
-                            "VALUES (?,?,?,?,?,?,?,?)",
-                            (source, ticker, headline, summary, article_url, pub_at, now, category),
-                        )
-                        src_count += 1
-                    except sqlite3.IntegrityError:
-                        pass
-                count += src_count
-                if src_count > 0:
-                    logger.info(f"RSS {source} [{category}]: {src_count} new articles")
+                    articles.append((source, ticker, headline, summary, article_url, pub_at, now, category))
             except Exception as e:
                 logger.warning(f"RSS fetch failed for {source}: {e}")
-            time.sleep(0.3)  # be polite between feeds
+            return source, category, articles
+
+        # Fetch all feeds in parallel (8 threads — polite but fast)
+        all_articles = []
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch_one_feed, ft): ft for ft in self.RSS_FEEDS}
+            for future in as_completed(futures):
+                source, category, articles = future.result()
+                if articles:
+                    all_articles.extend(articles)
+                    logger.info(f"RSS {source} [{category}]: {len(articles)} articles")
+
+        # Batch insert (single transaction)
+        count = 0
+        for row in all_articles:
+            try:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO raw_articles "
+                    "(source, ticker, headline, summary, url, published_at, fetched_at, category) "
+                    "VALUES (?,?,?,?,?,?,?,?)", row,
+                )
+                count += 1
+            except sqlite3.IntegrityError:
+                pass
         self.conn.commit()
         logger.info(f"RSS total: {count} new articles from {len(self.RSS_FEEDS)} feeds")
         return count
