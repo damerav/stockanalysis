@@ -2620,7 +2620,7 @@ def page_quant_agent():
     # Initialize agent in session state
     if "quant_agent" not in st.session_state:
         from src.llm.quant_agent import QuantAgent
-        st.session_state.quant_agent = QuantAgent(load_config())
+        st.session_state.quant_agent = QuantAgent(_load_config())
     if "quant_messages" not in st.session_state:
         st.session_state.quant_messages = []
 
