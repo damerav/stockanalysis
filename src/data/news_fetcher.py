@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS raw_articles (
     summary TEXT,
     url TEXT UNIQUE,
     published_at TEXT,
-    fetched_at TEXT
+    fetched_at TEXT,
+    sentiment_compound REAL,
+    sentiment_pos REAL,
+    sentiment_neg REAL,
+    sentiment_neu REAL
 );
 CREATE INDEX IF NOT EXISTS idx_raw_articles_ticker ON raw_articles(ticker);
 CREATE INDEX IF NOT EXISTS idx_raw_articles_published ON raw_articles(published_at);
@@ -35,6 +39,42 @@ CREATE INDEX IF NOT EXISTS idx_raw_articles_published ON raw_articles(published_
 NEWS_DB_MIGRATION = """
 ALTER TABLE raw_articles ADD COLUMN category TEXT DEFAULT 'markets';
 """
+
+# Migration: add sentiment columns to existing databases
+NEWS_DB_SENTIMENT_MIGRATION = [
+    "ALTER TABLE raw_articles ADD COLUMN sentiment_compound REAL",
+    "ALTER TABLE raw_articles ADD COLUMN sentiment_pos REAL",
+    "ALTER TABLE raw_articles ADD COLUMN sentiment_neg REAL",
+    "ALTER TABLE raw_articles ADD COLUMN sentiment_neu REAL",
+]
+
+
+# VADER sentiment — compute at fetch time
+try:
+    from nltk.sentiment.vader import SentimentIntensityAnalyzer
+    _vader = SentimentIntensityAnalyzer()
+except ImportError:
+    _vader = None
+
+
+def _compute_vader(text: str) -> tuple:
+    """Compute VADER sentiment. Returns (compound, pos, neg, neu)."""
+    if _vader and text:
+        scores = _vader.polarity_scores(text)
+        return (scores["compound"], scores["pos"], scores["neg"], scores["neu"])
+    # Simple keyword fallback
+    if not text:
+        return (0.0, 0.0, 0.0, 1.0)
+    text_lower = text.lower()
+    pos_words = ["surge", "rally", "gain", "bull", "rise", "profit", "beat", "strong", "soar", "jump"]
+    neg_words = ["crash", "drop", "fall", "bear", "loss", "miss", "weak", "fear", "plunge", "sink"]
+    p = sum(1 for w in pos_words if w in text_lower)
+    n = sum(1 for w in neg_words if w in text_lower)
+    total = p + n
+    if total == 0:
+        return (0.0, 0.0, 0.0, 1.0)
+    compound = (p - n) / total
+    return (compound, max(0, compound), abs(min(0, compound)), 1.0 - abs(compound))
 
 
 class NewsFetcher:
@@ -168,6 +208,17 @@ class NewsFetcher:
             self.conn.commit()
         except sqlite3.OperationalError:
             pass
+        # Migrate: add sentiment columns if missing
+        try:
+            self.conn.execute("SELECT sentiment_compound FROM raw_articles LIMIT 1")
+        except sqlite3.OperationalError:
+            for sql in NEWS_DB_SENTIMENT_MIGRATION:
+                try:
+                    self.conn.execute(sql)
+                except sqlite3.OperationalError:
+                    pass
+            self.conn.commit()
+            logger.info("Migrated news.db: added sentiment columns")
 
     def fetch_finnhub(self, category: str = "general", days_back: int = 3) -> int:
         """Fetch market news from Finnhub API. Returns count of new articles."""
@@ -195,12 +246,15 @@ class NewsFetcher:
             pub_ts = a.get("datetime", 0)
             pub_at = datetime.fromtimestamp(pub_ts).isoformat() if pub_ts else now
             ticker = self._match_ticker(headline + " " + summary)
+            sent = _compute_vader(headline + " " + summary)
             try:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO raw_articles "
-                    "(source, ticker, headline, summary, url, published_at, fetched_at) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    ("finnhub", ticker, headline, summary, article_url, pub_at, now),
+                    "(source, ticker, headline, summary, url, published_at, fetched_at, "
+                    "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    ("finnhub", ticker, headline, summary, article_url, pub_at, now,
+                     sent[0], sent[1], sent[2], sent[3]),
                 )
                 count += 1
             except sqlite3.IntegrityError:
@@ -249,7 +303,9 @@ class NewsFetcher:
                         else:
                             pub_at = raw_pub
                     ticker = self._match_ticker(headline + " " + summary)
-                    articles.append((source, ticker, headline, summary, article_url, pub_at, now, category))
+                    sent = _compute_vader(headline + " " + summary)
+                    articles.append((source, ticker, headline, summary, article_url, pub_at, now, category,
+                                     sent[0], sent[1], sent[2], sent[3]))
             except Exception as e:
                 logger.warning(f"RSS fetch failed for {source}: {e}")
             return source, category, articles
@@ -270,8 +326,9 @@ class NewsFetcher:
             try:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO raw_articles "
-                    "(source, ticker, headline, summary, url, published_at, fetched_at, category) "
-                    "VALUES (?,?,?,?,?,?,?,?)", row,
+                    "(source, ticker, headline, summary, url, published_at, fetched_at, category, "
+                    "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", row,
                 )
                 count += 1
             except sqlite3.IntegrityError:
@@ -311,11 +368,14 @@ class NewsFetcher:
                     pub_ts = a.get("datetime", 0)
                     pub_at = datetime.fromtimestamp(pub_ts).isoformat() if pub_ts else now
                     try:
+                        sent = _compute_vader(headline + " " + summary)
                         self.conn.execute(
                             "INSERT OR IGNORE INTO raw_articles "
-                            "(source, ticker, headline, summary, url, published_at, fetched_at) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            ("finnhub_company", ticker, headline, summary, article_url, pub_at, now),
+                            "(source, ticker, headline, summary, url, published_at, fetched_at, "
+                            "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            ("finnhub_company", ticker, headline, summary, article_url, pub_at, now,
+                             sent[0], sent[1], sent[2], sent[3]),
                         )
                         count += 1
                     except sqlite3.IntegrityError:
@@ -362,11 +422,14 @@ class NewsFetcher:
                             ticker = t
                             break
                     try:
+                        sent = _compute_vader(headline + " " + summary)
                         self.conn.execute(
                             "INSERT OR IGNORE INTO raw_articles "
-                            "(source, ticker, headline, summary, url, published_at, fetched_at) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            ("alpha_vantage", ticker, headline, summary, article_url, pub_at, now),
+                            "(source, ticker, headline, summary, url, published_at, fetched_at, "
+                            "sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            ("alpha_vantage", ticker, headline, summary, article_url, pub_at, now,
+                             sent[0], sent[1], sent[2], sent[3]),
                         )
                         count += 1
                     except sqlite3.IntegrityError:
@@ -460,6 +523,60 @@ class NewsFetcher:
             r[0] or "markets": {"count": r[1], "source_count": r[2]}
             for r in rows
         }
+
+    def backfill_sentiment(self) -> int:
+        """Backfill VADER sentiment for articles that have NULL sentiment_compound."""
+        rows = self.conn.execute(
+            "SELECT id, headline, summary FROM raw_articles "
+            "WHERE sentiment_compound IS NULL"
+        ).fetchall()
+        if not rows:
+            logger.info("No articles need sentiment backfill")
+            return 0
+        count = 0
+        for row_id, headline, summary in rows:
+            text = ((headline or "") + " " + (summary or "")).strip()
+            sent = _compute_vader(text)
+            self.conn.execute(
+                "UPDATE raw_articles SET sentiment_compound=?, sentiment_pos=?, "
+                "sentiment_neg=?, sentiment_neu=? WHERE id=?",
+                (sent[0], sent[1], sent[2], sent[3], row_id),
+            )
+            count += 1
+        self.conn.commit()
+        logger.info(f"Backfilled sentiment for {count} articles in news.db")
+        return count
+
+    def sync_sentiment_to_postgres(self) -> int:
+        """Sync sentiment values from news.db to PostgreSQL raw_articles."""
+        try:
+            from src.data.db_router import get_router
+            router = get_router(self.config)
+            if not router.using_postgres:
+                return 0
+            pg = router.get_pg()
+            cur = pg.cursor()
+            # Get articles with sentiment from news.db
+            rows = self.conn.execute(
+                "SELECT url, sentiment_compound, sentiment_pos, sentiment_neg, sentiment_neu "
+                "FROM raw_articles WHERE sentiment_compound IS NOT NULL"
+            ).fetchall()
+            updated = 0
+            for url, compound, pos, neg, neu in rows:
+                cur.execute(
+                    "UPDATE raw_articles SET sentiment_compound=%s, sentiment_pos=%s, "
+                    "sentiment_neg=%s, sentiment_neu=%s "
+                    "WHERE url=%s AND (sentiment_compound IS NULL OR sentiment_compound = 0)",
+                    (compound, pos, neg, neu, url),
+                )
+                if cur.rowcount > 0:
+                    updated += 1
+            cur.close()
+            logger.info(f"Synced sentiment to PostgreSQL: {updated} rows updated")
+            return updated
+        except Exception as e:
+            logger.warning(f"PostgreSQL sentiment sync failed: {e}")
+            return 0
 
     def close(self):
         self.conn.close()

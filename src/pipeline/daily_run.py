@@ -279,6 +279,9 @@ class DailyPipeline:
                     bridged += 1
                 except Exception:
                     pass
+            # Sync sentiment to PostgreSQL for Quant Agent queries
+            nf.backfill_sentiment()
+            nf.sync_sentiment_to_postgres()
             nf.close()
             logger.info(f"Expanded news: {expanded_count} new, {bridged} bridged to DB")
             if category_stats:
