@@ -51,6 +51,15 @@ class WhatIfEngine:
             conn.close()
         return self._feature_df
 
+    def _get_model_features(self) -> list[str]:
+        """Return the feature list the model was trained on.
+        Falls back to all available feature columns if metadata is missing."""
+        predictor = self._get_predictor()
+        fv = self._get_features()
+        if predictor.trained_feature_names:
+            return [c for c in predictor.trained_feature_names if c in fv.columns]
+        return [c for c in self._feature_cols if c in fv.columns]
+
     # ------------------------------------------------------------------
     # 8B: ES Strategy What-If
     # ------------------------------------------------------------------
@@ -205,11 +214,12 @@ class WhatIfEngine:
         if fv is None or fv.empty:
             return {"error": "no feature data"}
 
-        available = [c for c in self._feature_cols if c in fv.columns]
+        available = self._get_model_features()
         latest = fv[available].iloc[-1].copy()
 
         # Original prediction
-        original = predictor.predict(latest.values.astype(np.float64))
+        original = predictor.predict(latest.values.astype(np.float64),
+                                     feature_names=available)
 
         # Modified prediction
         modified_features = latest.copy()
@@ -217,7 +227,8 @@ class WhatIfEngine:
             if key in modified_features.index:
                 modified_features[key] = val
 
-        modified = predictor.predict(modified_features.values.astype(np.float64))
+        modified = predictor.predict(modified_features.values.astype(np.float64),
+                                     feature_names=available)
 
         return {
             "type": "spy_scenario_inject",
@@ -240,7 +251,7 @@ class WhatIfEngine:
         if fv is None or fv.empty:
             return {"error": "no feature data"}
 
-        available = [c for c in self._feature_cols if c in fv.columns]
+        available = self._get_model_features()
         X = fv[available].copy()
         y = get_target(fv)
 
@@ -253,14 +264,14 @@ class WhatIfEngine:
         ablated_preds = []
         for i in range(len(X_test)):
             row = X_test.iloc[i].values.astype(np.float64).copy()
-            baseline_preds.append(predictor.predict(row)["predicted_class"])
+            baseline_preds.append(predictor.predict(row, feature_names=available)["predicted_class"])
 
             ablated = row.copy()
             for feat in drop_list:
                 if feat in X_test.columns:
                     idx = list(X_test.columns).index(feat)
                     ablated[idx] = 0.0
-            ablated_preds.append(predictor.predict(ablated)["predicted_class"])
+            ablated_preds.append(predictor.predict(ablated, feature_names=available)["predicted_class"])
 
         y_vals = y_test.values
         valid = ~np.isnan(y_vals.astype(float))
@@ -291,7 +302,7 @@ class WhatIfEngine:
         if fv is None or fv.empty:
             return {"error": "no feature data"}
 
-        available = [c for c in self._feature_cols if c in fv.columns]
+        available = self._get_model_features()
         X = fv[available]
         latest = X.iloc[-1].values.astype(np.float64).copy()
         stds = X.std().values.astype(np.float64)
@@ -304,7 +315,7 @@ class WhatIfEngine:
         for _ in range(n_sims):
             noise = rng.normal(0, stds * noise_pct / 100)
             perturbed = latest + noise
-            pred = predictor.predict(perturbed)
+            pred = predictor.predict(perturbed, feature_names=available)
             counts[pred["direction"]] = counts.get(pred["direction"], 0) + 1
             confidences.append(pred["confidence"])
 
