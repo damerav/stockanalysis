@@ -1,22 +1,20 @@
 """Model Registry — versioned model storage with metadata tracking.
 
 Tracks training metrics, feature sets, deployment status, and enables
-rollback to prior models. Stored as a SQLite table alongside spy.db.
+rollback / promotion. Uses DbRouter (PostgreSQL primary, SQLite fallback).
 """
 
 import os
 import json
 import uuid
 import logging
-import sqlite3
 from datetime import datetime
 from typing import Optional
 
-from src.data.init_db import get_connection
-
 logger = logging.getLogger(__name__)
 
-REGISTRY_SCHEMA = """
+# PostgreSQL-compatible schema (no executescript, uses standard SQL)
+REGISTRY_SCHEMA_PG = """
 CREATE TABLE IF NOT EXISTS model_registry (
     model_id TEXT PRIMARY KEY,
     training_date TEXT NOT NULL,
@@ -45,16 +43,24 @@ CREATE TABLE IF NOT EXISTS model_registry (
 
 
 class ModelRegistry:
-    """Lightweight model registry backed by SQLite."""
+    """Model registry backed by PostgreSQL (primary) with SQLite fallback."""
 
     def __init__(self, config: dict = None):
-        self.conn = get_connection(config)
-        self.conn.executescript(REGISTRY_SCHEMA)
-        self.conn.commit()
+        from src.data.db_router import DbRouter
+        self._router = DbRouter(config)
+        self._ensure_table()
+
+    def _ensure_table(self):
+        """Create model_registry table if it doesn't exist."""
+        try:
+            self._router.execute(REGISTRY_SCHEMA_PG)
+        except Exception as e:
+            logger.warning(f"Registry table creation: {e}")
 
     def register(self, metrics: dict, model_path: str,
                  feature_names: list[str] = None,
-                 model_type: str = "xgboost") -> str:
+                 model_type: str = "xgboost",
+                 status: str = "auto") -> str:
         """Register a newly trained model with its metrics.
 
         Args:
@@ -62,6 +68,8 @@ class ModelRegistry:
             model_path: Path to saved model file
             feature_names: List of feature column names used
             model_type: Model type identifier
+            status: Deployment status — 'auto' (default: active unless gated),
+                    'candidate' (backtest model awaiting promotion), or explicit status.
 
         Returns:
             model_id (UUID string)
@@ -76,10 +84,15 @@ class ModelRegistry:
         if feature_names:
             feat_hash = hashlib.md5(",".join(sorted(feature_names)).encode()).hexdigest()[:12]
 
-        # Top features JSON
         top_features = json.dumps(metrics.get("top_features", []))
 
-        self.conn.execute(
+        # Determine deployment status
+        if status == "auto":
+            deploy_status = "gated" if metrics.get("gated") else "active"
+        else:
+            deploy_status = status
+
+        self._router.execute(
             """INSERT INTO model_registry
                (model_id, training_date, model_path, model_type,
                 training_window, feature_count, feature_set_hash,
@@ -101,84 +114,121 @@ class ModelRegistry:
              int(metrics.get("calibrated", False)),
              metrics.get("best_iteration"),
              top_features,
-             "gated" if metrics.get("gated") else "active",
+             deploy_status,
              now),
         )
-        self.conn.commit()
 
-        # Retire previous active models of same type
-        if not metrics.get("gated"):
-            self.conn.execute(
+        # Retire previous active models of same type (only if new model is active)
+        if deploy_status == "active":
+            self._router.execute(
                 """UPDATE model_registry SET deployment_status = 'retired'
                    WHERE model_type = ? AND model_id != ? AND deployment_status = 'active'""",
                 (model_type, model_id),
             )
-            self.conn.commit()
 
         logger.info(f"Model registered: {model_id} ({model_type}, "
-                    f"acc={metrics.get('accuracy', 0):.3f})")
+                    f"status={deploy_status}, acc={metrics.get('accuracy', 0):.3f})")
         return model_id
 
     def get_active(self, model_type: str = "xgboost") -> Optional[dict]:
         """Get the currently active model metadata."""
-        row = self.conn.execute(
+        df = self._router.query(
             """SELECT * FROM model_registry
                WHERE model_type = ? AND deployment_status = 'active'
                ORDER BY created_at DESC LIMIT 1""",
             (model_type,),
-        ).fetchone()
-        return dict(row) if row else None
+        )
+        if df.empty:
+            return None
+        return df.iloc[0].to_dict()
 
     def get_history(self, model_type: str = "xgboost",
                     limit: int = 20) -> list[dict]:
         """Get recent model training history."""
-        rows = self.conn.execute(
+        df = self._router.query(
             """SELECT model_id, training_date, val_accuracy, test_accuracy,
                       feature_count, gated, deployment_status, created_at
                FROM model_registry
                WHERE model_type = ?
                ORDER BY created_at DESC LIMIT ?""",
             (model_type, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def rollback(self, model_id: str) -> bool:
-        """Rollback to a specific model version."""
-        row = self.conn.execute(
-            "SELECT model_path FROM model_registry WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
-        if not row:
-            logger.warning(f"Model {model_id} not found in registry")
-            return False
-        if not os.path.exists(row[0]):
-            logger.warning(f"Model file {row[0]} not found on disk")
-            return False
-
-        # Retire current active, activate target
-        self.conn.execute(
-            "UPDATE model_registry SET deployment_status = 'retired' WHERE deployment_status = 'active'"
         )
-        self.conn.execute(
+        return df.to_dict("records") if not df.empty else []
+
+    def promote_model(self, model_id: str) -> bool:
+        """Promote a candidate model to active champion, retiring others."""
+        df = self._router.query(
+            "SELECT model_type, model_path FROM model_registry WHERE model_id = ?",
+            (model_id,),
+        )
+        if df.empty:
+            logger.error(f"Promotion failed: Model ID {model_id} not found.")
+            return False
+
+        model_type = df.iloc[0]["model_type"]
+        model_path = df.iloc[0]["model_path"]
+
+        if model_path and not os.path.exists(model_path):
+            logger.error(f"Promotion failed: Model file {model_path} not found on disk.")
+            return False
+
+        # Retire all active models of this type
+        self._router.execute(
+            """UPDATE model_registry SET deployment_status = 'retired'
+               WHERE model_type = ? AND deployment_status = 'active'""",
+            (model_type,),
+        )
+        # Promote the candidate
+        self._router.execute(
             "UPDATE model_registry SET deployment_status = 'active' WHERE model_id = ?",
             (model_id,),
         )
-        self.conn.commit()
+        logger.info(f"Model {model_id} promoted to active champion for '{model_type}'.")
+        return True
+
+    def rollback(self, model_id: str) -> bool:
+        """Rollback to a specific model version."""
+        df = self._router.query(
+            "SELECT model_path FROM model_registry WHERE model_id = ?",
+            (model_id,),
+        )
+        if df.empty:
+            logger.warning(f"Model {model_id} not found in registry")
+            return False
+        model_path = df.iloc[0]["model_path"]
+        if model_path and not os.path.exists(model_path):
+            logger.warning(f"Model file {model_path} not found on disk")
+            return False
+
+        # Retire current active, activate target
+        self._router.execute(
+            "UPDATE model_registry SET deployment_status = 'retired' WHERE deployment_status = 'active'"
+        )
+        self._router.execute(
+            "UPDATE model_registry SET deployment_status = 'active' WHERE model_id = ?",
+            (model_id,),
+        )
         logger.info(f"Rolled back to model {model_id}")
         return True
 
     def get_accuracy_trend(self, model_type: str = "xgboost",
                            limit: int = 30) -> list[dict]:
         """Get accuracy trend over recent models."""
-        rows = self.conn.execute(
+        df = self._router.query(
             """SELECT training_date, val_accuracy, test_accuracy
                FROM model_registry
                WHERE model_type = ? AND gated = 0
                ORDER BY created_at DESC LIMIT ?""",
             (model_type, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        )
+        return df.to_dict("records") if not df.empty else []
 
     def close(self):
-        if self.conn:
-            self.conn.close()
+        """Close underlying connections."""
+        try:
+            if hasattr(self._router, '_pg_conn') and self._router._pg_conn:
+                self._router._pg_conn.close()
+            if hasattr(self._router, '_sqlite') and self._router._sqlite:
+                self._router._sqlite.close()
+        except Exception:
+            pass

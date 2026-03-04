@@ -35,6 +35,8 @@ from src.auth.google_oauth import (
 )
 from src.dashboard.monitoring import page_monitoring
 from src.dashboard.single_stock_app import page_single_stock
+from src.dashboard.performance_app import page_performance
+from src.dashboard.tuning_app import page_tuning
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
 from src.dashboard.theme import (
@@ -3210,7 +3212,9 @@ def page_quant_agent():
 _pages = {
     "Markets": [
         st.Page(page_spy, title="SPY Predictor", icon=":material/query_stats:", default=True),
+        st.Page(page_performance, title="Performance", icon=":material/verified:"),
         st.Page(page_es, title="ES Strategy", icon=":material/candlestick_chart:"),
+        st.Page(page_tuning, title="Tune & Backtest", icon=":material/tune:"),
         st.Page(page_whatif, title="What-If Analysis", icon=":material/science:"),
         st.Page(page_single_stock, title="Single-Stock", icon=":material/search:"),
         st.Page(page_quant_agent, title="Quant Agent", icon=":material/smart_toy:"),

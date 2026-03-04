@@ -357,6 +357,79 @@ class WhatIfEngine:
         else:
             return self.narrator.narrate_spy_result(result, llm_available)
 
+    def spy_backtest(self, model_config: dict, feature_list: list[str],
+                     register_as_candidate: bool = True) -> dict:
+        """Run a full SPY predictor backtest with custom config and features.
+
+        Args:
+            model_config: Dict with xgboost hyperparams and/or ensemble toggle.
+            feature_list: List of feature column names to use.
+            register_as_candidate: If True, save and register model as 'candidate'.
+
+        Returns:
+            Dict with test_accuracy, val_accuracy, brier_score, model_id, etc.
+        """
+        import copy as _copy
+
+        fv = self._get_features()
+        y = get_target(fv)
+
+        # Filter to requested features that actually exist
+        available = [c for c in feature_list if c in fv.columns]
+        if not available:
+            return {"error": "No valid features selected."}
+
+        # Build a temporary config with overridden hyperparams
+        temp_config = _copy.deepcopy(self.config)
+        if "xgboost" in model_config:
+            temp_config.setdefault("xgboost", {}).update(model_config["xgboost"])
+
+        predictor = SPYPredictor(config=temp_config)
+        # Skip internal auto-registration — we register as candidate ourselves
+        predictor._skip_registry = True
+
+        # Train with selected features
+        X = fv[available]
+        metrics = predictor.train(X, y, use_gpu=True, feature_names=available)
+
+        if "error" in metrics:
+            return {"error": metrics["error"]}
+
+        result = {
+            "test_accuracy": metrics.get("test_accuracy"),
+            "val_accuracy": metrics.get("accuracy"),
+            "brier_score": metrics.get("brier_score"),
+            "feature_count": len(available),
+            "top_features": metrics.get("top_features", []),
+            "gated": metrics.get("gated", False),
+            "gate_reason": metrics.get("gate_reason", ""),
+        }
+
+        # Register as candidate if model was saved (not gated)
+        model_path = metrics.get("model_path", "")
+        if (register_as_candidate and not metrics.get("gated")
+                and model_path and model_path != "gated"):
+            try:
+                from src.model.registry import ModelRegistry
+                registry = ModelRegistry(self.config)
+                model_id = registry.register(
+                    metrics, model_path,
+                    feature_names=available,
+                    model_type="xgboost",
+                    status="candidate",
+                )
+                result["model_id"] = model_id
+                registry.close()
+            except Exception as e:
+                logger.warning(f"Failed to register candidate model: {e}")
+                result["model_id"] = None
+        else:
+            result["model_id"] = None
+
+        return result
+
+
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

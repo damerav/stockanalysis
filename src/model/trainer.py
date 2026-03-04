@@ -797,7 +797,7 @@ class SPYPredictor:
         }
 
         # --- P2: Register model in registry ---
-        if not gated and model_path:
+        if not gated and model_path and not getattr(self, '_skip_registry', False):
             try:
                 from src.model.registry import ModelRegistry
                 self.registry = ModelRegistry(self.config)
@@ -1029,27 +1029,41 @@ class SPYPredictor:
         return self.model.predict_proba(features)[0]
 
     def load_latest_model(self) -> bool:
-        """Load the most recent saved model."""
+        """Load the active champion model from registry, falling back to filesystem."""
         try:
             import xgboost as xgb
         except ImportError:
             return False
 
-        if not os.path.exists(self.model_dir):
-            return False
+        model_path = None
 
-        models = sorted([
-            f for f in os.listdir(self.model_dir)
-            if f.startswith("xgb_spy_") and f.endswith(".json")
-            and not f.endswith("_meta.json")
-            and "_binary_" not in f
-            and "_conformal" not in f
-        ])
-        if not models:
-            logger.info("No saved models found")
-            return False
+        # Try registry first — load the active champion
+        try:
+            from src.model.registry import ModelRegistry
+            registry = ModelRegistry(self.config)
+            active = registry.get_active(model_type="xgboost")
+            registry.close()
+            if active and active.get("model_path") and os.path.exists(active["model_path"]):
+                model_path = active["model_path"]
+                logger.info(f"Registry champion found: {active.get('model_id')} → {model_path}")
+        except Exception as e:
+            logger.warning(f"Registry lookup failed, falling back to filesystem: {e}")
 
-        model_path = os.path.join(self.model_dir, models[-1])
+        # Fallback: scan filesystem for latest model file
+        if not model_path:
+            if not os.path.exists(self.model_dir):
+                return False
+            models = sorted([
+                f for f in os.listdir(self.model_dir)
+                if f.startswith("xgb_spy_") and f.endswith(".json")
+                and not f.endswith("_meta.json")
+                and "_binary_" not in f
+                and "_conformal" not in f
+            ])
+            if not models:
+                logger.info("No saved models found")
+                return False
+            model_path = os.path.join(self.model_dir, models[-1])
         self.model = xgb.XGBClassifier()
         self.model.load_model(model_path)
         logger.info(f"Loaded model: {model_path}")
