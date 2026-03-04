@@ -1,10 +1,10 @@
 """Authentication for Streamlit — Local users (DB + bcrypt) + Google OAuth.
 
 Supports two modes:
-  1. Local users (default) — username/bcrypt-hashed password in SQLite
+  1. Local users (default) — username/bcrypt-hashed password in PostgreSQL
   2. Google OAuth — when google_client_id is configured
 
-Users are stored in the `users` table of spy.db with bcrypt-hashed passwords.
+Users are stored in the `users` table in PostgreSQL with bcrypt-hashed passwords.
 Seed users from config.yaml are migrated on first run.
 """
 
@@ -14,7 +14,6 @@ import hmac
 import time
 import hashlib
 import logging
-import sqlite3
 import urllib.parse
 from datetime import datetime
 from typing import Optional
@@ -68,11 +67,18 @@ def _get_auth_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Database-backed user management
+# PostgreSQL connection (thread-safe fresh connection per query)
 # ---------------------------------------------------------------------------
 
-def _get_db_path() -> str:
-    """Resolve the spy.db path."""
+_pg_cfg = None
+_pg_cfg_loaded = False
+
+
+def _load_pg_config():
+    """Load PostgreSQL config once from config.yaml, cache it."""
+    global _pg_cfg, _pg_cfg_loaded
+    if _pg_cfg_loaded:
+        return _pg_cfg
     import yaml
     config_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -81,53 +87,83 @@ def _get_db_path() -> str:
     try:
         with open(config_path) as f:
             cfg = yaml.safe_load(f) or {}
+        pg = cfg.get("database", {}).get("postgres")
+        if pg and pg.get("dbname") and pg.get("user"):
+            _pg_cfg = pg
     except Exception:
-        cfg = {}
-    return cfg.get("database", {}).get("path", "./data/spy.db")
+        pass
+    _pg_cfg_loaded = True
+    return _pg_cfg
 
 
-def _get_user_db() -> sqlite3.Connection:
-    """Get a connection to the user database, ensuring the table exists."""
-    db_path = _get_db_path()
-    conn = sqlite3.connect(db_path, timeout=5)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            name TEXT,
-            role TEXT DEFAULT 'viewer',
-            created_at TEXT,
-            updated_at TEXT
+def _pg_connect():
+    """Create a fresh PostgreSQL connection (thread-safe)."""
+    pg = _load_pg_config()
+    if not pg:
+        return None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=pg.get("host", "localhost"),
+            port=pg.get("port", 5432),
+            dbname=pg["dbname"],
+            user=pg["user"],
+            password=pg.get("password", ""),
         )
-    """)
-    conn.commit()
-    return conn
+        conn.autocommit = True
+        return conn
+    except Exception as e:
+        logger.error("PostgreSQL connection failed: %s", e)
+        return None
 
+
+# ---------------------------------------------------------------------------
+# Database-backed user management (PostgreSQL)
+# ---------------------------------------------------------------------------
 
 def _ensure_users_seeded():
-    """Migrate seed users from config.yaml to DB on first run (one-time)."""
-    conn = _get_user_db()
-    count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    if count > 0:
-        conn.close()
-        return  # already seeded
+    """Seed default users into PostgreSQL if the table is empty (one-time)."""
+    conn = _pg_connect()
+    if not conn:
+        logger.error("Cannot seed users — PostgreSQL unavailable")
+        return
+    try:
+        cur = conn.cursor()
+        # Ensure table exists
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                name TEXT,
+                role TEXT DEFAULT 'viewer',
+                created_at TEXT,
+                updated_at TEXT
+            )
+        """)
+        cur.execute("SELECT COUNT(*) FROM users")
+        count = cur.fetchone()[0]
+        if count > 0:
+            cur.close()
+            conn.close()
+            return
 
-    # Seed from config.yaml users or defaults
-    cfg = _get_auth_config()
-    seed = cfg.get("users", {}) or _SEED_USERS
-    now = datetime.now().isoformat()
-    for username, data in seed.items():
-        pw = data.get("password", "changeme")
-        pw_hash = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
-        conn.execute(
-            "INSERT OR IGNORE INTO users (username, password_hash, name, role, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (username, pw_hash, data.get("name", username), data.get("role", "viewer"), now, now),
-        )
-    conn.commit()
-    conn.close()
-    logger.info(f"Seeded {len(seed)} users from config to database")
+        cfg = _get_auth_config()
+        seed = cfg.get("users", {}) or _SEED_USERS
+        now = datetime.now().isoformat()
+        for username, data in seed.items():
+            pw = data.get("password", "changeme")
+            pw_hash = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+            cur.execute(
+                "INSERT INTO users (username, password_hash, name, role, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
+                (username, pw_hash, data.get("name", username), data.get("role", "viewer"), now, now),
+            )
+        cur.close()
+        conn.close()
+        logger.info("Seeded %d users into PostgreSQL", len(seed))
+    except Exception as e:
+        logger.error("Error seeding users: %s", e)
+        conn.close()
 
 
 def hash_password(password: str) -> str:
@@ -144,90 +180,150 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 
 def db_get_user(username: str) -> Optional[dict]:
-    """Get a user from the database by username."""
+    """Get a user from PostgreSQL by username."""
     _ensure_users_seeded()
-    conn = _get_user_db()
-    row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
-    if row:
-        return dict(row)
-    return None
+    conn = _pg_connect()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT username, password_hash, name, role, created_at, updated_at "
+            "FROM users WHERE username = %s", (username,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return {
+                "username": row[0], "password_hash": row[1], "name": row[2],
+                "role": row[3], "created_at": row[4], "updated_at": row[5],
+            }
+        return None
+    except Exception as e:
+        logger.error("db_get_user error: %s", e)
+        conn.close()
+        return None
 
 
 def db_list_users() -> list[dict]:
-    """List all users from the database."""
+    """List all users from PostgreSQL."""
     _ensure_users_seeded()
-    conn = _get_user_db()
-    rows = conn.execute("SELECT username, name, role, created_at, updated_at FROM users ORDER BY username").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    conn = _pg_connect()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username, name, role, created_at, updated_at FROM users ORDER BY username")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            {"username": r[0], "name": r[1], "role": r[2], "created_at": r[3], "updated_at": r[4]}
+            for r in rows
+        ]
+    except Exception as e:
+        logger.error("db_list_users error: %s", e)
+        conn.close()
+        return []
 
 
 def db_create_user(username: str, password: str, name: str = "", role: str = "viewer") -> bool:
-    """Create a new user in the database. Returns True on success."""
+    """Create a new user in PostgreSQL. Returns True on success."""
     _ensure_users_seeded()
-    conn = _get_user_db()
+    conn = _pg_connect()
+    if not conn:
+        return False
     now = datetime.now().isoformat()
     pw_hash = hash_password(password)
     try:
-        conn.execute(
+        cur = conn.cursor()
+        cur.execute(
             "INSERT INTO users (username, password_hash, name, role, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
             (username, pw_hash, name or username, role, now, now),
         )
-        conn.commit()
+        inserted = cur.rowcount > 0
+        cur.close()
         conn.close()
-        return True
-    except sqlite3.IntegrityError:
+        return inserted
+    except Exception as e:
+        logger.error("db_create_user error: %s", e)
         conn.close()
         return False
 
 
 def db_update_user(username: str, name: str = None, role: str = None, password: str = None) -> bool:
     """Update an existing user. Only non-None fields are updated."""
-    conn = _get_user_db()
+    conn = _pg_connect()
+    if not conn:
+        return False
     now = datetime.now().isoformat()
     updates = []
     params = []
     if name is not None:
-        updates.append("name = ?")
+        updates.append("name = %s")
         params.append(name)
     if role is not None:
-        updates.append("role = ?")
+        updates.append("role = %s")
         params.append(role)
     if password:
-        updates.append("password_hash = ?")
+        updates.append("password_hash = %s")
         params.append(hash_password(password))
     if not updates:
         conn.close()
         return False
-    updates.append("updated_at = ?")
+    updates.append("updated_at = %s")
     params.append(now)
     params.append(username)
-    conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = ?", params)
-    conn.commit()
-    changed = conn.total_changes > 0
-    conn.close()
-    return changed
+    try:
+        cur = conn.cursor()
+        cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE username = %s", params)
+        changed = cur.rowcount > 0
+        cur.close()
+        conn.close()
+        return changed
+    except Exception as e:
+        logger.error("db_update_user error: %s", e)
+        conn.close()
+        return False
 
 
 def db_delete_user(username: str) -> bool:
-    """Delete a user from the database."""
-    conn = _get_user_db()
-    conn.execute("DELETE FROM users WHERE username = ?", (username,))
-    conn.commit()
-    changed = conn.total_changes > 0
-    conn.close()
-    return changed
+    """Delete a user from PostgreSQL."""
+    conn = _pg_connect()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM users WHERE username = %s", (username,))
+        changed = cur.rowcount > 0
+        cur.close()
+        conn.close()
+        return changed
+    except Exception as e:
+        logger.error("db_delete_user error: %s", e)
+        conn.close()
+        return False
 
 
 def db_user_count() -> int:
     """Return the total number of users."""
     _ensure_users_seeded()
-    conn = _get_user_db()
-    count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    conn.close()
-    return count
+    conn = _pg_connect()
+    if not conn:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users")
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return count
+    except Exception as e:
+        logger.error("db_user_count error: %s", e)
+        conn.close()
+        return 0
 
 
 # ---------------------------------------------------------------------------

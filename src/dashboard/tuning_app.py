@@ -114,8 +114,14 @@ def page_tuning():
 
         with st.spinner("Running historical backtest... This may take several minutes on DGX."):
             try:
+                import yaml as _yaml
+                try:
+                    with open("config.yaml") as f:
+                        _cfg = _yaml.safe_load(f) or {}
+                except Exception:
+                    _cfg = {}
                 from src.whatif.engine import WhatIfEngine
-                engine = WhatIfEngine()
+                engine = WhatIfEngine(config=_cfg)
                 results = engine.spy_backtest(
                     model_config=model_config,
                     feature_list=selected_features,
@@ -171,8 +177,14 @@ def page_tuning():
             if st.button("👑 Promote to Champion", key=f"promote_{model_id}",
                          type="primary"):
                 try:
+                    import yaml as _yaml
+                    try:
+                        with open("config.yaml") as f:
+                            _cfg = _yaml.safe_load(f) or {}
+                    except Exception:
+                        _cfg = {}
                     from src.model.registry import ModelRegistry
-                    registry = ModelRegistry()
+                    registry = ModelRegistry(_cfg)
                     success = registry.promote_model(model_id)
                     registry.close()
                     if success:

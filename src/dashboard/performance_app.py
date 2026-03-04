@@ -35,8 +35,8 @@ def _load_pg_config() -> dict | None:
     try:
         with open("config.yaml") as f:
             cfg = yaml.safe_load(f) or {}
-        pg = cfg.get("database", {}).get("postgresql")
-        if pg and pg.get("dbname"):
+        pg = cfg.get("database", {}).get("postgres")
+        if pg and pg.get("dbname") and pg.get("user"):
             _pg_cfg = pg
     except Exception:
         pass
@@ -100,8 +100,14 @@ def _load_performance() -> pd.DataFrame:
 def _load_registry_history() -> pd.DataFrame:
     """Load model registry history via DbRouter (PostgreSQL primary)."""
     try:
+        import yaml as _yaml
+        try:
+            with open("config.yaml") as f:
+                cfg = _yaml.safe_load(f) or {}
+        except Exception:
+            cfg = {}
         from src.model.registry import ModelRegistry
-        registry = ModelRegistry()
+        registry = ModelRegistry(cfg)
         rows = registry.get_history(limit=50)
         registry.close()
         if not rows:
