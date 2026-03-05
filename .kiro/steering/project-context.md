@@ -6,13 +6,13 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.7.3 (Strategy Rules History/Revert + Rules What-If Backtest + DuckDB Cleanup)
+- **Current version**: v2.8.0 (SPY Prediction Enhancements — 65+ new features, pandas-ta technicals, multi-timeframe, social sentiment, valuation context)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
 ## Architecture
 
-- **125+ model features** available across price, technicals, macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, and market breadth/fundamentals — **32 kept after aggressive feature selection** (10 new breadth features available)
+- **206 model features** available across price, technicals (40+ via pandas-ta), macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, market breadth/fundamentals, valuation (CAPE, Buffett), multi-timeframe (weekly/monthly RSI/momentum), social sentiment (StockTwits), and sector rotation (13 ETFs) — **32 kept after aggressive feature selection** (feature selection will expand with retrain)
 - **18+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged)
 - **16-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch) and market breadth computation
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
@@ -108,7 +108,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/dashboard/forecast_app.py` — REMOVED from navigation (vanilla LSTM, slow, duplicated ensemble predictions). File kept on disk but disconnected.
 
 ### Core Modules
-- `src/data/` — Data fetching, features (125 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, encrypted secrets management
+- `src/data/` — Data fetching, features (206 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, encrypted secrets management, StockTwits social sentiment (`social_fetcher.py`)
 - `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry (champion/challenger framework with promote/rollback), ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine (loads all params from `strategy_rules` DB table via `rules_store`), `apply_overrides()` for in-memory rule patching (What-If backtest), indicators, position management, RL trailing, labeling, AI entry gate + CNN exit controller
 - `src/strategy/` — `rules_store.py` DB-backed strategy parameter store (get/set/reset/revert rules via DbRouter). 24 rules across 9 groups currently seeded (spread, sizing, tp_low/med/high, risk, session, regime, rl). `strategy_rules_history` table tracks all changes with `get_history()`, `revert_rule()`, `revert_group()` for rollback.
@@ -264,3 +264,19 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Rules What-If in What-If page**: "Rules What-If" scenario added as first option in ES Strategy tab dropdown in both standalone `whatif_app.py` and inline `app.py` What-If functions.
 - **Fix: app.py inline What-If**: `app.py` has its own inline copy of What-If page functions (~line 906) and does NOT import from `whatif_app.py`. Added `_whatif_rules()` and `_whatif_rules_result()` to the inline code. This architectural note is important for future page updates.
 - **Note**: DB currently has 9 rule groups with 24 rules seeded (spread, sizing, tp_low/med/high, risk, session, regime, rl). Entry, indicators, and ai groups are not yet seeded.
+
+### v2.8.0 Changes (SPY Prediction Enhancements — 65+ New Features)
+
+- **5 new FRED macro series**: 3-Month Treasury yield (`DTB3`), yield curve 10Y-3M spread (`T10Y3M`, recession signal), Sahm Rule (`SAHMREALTIME`, real-time recession indicator), U. of Michigan Consumer Sentiment (`UMCSENT`), ISM Manufacturing PMI (`NAPM`). All added to `get_macro_fred()` in `fetcher.py`.
+- **Shiller CAPE Ratio**: Fetched from datahub.io Shiller dataset in `fetch_index_fundamentals()`. Stored in `market_breadth` table (`sp500_cape` column).
+- **Buffett Indicator**: Wilshire 5000 / GDP ratio from FRED CSV. Stored in `market_breadth` table (`buffett_indicator` column).
+- **40+ comprehensive technical indicators via pandas-ta**: ADX, CCI, Aroon, Parabolic SAR, DPO, TRIX, Vortex, Williams %R, MFI, multi-period RSI (2/9/21), CMO, PPO, ROC, Keltner Channels, Donchian Channels, Ulcer Index, CMF, VWMA, EOM, EMA (9/21/200), HMA, WMA, DEMA, TEMA, KAMA, Ichimoku Cloud. Added to `compute_all_technicals()` with defensive `.iloc` column access.
+- **Multi-timeframe features**: Weekly RSI, weekly 5-week momentum, weekly MACD histogram, monthly RSI, monthly 3-month momentum. Resampled from daily prices in `build_feature_vector()`.
+- **StockTwits social sentiment**: New `src/data/social_fetcher.py` — scrapes StockTwits for SPY bullish/bearish ratio with 1-hour cache. Features: `st_bullish_pct`, `st_bearish_pct`, `st_bull_bear_ratio`, `st_message_volume`.
+- **Earnings Yield Gap**: "Fed Model" — S&P 500 earnings yield minus 10Y Treasury yield. Positive = equities attractive vs. bonds. Computed in `build_feature_vector()`.
+- **Extended sector rotation**: 13 sector ETF prices stored in macro table (XLK, XLF, XLE, XLV, XLI, XLU, XLB, XLP, XLY, XLRE, QQQ, IWM, DIA). Derived ratios: `defensive_offensive_ratio` (XLU+XLP)/(XLY+XLK), `qqq_iwm_ratio`, `xlv_xle_ratio`.
+- **Market Valuation Context panel**: New expandable section on SPY Predictor page showing Shiller CAPE (with overvalued/fair signal), Buffett Indicator, Earnings Yield Gap, and Yield Curve (10Y-3M) with color-coded signals.
+- **DB schema migrations**: 20 new columns added — 2 in `market_breadth` (sp500_cape, buffett_indicator), 18 in `macro` (5 FRED series + 13 sector ETF prices). Via `_migrate_schema()` in `init_db.py`.
+- **Pipeline step 5 refactored**: Dynamic column insertion for macro data (column list + values built programmatically instead of 30+ positional placeholders).
+- **pandas-ta>=0.3.14b** added to `requirements.txt`.
+- **Total feature count**: 206 unique features in `get_feature_columns()` (up from 136).
