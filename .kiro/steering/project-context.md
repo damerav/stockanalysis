@@ -6,14 +6,14 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.7.2 (Market Breadth + Index Fundamentals — S&P 500 PE/earnings yield/dividend yield, breadth indicators, encrypted secrets)
+- **Current version**: v2.7.3 (Strategy Rules History/Revert + Rules What-If Backtest + DuckDB Cleanup)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
 ## Architecture
 
 - **125+ model features** available across price, technicals, macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, and market breadth/fundamentals — **32 kept after aggressive feature selection** (10 new breadth features available)
-- **17+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged)
+- **18+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged)
 - **16-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch) and market breadth computation
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
 - **HMM regime detection**: 4 states (bull_trend, bear_trend, high_vol_choppy, low_vol_range)
@@ -85,7 +85,6 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `data/spy_state.json` — Real-time SPY prediction state (direction, confidence, indicators, flow_alerts, updated_at)
 - `data/es_state.json` — ES futures strategy state (P&L, positions, signals, regime)
 - `data/spy.db` — SQLite fallback database (legacy, kept for environments without PostgreSQL)
-- `data/analytics.duckdb` — DuckDB analytics layer (legacy, superseded by PostgreSQL)
 - `data/news.db` — News article store (7000+ articles) with FinBERT sentiment cache
 
 ### Config
@@ -94,32 +93,32 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `grafana/grafana.ini` — Grafana config (anonymous auth enabled, must be chmod 644 after Mutagen sync)
 
 ### Dashboard Source
-- `src/dashboard/app.py` — Main unified dashboard (~3200+ lines). Uses `st.navigation` with pages across Markets and Operations groups. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list. Contains Quant Agent chatbot page with 10 quick-action buttons in 3 rows (data-only, no LLM) + free-form LLM chat. Row 3 has Market Thesis and Vigilance Alerts (v2.6). ES Strategy page has AI Confidence overlay row (layer status, continuation probability, trail multipliers) + Reload Rules button (v2.7).
+- `src/dashboard/app.py` — Main unified dashboard (~3300+ lines). Uses `st.navigation` with pages across Markets and Operations groups. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list. Contains Quant Agent chatbot page with 10 quick-action buttons in 3 rows (data-only, no LLM) + free-form LLM chat. Row 3 has Market Thesis and Vigilance Alerts (v2.6). ES Strategy page has AI Confidence overlay row (layer status, continuation probability, trail multipliers) + Reload Rules button (v2.7). Has INLINE copies of What-If page functions (does NOT import from `whatif_app.py`) — includes Rules What-If scenario (v2.7.3).
 - `src/dashboard/performance_app.py` — Performance analytics dashboard: accuracy trends, confidence calibration, regime-stratified metrics, model comparison charts
 - `src/dashboard/tuning_app.py` — Model tuning & backtest UI: hyperparameter grid, champion/challenger comparison, backtest runner
-- `src/dashboard/rules_app.py` — Strategy Rules management page: 12 tabbed groups (spread, sizing, entry, TP low/med/high, risk, session, indicators, regime, AI, RL), live edit + save + reset, hot-reload flag for runner
+- `src/dashboard/rules_app.py` — Strategy Rules management page: 9 tabbed groups (spread, sizing, tp_low/med/high, risk, session, regime, rl), live edit + save + reset, revert button + change history expander per group, Rules What-If backtest section, hot-reload flag for runner
 - `src/dashboard/theme.py` — Theme system: CSS token-based design with DARK + LIGHT palettes (TradingView-inspired), dynamic CSS injection, `get_plotly_layout()`, `themed_metric_card()`, `get_theme()` helpers
 - `src/dashboard/monitoring.py` — Native Plotly monitoring (6 tabs: SPY, ES, System Health, Confidence API, Pipeline, Data Sources). Uses thread-safe fresh DB connections per query (PostgreSQL primary, SQLite fallback) — no singleton router.
 - `src/dashboard/single_stock_app.py` — Individual stock analysis with technical indicators
 - `src/dashboard/realtime_app.py` — Real-time streaming dashboard
 - `src/dashboard/es_dashboard.py` — ES strategy dashboard (standalone)
-- `src/dashboard/whatif_app.py` — What-If analysis
+- `src/dashboard/whatif_app.py` — What-If analysis (standalone, includes Rules What-If scenario for ES strategy rule comparison)
 - `src/dashboard/style.css` — CSS token-based design system (dark/light theme variables, pill tabs, compact headers, sidebar styling)
 - `src/dashboard/template.py` — HTML template helpers for themed components
 - `src/dashboard/forecast_app.py` — REMOVED from navigation (vanilla LSTM, slow, duplicated ensemble predictions). File kept on disk but disconnected.
 
 ### Core Modules
-- `src/data/` — Data fetching, features (125 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, PostgreSQL migration tools
+- `src/data/` — Data fetching, features (125 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, encrypted secrets management
 - `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry (champion/challenger framework with promote/rollback), ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
-- `src/es_strategy/` — ES futures engine (loads all params from `strategy_rules` DB table via `rules_store`), indicators, position management, RL trailing, labeling, AI entry gate + CNN exit controller
-- `src/strategy/` — `rules_store.py` DB-backed strategy parameter store (get/set/reset rules via DbRouter). 42 rules across 12 groups (spread, sizing, entry, tp_low/med/high, risk, session, indicators, regime, ai, rl)
+- `src/es_strategy/` — ES futures engine (loads all params from `strategy_rules` DB table via `rules_store`), `apply_overrides()` for in-memory rule patching (What-If backtest), indicators, position management, RL trailing, labeling, AI entry gate + CNN exit controller
+- `src/strategy/` — `rules_store.py` DB-backed strategy parameter store (get/set/reset/revert rules via DbRouter). 24 rules across 9 groups currently seeded (spread, sizing, tp_low/med/high, risk, session, regime, rl). `strategy_rules_history` table tracks all changes with `get_history()`, `revert_rule()`, `revert_group()` for rollback.
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 via Ollama), Quant Agent with multi-model routing (14B fast + 70B deep) and tool-based architecture
 - `src/pipeline/` — Daily pipeline orchestration (fully thread-safe — all DB ops via `_db_execute`/`_db_query`/`_db_fetchone` router helpers), alerts, news pipeline runner, and event-driven vigilance monitor
 - `src/launcher.py` — System launcher with background scheduler (pipeline + intraday updates + vigilance monitoring every 5 min), process manager, health monitoring
 - `src/api/` — Confidence API server, Prometheus metrics exporter
 - `src/auth/` — Google OAuth + local auth with bcrypt, server-side session files
 - `src/sync/` — Cloud relay publisher/server
-- `src/whatif/` — What-If simulation engine, presets, narrator
+- `src/whatif/` — What-If simulation engine (includes `es_rules_backtest()` for baseline vs proposed rule comparison), presets, narrator
 
 ## Authentication
 
@@ -220,12 +219,12 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Performance Dashboard** (`src/dashboard/performance_app.py`): Accuracy trends, confidence calibration curves, regime-stratified metrics, model comparison charts. Registered in Markets nav group.
 - **Model Tuning & Backtest** (`src/dashboard/tuning_app.py`): Hyperparameter grid editor, champion/challenger comparison, backtest runner with walk-forward validation. Registered in Markets nav group.
 - **Champion/Challenger Framework** (`src/model/registry.py`): `model_registry` PostgreSQL table (22 columns). `register()`, `get_active()`, `promote_model()`, `rollback()`, `get_accuracy_trend()` methods. Models tracked with status (active/candidate/retired), accuracy metrics, feature names, training metadata.
-- **Strategy Rules DB table** (`strategy_rules`): 42 rules across 12 groups (spread, sizing, entry, tp_low/med/high, risk, session, indicators, regime, ai, rl). Seeded via `init_db.py` with `INSERT OR IGNORE` (SQLite) / `ON CONFLICT DO NOTHING` (PostgreSQL). Primary key: `(rule_group, rule_key)`.
+- **Strategy Rules DB table** (`strategy_rules`): 24 rules across 9 groups currently seeded (spread, sizing, tp_low/med/high, risk, session, regime, rl). Entry, indicators, and ai groups not yet seeded. Seeded via `init_db.py` with `INSERT OR IGNORE` (SQLite) / `ON CONFLICT DO NOTHING` (PostgreSQL). Primary key: `(rule_group, rule_key)`.
 - **Rules Store module** (`src/strategy/rules_store.py`): `get_rule()`, `get_group()`, `get_all_rules()`, `set_rule()`, `set_group()`, `reset_to_defaults()`. All SQL uses `?` placeholders — DbRouter converts automatically.
 - **ES Engine rules migration**: `ESStrategyEngine.__init__()` loads all parameters from `rules_store` instead of hardcoded values. Anti-chase gate, Phase 2 thresholds, TP multipliers, RL params all DB-driven.
 - **AI exit confidence wiring**: `runner.py` `_process_bar()` calls `self.ai.get_trail_multipliers()` and sets `self.engine._ai_trail_mults` before `process_bar()`. Engine `_check_exits()` uses CNN-provided TP2/runner multipliers when `trail_ai_enabled` is true.
 - **Hot-reload**: Runner checks for `data/.reload_rules` flag file each loop iteration. When found, deletes flag and re-initializes `ESStrategyEngine` from DB. Rules UI and ES page both write this flag on save/reload.
-- **Rules Management page** (`src/dashboard/rules_app.py`): 12 tabbed groups with editable fields (number_input for float/int, checkbox for bool, text_input for time/string). Min/max validation from DB. Save per-group + Reset per-group + Reset ALL. Registered in Operations nav group.
+- **Rules Management page** (`src/dashboard/rules_app.py`): 9 tabbed groups with editable fields (number_input for float/int, checkbox for bool, text_input for time/string). Min/max validation from DB. Save per-group + Reset per-group + Reset ALL. Revert button + Change History expander per group (v2.7.3). Rules What-If backtest section (v2.7.3). Registered in Operations nav group.
 - **AI Confidence overlay**: ES Strategy page shows 4-metric row (AI Layer on/off, Continuation P, AI TP2 Trail, AI Runner Trail) from `get_state()`. Plus "Reload Rules" button.
 - **Admin Config tab replaced**: Raw YAML editor removed. Now shows read-only key settings summary + info banner pointing to Strategy Rules page.
 - **`get_state()` expanded**: Now includes `ai_enabled`, `trail_ai_enabled`, `ai_trail_mults` in the state dict for dashboard consumption.
@@ -255,3 +254,13 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **lxml>=5.0** added to requirements.txt for Wikipedia HTML parsing.
 
 ```
+
+### v2.7.3 Changes (Strategy Rules History/Revert + Rules What-If Backtest + DuckDB Cleanup)
+
+- **DuckDB cleanup**: Deleted `src/data/migrate_to_duckdb.py` (obsolete after full PostgreSQL migration). Cleaned stale DuckDB comments from `daily_run.py`, `backfill.py`, `backfill_2y.py`. Removed `data/analytics.duckdb` from state files documentation.
+- **Strategy Rules history/revert**: New `strategy_rules_history` PostgreSQL table (auto-created in `init_db.py`) tracks all rule changes with timestamps, old/new values, and change source. `rules_store.py` gains `get_history()`, `revert_rule()`, `revert_group()` functions. Every `set_rule()` call now logs to history automatically.
+- **Rules UI revert capability**: Each rule group tab in `rules_app.py` now has a Revert button and a Change History expander showing recent changes with one-click revert per change.
+- **Rules What-If backtest**: `ESStrategyEngine.apply_overrides()` patches engine parameters in-memory from a rule override dict (no DB writes). `WhatIfEngine.es_rules_backtest()` runs baseline vs proposed rule comparison using recent ES state data. Backtest section added to `rules_app.py` with override editor and side-by-side results.
+- **Rules What-If in What-If page**: "Rules What-If" scenario added as first option in ES Strategy tab dropdown in both standalone `whatif_app.py` and inline `app.py` What-If functions.
+- **Fix: app.py inline What-If**: `app.py` has its own inline copy of What-If page functions (~line 906) and does NOT import from `whatif_app.py`. Added `_whatif_rules()` and `_whatif_rules_result()` to the inline code. This architectural note is important for future page updates.
+- **Note**: DB currently has 9 rule groups with 24 rules seeded (spread, sizing, tp_low/med/high, risk, session, regime, rl). Entry, indicators, and ai groups are not yet seeded.
