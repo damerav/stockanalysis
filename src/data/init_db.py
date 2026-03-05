@@ -226,7 +226,10 @@ def init_db(config: dict = None) -> str:
                         close_reason    TEXT,
                         roll_count      INTEGER NOT NULL DEFAULT 0,
                         notes           TEXT,
-                        vix_at_open     REAL
+                        vix_at_open     REAL,
+                        position_delta  REAL,
+                        entry_iv_rank   REAL,
+                        entry_vix_term_structure REAL
                     )
                 """)
                 router.execute("""
@@ -384,7 +387,10 @@ def _migrate_schema(conn: sqlite3.Connection):
             close_reason    TEXT,
             roll_count      INTEGER NOT NULL DEFAULT 0,
             notes           TEXT,
-            vix_at_open     REAL
+            vix_at_open     REAL,
+            position_delta  REAL,
+            entry_iv_rank   REAL,
+            entry_vix_term_structure REAL
         )
     """)
 
