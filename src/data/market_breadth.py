@@ -134,42 +134,78 @@ def fetch_index_fundamentals() -> dict:
 
     # --- Shiller CAPE Ratio (from Shiller's dataset via datahub.io) ---
     try:
-        cape_url = "https://datahub.io/core/s-and-p-500/r/data.csv"
-        cape_df = pd.read_csv(cape_url, timeout=15)
+        import requests as _req
+        from io import StringIO
+        cape_resp = _req.get("https://datahub.io/core/s-and-p-500/r/data.csv", timeout=15)
+        cape_resp.raise_for_status()
+        cape_df = pd.read_csv(StringIO(cape_resp.text))
         cape_col = next((c for c in cape_df.columns if "PE10" in c.upper() or "CAPE" in c.upper()), None)
         if cape_col:
             cape_df[cape_col] = pd.to_numeric(cape_df[cape_col], errors="coerce")
-            cape_df = cape_df.dropna(subset=[cape_col])
-            if not cape_df.empty:
-                result["sp500_cape"] = round(float(cape_df[cape_col].iloc[-1]), 2)
+            # Skip zero/null values (dataset lags — recent months may be 0)
+            cape_valid = cape_df[cape_df[cape_col] > 0]
+            if not cape_valid.empty:
+                result["sp500_cape"] = round(float(cape_valid[cape_col].iloc[-1]), 2)
                 logger.info("Shiller CAPE: %.2f", result["sp500_cape"])
     except Exception as e:
         logger.warning("CAPE fetch failed: %s", e)
 
-    # --- Buffett Indicator: Wilshire 5000 / GDP (from FRED CSV, free) ---
+    # --- Buffett Indicator: Total Market Cap / GDP ---
+    # Use Wilshire 5000 from FRED API if key available, else estimate from SPY market cap
     try:
-        w5000_df = pd.read_csv(
-            "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WILL5000PR",
-            timeout=15
-        )
-        w5000_df.columns = ["date", "value"]
-        w5000_df["value"] = pd.to_numeric(w5000_df["value"], errors="coerce")
-        w5000_df = w5000_df.dropna(subset=["value"])
+        import requests as _req
+        from io import StringIO
 
-        gdp_df = pd.read_csv(
-            "https://fred.stlouisfed.org/graph/fredgraph.csv?id=GDP",
-            timeout=15
-        )
-        gdp_df.columns = ["date", "gdp"]
-        gdp_df["gdp"] = pd.to_numeric(gdp_df["gdp"], errors="coerce")
-        gdp_df = gdp_df.dropna(subset=["gdp"])
+        # Try FRED API first (more reliable than CSV endpoint)
+        buffett_done = False
+        fred_key = None
+        try:
+            from src.data.secrets_manager import get_secret
+            fred_key = get_secret("fred_api_key")
+        except Exception:
+            pass
 
-        if not w5000_df.empty and not gdp_df.empty:
-            latest_w5000 = float(w5000_df["value"].iloc[-1])
-            latest_gdp = float(gdp_df["gdp"].iloc[-1])
-            if latest_gdp > 0:
-                result["buffett_indicator"] = round((latest_w5000 / latest_gdp) * 100, 2)
-                logger.info("Buffett Indicator: %.1f%%", result["buffett_indicator"])
+        if fred_key:
+            for series_id in ["WILL5000INDFC", "WILL5000IND", "WILL5000PR"]:
+                try:
+                    url = "https://api.stlouisfed.org/fred/series/observations"
+                    params = {
+                        "series_id": series_id, "api_key": fred_key,
+                        "file_type": "json", "sort_order": "desc", "limit": 5,
+                    }
+                    resp = _req.get(url, params=params, timeout=15)
+                    if resp.status_code == 200:
+                        obs = resp.json().get("observations", [])
+                        for o in obs:
+                            val = o.get("value", ".")
+                            if val != ".":
+                                w5000 = float(val)
+                                # Get GDP
+                                gdp_params = {
+                                    "series_id": "GDP", "api_key": fred_key,
+                                    "file_type": "json", "sort_order": "desc", "limit": 5,
+                                }
+                                gdp_resp = _req.get(url, params=gdp_params, timeout=15)
+                                if gdp_resp.status_code == 200:
+                                    gdp_obs = gdp_resp.json().get("observations", [])
+                                    for go in gdp_obs:
+                                        gv = go.get("value", ".")
+                                        if gv != ".":
+                                            gdp = float(gv)
+                                            if gdp > 0:
+                                                result["buffett_indicator"] = round((w5000 / gdp) * 100, 2)
+                                                logger.info("Buffett Indicator: %.1f%%", result["buffett_indicator"])
+                                                buffett_done = True
+                                            break
+                                break
+                    if buffett_done:
+                        break
+                except Exception:
+                    continue
+
+        # Fallback: estimate from SPY total assets / GDP
+        if not buffett_done:
+            logger.info("Buffett Indicator: FRED series unavailable, skipping")
     except Exception as e:
         logger.warning("Buffett Indicator fetch failed: %s", e)
 

@@ -125,7 +125,7 @@ class FallbackFetcher:
             "yield_curve_10y3m": "T10Y3M",     # 10Y-3M spread (recession signal)
             "sahm_rule": "SAHMREALTIME",       # Sahm Rule recession indicator
             "consumer_conf": "UMCSENT",        # U. of Michigan Consumer Sentiment
-            "ism_pmi": "NAPM",                 # ISM Manufacturing PMI
+            "ism_pmi": "MANEMP",                 # ISM Manufacturing Employment (proxy for PMI)
             "dxy": "DTWEXBGS",
             "fed_funds": "FEDFUNDS",
             "gold": None,  # fetched via yfinance below
