@@ -29,6 +29,8 @@ psycopg2-binary>=2.9
 sqlalchemy>=2.0
 # Secrets encryption
 cryptography>=42.0
+# HTML parsing (Wikipedia S&P 500 list)
+lxml>=5.0
 # LSTM forecaster + news pipeline
 tensorflow>=2.15; platform_machine != "aarch64"
 nltk>=3.8

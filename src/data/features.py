@@ -328,6 +328,38 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
     if df.empty:
         return None
 
+    # --- Market breadth & index fundamentals ---
+    try:
+        breadth_df = router.query(
+            "SELECT date, sp500_pe, sp500_forward_pe, sp500_earnings_yield, "
+            "sp500_dividend_yield, pct_above_sma50, pct_above_sma200, "
+            "advance_decline_ratio, new_highs_52w, new_lows_52w, breadth_thrust "
+            "FROM market_breadth ORDER BY date"
+        )
+        if not breadth_df.empty:
+            df = df.merge(breadth_df, on="date", how="left")
+            # Forward-fill (breadth data may not exist for every date yet)
+            breadth_cols = ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
+                           "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
+                           "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
+                           "breadth_thrust"]
+            for col in breadth_cols:
+                if col in df.columns:
+                    df[col] = df[col].ffill().fillna(0)
+        else:
+            for col in ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
+                        "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
+                        "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
+                        "breadth_thrust"]:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"Market breadth features failed: {e}")
+        for col in ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
+                    "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
+                    "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
+                    "breadth_thrust"]:
+            df[col] = 0.0
+
     # Derived features
     df["price_vs_sma20"] = (df["close"] - df["sma_20"]) / df["sma_20"].replace(0, np.nan)
     df["price_vs_sma50"] = (df["close"] - df["sma_50"]) / df["sma_50"].replace(0, np.nan)
@@ -684,7 +716,12 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
                      "yield_change_5d", "safety_signal",
                      "finbert_positive", "finbert_negative", "finbert_neutral", "finbert_score",
                      "news_cb_volume", "news_commodity_volume", "news_forex_volume",
-                     "news_bond_volume", "news_econ_volume", "news_deriv_volume"]
+                     "news_bond_volume", "news_econ_volume", "news_deriv_volume",
+                     # Market breadth & fundamentals
+                     "sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
+                     "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
+                     "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
+                     "breadth_thrust"]
     for col in new_feat_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
@@ -759,6 +796,11 @@ def get_feature_columns() -> list[str]:
         "gold_momentum_5d", "gold_vs_ma20", "yield_change_5d", "safety_signal",
         # FinBERT sentiment features
         "finbert_positive", "finbert_negative", "finbert_score",
+        # Index fundamentals
+        "sp500_pe", "sp500_forward_pe", "sp500_earnings_yield", "sp500_dividend_yield",
+        # Market breadth
+        "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
+        "new_highs_52w", "new_lows_52w", "breadth_thrust",
     ]
 
 

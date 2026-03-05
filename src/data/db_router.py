@@ -26,6 +26,7 @@ _TABLE_PKS = {
     "finbert_cache": "article_id", "model_registry": "id",
     "news_features": "date", "feature_store_meta": "key",
     "strategy_rules": "rule_group, rule_key",
+    "market_breadth": "date",
 }
 
 ANALYTICS_TABLES = {"prices", "technicals", "macro", "intraday_bars", "options_chain"}

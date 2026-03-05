@@ -137,6 +137,7 @@ class DailyPipeline:
             (9,   "Build Intraday Features",   self._step9_intraday),
             (9.5, "Earnings Calendar",          self._step95_earnings),
             (9.6, "Fed Communications",         self._step96_fed_comms),
+            (9.7, "Market Breadth & Fundamentals", self._step97_market_breadth),
             (10,  "Retrain XGBoost",           self._step10_retrain),
             (11,  "Generate Prediction",        self._step11_predict),
             (12,  "Generate LLM Report",       self._step12_report),
@@ -687,6 +688,21 @@ class DailyPipeline:
             return results
         except Exception as e:
             logger.warning(f"Fed communications update failed (non-fatal): {e}")
+            return {"error": str(e)}
+    def _step97_market_breadth(self) -> dict:
+        """Step 9.7: Fetch index fundamentals and market breadth."""
+        try:
+            from src.data.market_breadth import (
+                fetch_index_fundamentals, fetch_market_breadth,
+                store_breadth_fundamentals,
+            )
+            fundamentals = fetch_index_fundamentals()
+            breadth = fetch_market_breadth()
+            if self.router:
+                store_breadth_fundamentals(self.router, self.today, fundamentals, breadth)
+            return {"fundamentals": fundamentals, "breadth": breadth}
+        except Exception as e:
+            logger.warning(f"Market breadth fetch failed (non-fatal): {e}")
             return {"error": str(e)}
 
     def _step10_retrain(self) -> dict:

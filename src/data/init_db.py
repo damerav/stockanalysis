@@ -115,6 +115,21 @@ CREATE TABLE IF NOT EXISTS performance (
     day_of_week INTEGER,       -- 0=Mon..4=Fri
     event_proximity INTEGER    -- 1 if within 2 days of FOMC/CPI/NFP
 );
+
+-- Market breadth & index fundamentals
+CREATE TABLE IF NOT EXISTS market_breadth (
+    date TEXT PRIMARY KEY,
+    sp500_pe REAL,
+    sp500_forward_pe REAL,
+    sp500_earnings_yield REAL,
+    sp500_dividend_yield REAL,
+    pct_above_sma50 REAL,
+    pct_above_sma200 REAL,
+    advance_decline_ratio REAL,
+    new_highs_52w INTEGER,
+    new_lows_52w INTEGER,
+    breadth_thrust REAL
+);
 """
 
 
@@ -159,6 +174,17 @@ def init_db(config: dict = None) -> str:
                         min_val     TEXT,          max_val     TEXT,
                         description TEXT,          updated_at  TEXT,
                         updated_by  TEXT,          PRIMARY KEY (rule_group, rule_key)
+                    )
+                """)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS market_breadth (
+                        date TEXT PRIMARY KEY,
+                        sp500_pe REAL, sp500_forward_pe REAL,
+                        sp500_earnings_yield REAL, sp500_dividend_yield REAL,
+                        pct_above_sma50 REAL, pct_above_sma200 REAL,
+                        advance_decline_ratio REAL,
+                        new_highs_52w INTEGER, new_lows_52w INTEGER,
+                        breadth_thrust REAL
                     )
                 """)
                 from datetime import datetime
