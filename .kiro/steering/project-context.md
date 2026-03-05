@@ -229,3 +229,17 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Admin Config tab replaced**: Raw YAML editor removed. Now shows read-only key settings summary + info banner pointing to Strategy Rules page.
 - **`get_state()` expanded**: Now includes `ai_enabled`, `trail_ai_enabled`, `ai_trail_mults` in the state dict for dashboard consumption.
 - **Auth migrated to PostgreSQL**: `google_oauth.py` user management functions use DbRouter.
+
+### v2.7.1 Changes (Schema Fixes + Pipeline Robustness + Dashboard Performance)
+
+- **PostgreSQL schema fixes**: Added missing `quality_score` column to `raw_articles` table and `feature_version` column to `feature_cache` table via ALTER TABLE on DGX. News quality scoring and feature caching now work correctly.
+- **DbRouter auto-config**: `DbRouter.__init__()` now auto-loads `config.yaml` when no config dict is passed. Previously, `get_router()` with no args would get an empty config, fail PostgreSQL, and crash on corrupted SQLite. Fixes all modules that call `get_router()` without explicit config.
+- **DbRouter corrupted SQLite handling**: SQLite fallback path now catches `sqlite3.DatabaseError` and recreates the file instead of crashing.
+- **`_TABLE_PKS` expanded**: Added `news_features`, `feature_store_meta`, and `strategy_rules` to the primary key mapping. Fixes `INSERT OR REPLACE` → PostgreSQL `ON CONFLICT DO UPDATE` conversion for these tables.
+- **Pipeline Step 10 regime fix**: HMM regime detection now queries the `prices` + `macro` tables directly via SQL JOIN instead of relying on the feature store cache (which doesn't include `close`/`volume` columns). Eliminates `KeyError: 'close'`.
+- **Dashboard load performance**: CSS file cached in `session_state` (no disk read per rerun). yfinance ticker price cached with `st.cache_data(ttl=15)` and lazy-imported. `spy_state.json`, `es_state.json`, prediction history, and performance queries all cached with appropriate TTLs (10-120s).
+- **Single-stock lazy imports**: `yfinance` moved from module-level import to lazy import inside `_fetch_stock_data()` and `_fetch_company_info()`. Faster initial module load.
+- **Predicted vs Actual chart**: New dual-axis line chart on Performance page — left axis shows predicted direction (blue) vs actual direction (orange dashed) with red X markers on misses; right axis overlays SPY OHLC candlesticks at 40% opacity.
+- **news_features upsert**: `store_features()` now uses `INSERT OR REPLACE` with explicit column list for proper PostgreSQL upsert via DbRouter's `_TABLE_PKS` mapping. Fixes duplicate key errors on `news_features` table.
+
+```
