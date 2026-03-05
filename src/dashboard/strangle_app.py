@@ -490,7 +490,10 @@ def _fetch_vix_term_structure() -> dict:
 
 @st.cache_data(ttl=300)
 def _fetch_market_skew() -> dict:
-    """Fetch CBOE SKEW index and compute put/call ratio from Polygon."""
+    """Fetch CBOE SKEW index and compute put/call ratio.
+
+    PCR: tries Polygon first, falls back to yfinance SPY options chain.
+    """
     result = {"skew_index": None, "pcr": None}
     try:
         import yfinance as yf
@@ -499,12 +502,33 @@ def _fetch_market_skew() -> dict:
             result["skew_index"] = round(float(skew["Close"].iloc[-1]), 2)
     except Exception:
         pass
+
+    # PCR: try Polygon first
     try:
         poly = _polygon()
         analytics = poly.get_options_analytics("SPY")
-        result["pcr"] = round(analytics.get("put_call_ratio") or 0, 3)
+        pcr = analytics.get("put_call_ratio")
+        if pcr:
+            result["pcr"] = round(pcr, 3)
     except Exception:
         pass
+
+    # PCR fallback: compute from yfinance SPY options chain
+    if result["pcr"] is None or result["pcr"] == 0:
+        try:
+            import yfinance as yf
+            spy = yf.Ticker("SPY")
+            expirations = spy.options
+            if expirations:
+                # Use nearest expiry for most liquid PCR
+                chain = spy.option_chain(expirations[0])
+                put_vol = chain.puts["volume"].sum()
+                call_vol = chain.calls["volume"].sum()
+                if call_vol > 0:
+                    result["pcr"] = round(put_vol / call_vol, 3)
+        except Exception:
+            pass
+
     return result
 
 
