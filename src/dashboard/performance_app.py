@@ -9,6 +9,7 @@ import logging
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import yaml
 
 from src.dashboard.theme import (
@@ -195,15 +196,14 @@ def page_performance():
                        height=340)
     st.plotly_chart(fig1, use_container_width=True, key="perf_accuracy_trend")
 
-    # ── Predicted vs Actual (daily line chart) ───────────────────────
+    # ── Predicted vs Actual (daily line chart) with OHLC ────────────
     st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
-                f'font-size:0.95rem;">Predicted vs Actual (Daily)</p>',
+                f'font-size:0.95rem;">Predicted vs Actual (Daily) + Price</p>',
                 unsafe_allow_html=True)
 
     _dir_map = {
         "STRONG_BULLISH": 2, "BULLISH": 1, "NEUTRAL": 0,
         "BEARISH": -1, "STRONG_BEARISH": -2,
-        # lowercase fallbacks
         "strong_bullish": 2, "bullish": 1, "neutral": 0,
         "bearish": -1, "strong_bearish": -2,
         "UP": 1, "DOWN": -1, "FLAT": 0,
@@ -213,36 +213,76 @@ def page_performance():
     pv["pred_val"] = pv["predicted"].map(_dir_map).fillna(0)
     pv["actual_val"] = pv["actual"].map(_dir_map).fillna(0)
 
-    fig_pva = go.Figure()
+    # Fetch OHLC prices for the same date range
+    _ohlc = pd.DataFrame()
+    try:
+        _min_date = pv["date"].min().strftime("%Y-%m-%d")
+        _max_date = pv["date"].max().strftime("%Y-%m-%d")
+        _ohlc = _query_df(
+            "SELECT date, open, high, low, close FROM prices "
+            "WHERE date >= %s AND date <= %s ORDER BY date",
+            (_min_date, _max_date),
+        )
+        if not _ohlc.empty:
+            _ohlc["date"] = pd.to_datetime(_ohlc["date"])
+    except Exception:
+        pass
+
+    fig_pva = make_subplots(
+        specs=[[{"secondary_y": True}]],
+    )
+
+    # OHLC candlestick on secondary y-axis (behind prediction lines)
+    if not _ohlc.empty:
+        fig_pva.add_trace(go.Candlestick(
+            x=_ohlc["date"], open=_ohlc["open"], high=_ohlc["high"],
+            low=_ohlc["low"], close=_ohlc["close"],
+            name="OHLC", opacity=0.4,
+            increasing_line_color=colors["green"],
+            decreasing_line_color=colors["red"],
+        ), secondary_y=True)
+
+    # Predicted line
     fig_pva.add_trace(go.Scatter(
         x=pv["date"], y=pv["pred_val"], name="Predicted",
         mode="lines+markers",
         line=dict(color=colors["blue"], width=2),
         marker=dict(size=6, symbol="circle"),
-    ))
+    ), secondary_y=False)
+
+    # Actual line
     fig_pva.add_trace(go.Scatter(
         x=pv["date"], y=pv["actual_val"], name="Actual",
         mode="lines+markers",
         line=dict(color=colors["orange"], width=2, dash="dash"),
         marker=dict(size=6, symbol="diamond"),
-    ))
-    # Highlight misses with red markers
+    ), secondary_y=False)
+
+    # Highlight misses
     misses = pv[pv["correct"] == 0]
     if not misses.empty:
         fig_pva.add_trace(go.Scatter(
             x=misses["date"], y=misses["actual_val"], name="Miss",
             mode="markers",
-            marker=dict(size=10, color=colors["red"], symbol="x", line=dict(width=2)),
-        ))
+            marker=dict(size=10, color=colors["red"], symbol="x",
+                        line=dict(width=2)),
+        ), secondary_y=False)
+
     fig_pva.update_layout(
-        **layout, height=320,
-        yaxis=dict(
-            tickvals=[-2, -1, 0, 1, 2],
-            ticktext=["Strong Bear", "Bearish", "Neutral", "Bullish", "Strong Bull"],
-            gridcolor=colors["grid"], zeroline=True,
-            zerolinecolor=colors["text_muted"], zerolinewidth=1,
-        ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        **layout, height=420, xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+    )
+    fig_pva.update_yaxes(
+        tickvals=[-2, -1, 0, 1, 2],
+        ticktext=["Strong Bear", "Bearish", "Neutral", "Bullish", "Strong Bull"],
+        gridcolor=colors["grid"], zeroline=True,
+        zerolinecolor=colors["text_muted"], zerolinewidth=1,
+        title_text="Direction", secondary_y=False,
+    )
+    fig_pva.update_yaxes(
+        title_text="SPY Price ($)", gridcolor=colors["grid"],
+        secondary_y=True,
     )
     st.plotly_chart(fig_pva, use_container_width=True, key="perf_pred_vs_actual")
 
