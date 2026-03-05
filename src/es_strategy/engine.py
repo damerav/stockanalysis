@@ -26,44 +26,63 @@ class ESStrategyEngine:
     """ES Futures strategy: Keltner Channel entries, 3-lot tiered exits."""
 
     def __init__(self, config: dict = None):
-        cfg = (config or {}).get("es_strategy", {})
-        self.C = cfg.get("credit_C", 10.0)
-        self.K = cfg.get("strike_K", 6000.0)
-        self.max_lots = cfg.get("max_lots", 3)
-        self.jump_exit_pts = cfg.get("jump_exit_points", 5.0)
-        self.emergency_stop_pct = cfg.get("emergency_stop_pct", 0.20)
-        self.circuit_breaker_usd = cfg.get("circuit_breaker_usd", -2000.0)
-        self.session_close_ct = cfg.get("session_close_ct", "15:55")
-        self.session_reset_ct = cfg.get("session_reset_ct", "17:00")
-        self.ai_enabled = cfg.get("ai_enabled", False)
+        from src.strategy import rules_store as rs
+        self.C = rs.get_rule("spread", "credit_C", 10.0)
+        self.K = rs.get_rule("spread", "strike_K", 6000.0)
+        self.max_lots = rs.get_rule("sizing", "max_lots", 3)
+        self.jump_exit_pts = rs.get_rule("risk", "jump_exit_points", 5.0)
+        self.emergency_stop_pct = rs.get_rule("risk", "emergency_stop_pct", 0.20)
+        self.circuit_breaker_usd = rs.get_rule("risk", "circuit_breaker_usd", -2000.0)
+        self.session_close_ct = rs.get_rule("session", "session_close_ct", "15:55")
+        self.session_reset_ct = rs.get_rule("session", "session_reset_ct", "17:00")
+        self.ai_enabled = rs.get_rule("ai", "ai_enabled", True)
 
         self.position = Position()
         self.regime_detector = RegimeDetector(
-            lookback=cfg.get("regime_lookback", 10080),
-            pct_low=cfg.get("regime_pct_low", 33),
-            pct_high=cfg.get("regime_pct_high", 66),
+            lookback=rs.get_rule("regime", "lookback_minutes", 10080),
+            pct_low=rs.get_rule("regime", "pct_low", 33),
+            pct_high=rs.get_rule("regime", "pct_high", 66),
         )
 
         self.signals: list[Signal] = []
         self.circuit_breaker_active = False
         self._bars_since_entry = 0
-        self._phase2_enabled = True
+        self._phase2_enabled = rs.get_rule("entry", "phase2_enabled", True)
+        self._phase2_min_filters = rs.get_rule("entry", "phase2_min_filters", 2)
+        self._phase2_roc_threshold = rs.get_rule("entry", "phase2_roc_threshold", 0.5)
+        self._anti_chase_atr_pct = rs.get_rule("entry", "anti_chase_atr_pct", 0.5)
+
+        # AI exit confidence settings
+        self._trail_ai_enabled = rs.get_rule("ai", "trail_ai_enabled", True)
+        self._ai_trail_mults = None  # set externally by runner when AI provides them
 
         # TP multipliers by regime
         self._tp_multipliers = {
-            "Low":  {"tp1": 1.0, "tp2": 1.5, "runner_trail": 2.0},
-            "Med":  {"tp1": 1.2, "tp2": 1.8, "runner_trail": 2.5},
-            "High": {"tp1": 1.5, "tp2": 2.2, "runner_trail": 3.0},
+            "Low": {
+                "tp1": rs.get_rule("tp_low", "tp1_mult", 1.0),
+                "tp2": rs.get_rule("tp_low", "tp2_mult", 1.5),
+                "runner_trail": rs.get_rule("tp_low", "runner_trail_mult", 2.0),
+            },
+            "Med": {
+                "tp1": rs.get_rule("tp_med", "tp1_mult", 1.2),
+                "tp2": rs.get_rule("tp_med", "tp2_mult", 1.8),
+                "runner_trail": rs.get_rule("tp_med", "runner_trail_mult", 2.5),
+            },
+            "High": {
+                "tp1": rs.get_rule("tp_high", "tp1_mult", 1.5),
+                "tp2": rs.get_rule("tp_high", "tp2_mult", 2.2),
+                "runner_trail": rs.get_rule("tp_high", "runner_trail_mult", 3.0),
+            },
         }
 
         # GAP 9: RL trailing stop agent
         self.rl_trail = RLTrailingAgent(
-            alpha=cfg.get("rl_alpha", 0.1),
-            gamma=cfg.get("rl_gamma", 0.95),
-            epsilon=cfg.get("rl_epsilon", 0.1),
-            lambda_dd=cfg.get("rl_lambda_dd", 0.5),
+            alpha=rs.get_rule("rl", "rl_alpha", 0.1),
+            gamma=rs.get_rule("rl", "rl_gamma", 0.95),
+            epsilon=rs.get_rule("rl", "rl_epsilon", 0.1),
+            lambda_dd=rs.get_rule("rl", "rl_lambda_dd", 0.5),
         )
-        self.rl_trail.load()  # load saved Q-table if exists
+        self.rl_trail.load()
 
     @property
     def regime(self) -> str:
@@ -90,11 +109,11 @@ class ESStrategyEngine:
         atr_val = indicators.get("atr_14", 1)
         ts = bar.get("timestamp", "")
 
-        # Anti-chase gate: price must be within 0.5 ATR of KC band
+        # Anti-chase gate: price must be within configurable ATR fraction of KC band
         direction = None
-        if price <= kc_lower and abs(price - kc_lower) < 0.5 * atr_val:
+        if price <= kc_lower and abs(price - kc_lower) < self._anti_chase_atr_pct * atr_val:
             direction = Direction.LONG
-        elif price >= kc_upper and abs(price - kc_upper) < 0.5 * atr_val:
+        elif price >= kc_upper and abs(price - kc_upper) < self._anti_chase_atr_pct * atr_val:
             direction = Direction.SHORT
 
         if direction is None:
@@ -143,9 +162,9 @@ class ESStrategyEngine:
         filters_passed = 0
 
         # Filter 1: ROC confirms direction
-        if at_lower and roc_3 < -0.5:
+        if at_lower and roc_3 < -self._phase2_roc_threshold:
             filters_passed += 1
-        elif at_upper and roc_3 > 0.5:
+        elif at_upper and roc_3 > self._phase2_roc_threshold:
             filters_passed += 1
 
         # Filter 2: ATR regime not extreme
@@ -158,7 +177,7 @@ class ESStrategyEngine:
         elif at_upper and price > vwap_val:
             filters_passed += 1
 
-        if filters_passed < 2:
+        if filters_passed < self._phase2_min_filters:
             return None
 
         direction = Direction.LONG if at_lower else Direction.SHORT
@@ -187,6 +206,15 @@ class ESStrategyEngine:
         ts = bar.get("timestamp", "")
         regime = self.regime
         mults = self._tp_multipliers.get(regime, self._tp_multipliers["Med"])
+
+        # AI dynamic trailing: override TP2/runner multipliers if CNN provided them
+        if self._trail_ai_enabled and self._ai_trail_mults:
+            ai_m = self._ai_trail_mults
+            mults = dict(mults)  # copy to avoid mutating defaults
+            if "tp2_trail" in ai_m:
+                mults["tp2"] = ai_m["tp2_trail"]
+            if "runner_trail" in ai_m:
+                mults["runner_trail"] = ai_m["runner_trail"]
 
         self.position.update_unrealized(price)
         self._bars_since_entry += 1
@@ -392,6 +420,9 @@ class ESStrategyEngine:
             "circuit_breaker": "ACTIVE" if self.circuit_breaker_active else "OK",
             "trade_count": self.position.trade_count,
             "signals": [s.to_dict() for s in self.signals[-50:]],
+            "ai_enabled": self.ai_enabled,
+            "trail_ai_enabled": self._trail_ai_enabled,
+            "ai_trail_mults": self._ai_trail_mults,
         }
 
     def update_spread(self, strike_K: float, credit_C: float):

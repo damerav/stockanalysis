@@ -37,6 +37,7 @@ from src.dashboard.monitoring import page_monitoring
 from src.dashboard.single_stock_app import page_single_stock
 from src.dashboard.performance_app import page_performance
 from src.dashboard.tuning_app import page_tuning
+from src.dashboard.rules_app import page_rules
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
 from src.dashboard.theme import (
@@ -675,6 +676,38 @@ def page_es():
         </div>""",
         unsafe_allow_html=True,
     )
+
+    # --- AI Confidence Overlay ---
+    ai_enabled = state.get("ai_enabled", False)
+    trail_ai = state.get("trail_ai_enabled", False)
+    ai_mults = state.get("ai_trail_mults") or {}
+    ai_c1, ai_c2, ai_c3, ai_c4 = st.columns(4)
+    with ai_c1:
+        _ai_icon = "🟢" if ai_enabled else "🔴"
+        st.metric("AI Layer", f"{_ai_icon} {'On' if ai_enabled else 'Off'}")
+    with ai_c2:
+        _p_cont = ai_mults.get("p_cont_5", 0) if ai_mults else 0
+        st.metric("Continuation P", f"{_p_cont:.0%}" if _p_cont else "—",
+                  help="CNN-predicted probability the trend continues 5 bars")
+    with ai_c3:
+        _tp2_m = ai_mults.get("tp2_trail") if ai_mults else None
+        _run_m = ai_mults.get("runner_trail") if ai_mults else None
+        st.metric("AI TP2 Trail", f"{_tp2_m:.2f}×" if _tp2_m else "—",
+                  help="CNN-adjusted TP2 trailing multiplier")
+    with ai_c4:
+        st.metric("AI Runner Trail", f"{_run_m:.2f}×" if _run_m else "—",
+                  help="CNN-adjusted runner trailing multiplier")
+
+    # Reload Rules button
+    if st.button("🔄 Reload Rules", key="es_reload_rules",
+                 help="Write hot-reload flag so the live runner re-reads strategy_rules from DB"):
+        import os as _os
+        try:
+            with open(_os.path.join("data", ".reload_rules"), "w") as _rf:
+                _rf.write("1")
+            st.success("Reload flag written — runner will pick up new rules on next bar.")
+        except Exception as _e:
+            st.error(f"Failed to write reload flag: {_e}")
 
     # Chart
     st.subheader("Price Chart")
@@ -2368,8 +2401,8 @@ def _admin_config_tab():
 
     config = yaml.safe_load(raw) or {}
 
-    # Quick view of key settings
-    st.markdown("**Key Settings**")
+    # Read-only summary of key settings
+    st.markdown("**Key Settings** (read-only)")
     kc1, kc2, kc3, kc4 = st.columns(4)
     kc1.metric("LLM Model", config.get("llm", {}).get("model", "—"))
     kc2.metric("XGB Lookback", f"{config.get('xgboost', {}).get('lookback_days', '—')} days")
@@ -2377,33 +2410,9 @@ def _admin_config_tab():
     kc4.metric("Cloud Sync", "On" if config.get("sync", {}).get("enabled") else "Off")
 
     st.divider()
-
-    # Editable config — mask sensitive values in display
-    st.markdown("**Edit Configuration**")
-    st.caption("API keys and secrets are masked. Edit the YAML below and click Save. "
-               "Changes take effect on next component restart.")
-
-    # Toggle to reveal/mask sensitive values
-    show_secrets = st.checkbox("🔓 Reveal sensitive values", value=False, key="reveal_secrets")
-    display_raw = raw if show_secrets else _mask_sensitive_yaml(raw)
-
-    edited = st.text_area("config.yaml", value=display_raw, height=400, key="config_editor")
-
-    if st.button("Save Configuration", key="save_config"):
-        # Prevent saving masked values
-        if not show_secrets and "****" in edited:
-            st.error("Cannot save masked values. Enable 'Reveal sensitive values' first, then edit and save.")
-        else:
-            try:
-                parsed = yaml.safe_load(edited)
-                if not isinstance(parsed, dict):
-                    st.error("Invalid YAML — must be a mapping")
-                else:
-                    with open(config_path, "w") as f:
-                        f.write(edited)
-                    st.success("Configuration saved. Restart components to apply changes.")
-            except yaml.YAMLError as e:
-                st.error(f"YAML syntax error: {e}")
+    st.info("📋 Strategy parameters have moved to the **Strategy Rules** page in the Operations sidebar. "
+            "All ES engine settings (spread, sizing, entry, TP, risk, AI, RL) are now managed from the database "
+            "and can be edited live without restarting.")
 
 
 # --- Logs Tab ---
@@ -3180,6 +3189,7 @@ _pages = {
     "Operations": [
         st.Page(page_monitoring, title="Monitoring", icon=":material/monitor_heart:"),
         st.Page(page_grafana, title="Grafana Dashboards", icon=":material/dashboard:"),
+        st.Page(page_rules, title="Strategy Rules", icon=":material/rule:"),
         st.Page(page_admin, title="Admin", icon=":material/settings:"),
     ],
 }

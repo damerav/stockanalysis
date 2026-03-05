@@ -150,6 +150,22 @@ def init_db(config: dict = None) -> str:
         router = DbRouter(config)
         if router.using_postgres:
             logger.info("PostgreSQL connection verified")
+            # Ensure strategy_rules table exists in PostgreSQL
+            try:
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS strategy_rules (
+                        rule_group  TEXT NOT NULL, rule_key    TEXT NOT NULL,
+                        rule_value  TEXT NOT NULL, value_type  TEXT NOT NULL DEFAULT 'float',
+                        min_val     TEXT,          max_val     TEXT,
+                        description TEXT,          updated_at  TEXT,
+                        updated_by  TEXT,          PRIMARY KEY (rule_group, rule_key)
+                    )
+                """)
+                from datetime import datetime
+                _seed_strategy_rules_pg(router, datetime.now().isoformat())
+                logger.info("strategy_rules table ready in PostgreSQL")
+            except Exception as e:
+                logger.warning(f"strategy_rules PostgreSQL setup failed: {e}")
         router.close()
     except Exception as e:
         logger.debug(f"PostgreSQL not available (non-fatal): {e}")
@@ -235,7 +251,20 @@ def _migrate_schema(conn: sqlite3.Connection):
             updated_at TEXT
         )
     """)
+
+    # Strategy rules table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_rules (
+            rule_group  TEXT NOT NULL, rule_key    TEXT NOT NULL,
+            rule_value  TEXT NOT NULL, value_type  TEXT NOT NULL DEFAULT 'float',
+            min_val     TEXT,          max_val     TEXT,
+            description TEXT,          updated_at  TEXT,
+            updated_by  TEXT,          PRIMARY KEY (rule_group, rule_key)
+        )
+    """)
+
     conn.commit()
+    seed_strategy_rules(conn)
 
 
 def _add_columns_if_missing(conn: sqlite3.Connection, table: str,
@@ -251,6 +280,84 @@ def _add_columns_if_missing(conn: sqlite3.Connection, table: str,
             except Exception as e:
                 logger.debug(f"Column {col_name} already exists or error: {e}")
     conn.commit()
+
+
+_STRATEGY_RULE_DEFAULTS = [
+    ("spread", "strike_K", "6000.0", "float", "5000", "7000", "Sold strike price (K)"),
+    ("spread", "credit_C", "10.0", "float", "1", "50", "Credit width (C) in points"),
+    ("sizing", "max_lots", "3", "int", "1", "10", "Maximum lots per trade"),
+    ("entry", "anti_chase_atr_pct", "0.5", "float", "0.1", "2.0", "Anti-chase gate fraction of ATR"),
+    ("entry", "phase2_enabled", "true", "bool", None, None, "Enable Phase 2 entries"),
+    ("entry", "phase2_min_filters", "2", "int", "1", "3", "Minimum Phase 2 confluence filters"),
+    ("entry", "phase2_roc_threshold", "0.5", "float", "0.1", "2.0", "ROC threshold for Phase 2"),
+    ("tp_low", "tp1_mult", "1.0", "float", "0.5", "5.0", "TP1 x ATR — Low"),
+    ("tp_low", "tp2_mult", "1.5", "float", "0.5", "5.0", "TP2 x ATR — Low"),
+    ("tp_low", "runner_trail_mult", "2.0", "float", "0.5", "8.0", "Runner trail x ATR — Low"),
+    ("tp_med", "tp1_mult", "1.2", "float", "0.5", "5.0", "TP1 x ATR — Med"),
+    ("tp_med", "tp2_mult", "1.8", "float", "0.5", "5.0", "TP2 x ATR — Med"),
+    ("tp_med", "runner_trail_mult", "2.5", "float", "0.5", "8.0", "Runner trail x ATR — Med"),
+    ("tp_high", "tp1_mult", "1.5", "float", "0.5", "5.0", "TP1 x ATR — High"),
+    ("tp_high", "tp2_mult", "2.2", "float", "0.5", "5.0", "TP2 x ATR — High"),
+    ("tp_high", "runner_trail_mult", "3.0", "float", "0.5", "8.0", "Runner trail x ATR — High"),
+    ("risk", "emergency_stop_pct", "0.20", "float", "0.05", "0.50", "Emergency stop % of C"),
+    ("risk", "jump_exit_points", "5.0", "float", "1.0", "20.0", "Jump exit threshold pts"),
+    ("risk", "circuit_breaker_usd", "-2000.0", "float", "-10000", "-100", "Daily loss limit USD"),
+    ("session", "session_close_ct", "15:55", "time", None, None, "Session close time CT"),
+    ("session", "session_reset_ct", "17:00", "time", None, None, "Session reset time CT"),
+    ("indicators", "kc_ema_period", "20", "int", "5", "100", "KC EMA period"),
+    ("indicators", "kc_atr_period", "14", "int", "5", "50", "KC ATR period"),
+    ("indicators", "kc_atr_multiplier", "2.0", "float", "0.5", "5.0", "KC ATR multiplier"),
+    ("indicators", "rsi_period", "14", "int", "2", "50", "RSI period"),
+    ("indicators", "roc_period", "3", "int", "1", "20", "ROC period"),
+    ("indicators", "atr_period", "14", "int", "5", "50", "ATR period"),
+    ("regime", "lookback_minutes", "10080", "int", "1440", "43200", "Regime lookback minutes"),
+    ("regime", "pct_low", "33", "int", "10", "45", "Low regime percentile cutoff"),
+    ("regime", "pct_high", "66", "int", "55", "90", "High regime percentile cutoff"),
+    ("ai", "ai_enabled", "true", "bool", None, None, "Enable AI confidence layer"),
+    ("ai", "ai_fail_closed", "true", "bool", None, None, "Fail-closed when AI unavailable"),
+    ("ai", "entry_conf_threshold", "0.70", "float", "0.50", "0.99", "Entry confidence threshold"),
+    ("ai", "exit_conf_threshold", "0.65", "float", "0.50", "0.99", "Exit hold confidence threshold"),
+    ("ai", "trail_ai_enabled", "true", "bool", None, None, "Use CNN for dynamic trailing"),
+    ("ai", "regime_thresholds_low", "0.58", "float", "0.50", "0.99", "Entry threshold Low regime"),
+    ("ai", "regime_thresholds_med", "0.55", "float", "0.50", "0.99", "Entry threshold Med regime"),
+    ("ai", "regime_thresholds_high", "0.52", "float", "0.50", "0.99", "Entry threshold High regime"),
+    ("rl", "rl_alpha", "0.1", "float", "0.001", "0.5", "Q-learning rate"),
+    ("rl", "rl_gamma", "0.95", "float", "0.5", "0.999", "Discount factor"),
+    ("rl", "rl_epsilon", "0.1", "float", "0.0", "0.5", "Exploration rate"),
+    ("rl", "rl_lambda_dd", "0.5", "float", "0.0", "2.0", "Drawdown penalty weight"),
+]
+
+
+def seed_strategy_rules(conn):
+    """Seed strategy_rules table with defaults (SQLite — INSERT OR IGNORE)."""
+    from datetime import datetime
+    now = datetime.now().isoformat()
+    for row in _STRATEGY_RULE_DEFAULTS:
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO strategy_rules "
+                "(rule_group, rule_key, rule_value, value_type, min_val, max_val, "
+                "description, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,?)",
+                (*row, now, "system"),
+            )
+        except Exception:
+            pass
+    conn.commit()
+
+
+def _seed_strategy_rules_pg(router, now: str):
+    """Seed strategy_rules table with defaults (PostgreSQL — ON CONFLICT DO NOTHING)."""
+    for row in _STRATEGY_RULE_DEFAULTS:
+        try:
+            router.execute(
+                "INSERT INTO strategy_rules "
+                "(rule_group,rule_key,rule_value,value_type,min_val,max_val,"
+                "description,updated_at,updated_by) "
+                "VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (rule_group,rule_key) DO NOTHING",
+                (*row, now, "system"),
+            )
+        except Exception:
+            pass
 
 
 def get_connection(config: dict = None):

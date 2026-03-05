@@ -254,6 +254,14 @@ class ESRunner:
                 from src.es_strategy.engine import Signal
                 return [Signal("AI_REJECT", f"p={gate['p_enter']:.3f}", bar.get("timestamp", ""))]
 
+        # Wire AI trail multipliers into engine before processing
+        if self.ai.enabled and not self.engine.position.is_flat:
+            try:
+                trail_mults = self.ai.get_trail_multipliers(self.engine.regime)
+                self.engine._ai_trail_mults = trail_mults
+            except Exception:
+                pass
+
         signals = self.engine.process_bar(bar, indicators)
         return signals
 
@@ -298,6 +306,16 @@ class ESRunner:
 
         try:
             while True:
+                # Hot-reload: check for .reload_rules flag file
+                _reload_flag = os.path.join("data", ".reload_rules")
+                if os.path.exists(_reload_flag):
+                    try:
+                        os.remove(_reload_flag)
+                        logger.info("Hot-reload triggered — re-initializing engine from rules_store")
+                        self.engine = ESStrategyEngine(self.config)
+                    except Exception as e:
+                        logger.warning(f"Hot-reload failed: {e}")
+
                 bar = self._fetch_next_bar(paper)
                 if bar is None:
                     time.sleep(poll_interval)
