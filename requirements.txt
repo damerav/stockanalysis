@@ -26,6 +26,7 @@ hmmlearn>=0.3
 lightgbm>=4.3
 # PostgreSQL + pgvector
 psycopg2-binary>=2.9
+sqlalchemy>=2.0
 # LSTM forecaster + news pipeline
 tensorflow>=2.15; platform_machine != "aarch64"
 nltk>=3.8

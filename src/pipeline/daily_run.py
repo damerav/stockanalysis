@@ -595,9 +595,8 @@ class DailyPipeline:
                 "SELECT date, open, high, low, close, volume FROM prices ORDER BY date"
             )
         else:
-            df = pd.read_sql_query(
-                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date",
-                self._get_conn(),
+            df = self._db_query(
+                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date"
             )
         if df.empty:
             return {"rows": 0}
@@ -639,9 +638,9 @@ class DailyPipeline:
                 (f"{self.today}%",),
             )
         else:
-            bars = pd.read_sql_query(
+            bars = self._db_query(
                 "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
-                self._get_conn(), params=(f"{self.today}%",),
+                (f"{self.today}%",),
             )
         if bars.empty:
             return {"bars": 0}
@@ -779,12 +778,11 @@ class DailyPipeline:
                     "SELECT vix FROM macro ORDER BY date DESC LIMIT 60"
                 )
             else:
-                price_df = pd.read_sql_query(
-                    "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60",
-                    self._get_conn(),
+                price_df = self._db_query(
+                    "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60"
                 )
-                macro_df = pd.read_sql_query(
-                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", self._get_conn()
+                macro_df = self._db_query(
+                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60"
                 )
             price_df["vix"] = macro_df.get("vix", 18.0)
             regime = self.regime_detector.predict(price_df)

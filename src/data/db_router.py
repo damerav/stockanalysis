@@ -2,6 +2,7 @@
 
 PostgreSQL is the primary database with pgvector support for semantic search.
 SQLite is kept as a fallback for environments without PostgreSQL.
+Uses SQLAlchemy engine for pandas read_sql_query to avoid psycopg2 warnings.
 """
 
 import os
@@ -11,6 +12,7 @@ import logging
 from typing import Optional
 
 import pandas as pd
+from sqlalchemy import create_engine, text
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +71,18 @@ def _sqlite_sql_to_pg(sql: str, params: tuple = None) -> tuple[str, tuple]:
     return converted, params
 
 
+def _pg_to_sqlalchemy(sql: str, params: tuple = None) -> tuple[str, dict]:
+    """Convert %s positional params to :p0, :p1, ... named params for SQLAlchemy text()."""
+    if not params:
+        return sql, None
+    sa_sql = sql
+    sa_params = {}
+    for i, val in enumerate(params):
+        sa_sql = sa_sql.replace('%s', f':p{i}', 1)
+        sa_params[f'p{i}'] = val
+    return sa_sql, sa_params
+
+
 class DbRouter:
     """Routes queries to PostgreSQL (primary) with SQLite fallback."""
 
@@ -77,22 +91,31 @@ class DbRouter:
         self._sqlite_path = _get_sqlite_path(config)
         self._pg_config = _get_pg_config(config)
         self._pg_conn = None
+        self._pg_engine = None
         self._sqlite = None
         if self._pg_config:
             try:
                 import psycopg2
+                host = self._pg_config.get("host", "localhost")
+                port = self._pg_config.get("port", 5432)
+                dbname = self._pg_config["dbname"]
+                user = self._pg_config["user"]
+                password = self._pg_config.get("password", "")
                 self._pg_conn = psycopg2.connect(
-                    host=self._pg_config.get("host", "localhost"),
-                    port=self._pg_config.get("port", 5432),
-                    dbname=self._pg_config["dbname"],
-                    user=self._pg_config["user"],
-                    password=self._pg_config.get("password", ""),
+                    host=host, port=port, dbname=dbname,
+                    user=user, password=password,
                 )
                 self._pg_conn.autocommit = True
-                logger.info(f"DbRouter: PostgreSQL connected ({self._pg_config['dbname']})")
+                # SQLAlchemy engine for pandas read_sql_query (suppresses psycopg2 warnings)
+                self._pg_engine = create_engine(
+                    f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}",
+                    pool_pre_ping=True,
+                )
+                logger.info(f"DbRouter: PostgreSQL connected ({dbname})")
             except Exception as e:
                 logger.warning(f"PostgreSQL unavailable: {e}")
                 self._pg_conn = None
+                self._pg_engine = None
         # Only create SQLite connection if PostgreSQL is unavailable
         if not self._pg_conn:
             os.makedirs(os.path.dirname(self._sqlite_path) or ".", exist_ok=True)
@@ -115,11 +138,12 @@ class DbRouter:
         return self._sqlite
 
     def query(self, sql: str, params: tuple = None) -> pd.DataFrame:
-        if self._pg_conn:
+        if self._pg_engine:
             try:
                 pg_sql, pg_params = _sqlite_sql_to_pg(sql, params)
-                return pd.read_sql_query(pg_sql, self._pg_conn,
-                                         params=pg_params if pg_params else None)
+                sa_sql, sa_params = _pg_to_sqlalchemy(pg_sql, pg_params)
+                return pd.read_sql_query(text(sa_sql), self._pg_engine,
+                                         params=sa_params if sa_params else None)
             except Exception as e:
                 logger.warning(f"PostgreSQL query failed: {e}")
                 if not self._sqlite:
@@ -197,21 +221,21 @@ class DbRouter:
         dates_list = df["date"].tolist()
         if not dates_list:
             return df
-        if self._pg_conn:
+        if self._pg_engine:
             try:
                 df_sent = pd.read_sql_query(
-                    "SELECT date, score as sentiment_score, confidence as sentiment_confidence, "
+                    text("SELECT date, score as sentiment_score, confidence as sentiment_confidence, "
                     "article_count, positive_ratio, negative_ratio, macro_sentiment, "
                     "earnings_sentiment, geopolitical_sentiment, technical_sentiment, "
                     "sentiment_dispersion, sentiment_velocity "
-                    "FROM daily_sentiment WHERE date = ANY(%s)", self._pg_conn, params=(dates_list,))
+                    "FROM daily_sentiment WHERE date = ANY(:p0)"), self._pg_engine, params={"p0": dates_list})
                 df_intra = pd.read_sql_query(
-                    "SELECT date, vwap_spread, intraday_momentum, intraday_range, volume_ratio "
-                    "FROM intraday_features WHERE date = ANY(%s)", self._pg_conn, params=(dates_list,))
+                    text("SELECT date, vwap_spread, intraday_momentum, intraday_range, volume_ratio "
+                    "FROM intraday_features WHERE date = ANY(:p0)"), self._pg_engine, params={"p0": dates_list})
                 df_opts = pd.read_sql_query(
-                    "SELECT date, put_call_ratio, max_pain, iv_skew, gex, "
+                    text("SELECT date, put_call_ratio, max_pain, iv_skew, gex, "
                     "vanna_exposure, charm_exposure, zero_dte_pcr "
-                    "FROM options_analytics WHERE date = ANY(%s)", self._pg_conn, params=(dates_list,))
+                    "FROM options_analytics WHERE date = ANY(:p0)"), self._pg_engine, params={"p0": dates_list})
             except Exception:
                 df_sent = df_intra = df_opts = pd.DataFrame()
         else:
@@ -261,28 +285,32 @@ class DbRouter:
 
     def vector_search(self, embedding: list[float], limit: int = 10,
                       category: str = None, days_back: int = 30) -> pd.DataFrame:
-        if not self._pg_conn:
+        if not self._pg_engine:
             return pd.DataFrame()
         try:
             from datetime import datetime, timedelta
             cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
             embed_str = str(embedding)
-            where = "WHERE embedding IS NOT NULL AND published_at >= %s"
-            params = [cutoff]
+            where = "WHERE embedding IS NOT NULL AND published_at >= :cutoff"
+            sa_params = {"embed1": embed_str, "cutoff": cutoff, "embed2": embed_str, "lim": limit}
             if category:
-                where += " AND category = %s"
-                params.append(category)
+                where += " AND category = :cat"
+                sa_params["cat"] = category
             sql = f"""SELECT id, headline, source, category, published_at,
-                   sentiment_compound, 1 - (embedding <=> %s::vector) as similarity
+                   sentiment_compound, 1 - (embedding <=> :embed1::vector) as similarity
             FROM raw_articles {where}
-            ORDER BY embedding <=> %s::vector LIMIT %s"""
-            params_full = [embed_str] + params + [embed_str, limit]
-            return pd.read_sql_query(sql, self._pg_conn, params=params_full)
+            ORDER BY embedding <=> :embed2::vector LIMIT :lim"""
+            return pd.read_sql_query(text(sql), self._pg_engine, params=sa_params)
         except Exception as e:
             logger.error(f"vector_search failed: {e}")
             return pd.DataFrame()
 
     def close(self):
+        if self._pg_engine:
+            try:
+                self._pg_engine.dispose()
+            except Exception:
+                pass
         if self._pg_conn:
             try:
                 self._pg_conn.close()

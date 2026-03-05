@@ -121,21 +121,22 @@ def _load_pg_config():
 
 
 def _pg_connect():
-    """Create a fresh PostgreSQL connection (thread-safe)."""
+    """Create a fresh SQLAlchemy engine for thread-safe queries (suppresses psycopg2 warnings)."""
     pg = _load_pg_config()
     if not pg:
         return None
     try:
-        import psycopg2
-        conn = psycopg2.connect(
-            host=pg.get("host", "localhost"),
-            port=pg.get("port", 5432),
-            dbname=pg["dbname"],
-            user=pg["user"],
-            password=pg.get("password", ""),
+        from sqlalchemy import create_engine
+        host = pg.get("host", "localhost")
+        port = pg.get("port", 5432)
+        dbname = pg["dbname"]
+        user = pg["user"]
+        password = pg.get("password", "")
+        engine = create_engine(
+            f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}",
+            pool_pre_ping=True,
         )
-        conn.autocommit = True
-        return conn
+        return engine
     except Exception:
         return None
 
@@ -146,19 +147,30 @@ def _convert_sql_for_pg(sql: str) -> str:
 
 
 def _query_df(sql: str, params=()) -> pd.DataFrame:
-    """Thread-safe query: uses PostgreSQL via fresh connection per query."""
-    # Try PostgreSQL
-    pg = _pg_connect()
-    if pg:
+    """Thread-safe query: uses PostgreSQL via SQLAlchemy engine per query."""
+    from sqlalchemy import text as sa_text
+    engine = _pg_connect()
+    if engine:
         try:
             pg_sql = _convert_sql_for_pg(sql)
-            df = pd.read_sql_query(pg_sql, pg, params=params if params else None)
-            pg.close()
+            # Convert positional %s params to named :p0, :p1, ... for SQLAlchemy
+            sa_params = None
+            if params:
+                sa_sql = pg_sql
+                sa_dict = {}
+                for i, val in enumerate(params):
+                    sa_sql = sa_sql.replace('%s', f':p{i}', 1)
+                    sa_dict[f'p{i}'] = val
+                pg_sql = sa_sql
+                sa_params = sa_dict
+            df = pd.read_sql_query(sa_text(pg_sql), engine,
+                                   params=sa_params if sa_params else None)
+            engine.dispose()
             return df
         except Exception as e:
             logger.warning(f"PG query failed: {e}")
             try:
-                pg.close()
+                engine.dispose()
             except Exception:
                 pass
 

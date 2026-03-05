@@ -13,7 +13,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.data.init_db import get_connection, load_config
+from src.data.init_db import load_config
+from src.data.db_router import get_router
 from src.data.features import build_feature_vector, get_feature_columns, get_target
 from src.model.trainer import SPYPredictor
 from src.whatif.presets import STRESS_SCENARIOS
@@ -154,13 +155,12 @@ class WhatIfEngine:
 
     def _generate_synthetic_bars(self) -> Optional[str]:
         """Generate synthetic 1-min bars from daily price data for backtesting."""
-        conn = get_connection(self.config)
-        df = pd.read_sql_query(
+        router = get_router(self.config)
+        df = router.query(
             "SELECT date, open, high, low, close, volume FROM prices "
             "ORDER BY date DESC LIMIT ?",
-            conn, params=(self.es_lookback,),
+            (self.es_lookback,),
         )
-        conn.close()
 
         if df.empty or len(df) < 5:
             return None

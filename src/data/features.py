@@ -385,8 +385,8 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
     # --- P3: Earnings calendar features (batched, vectorized) ---
     try:
-        all_earnings = pd.read_sql_query(
-            "SELECT date, ticker FROM earnings_calendar", conn
+        all_earnings = router.query(
+            "SELECT date, ticker FROM earnings_calendar"
         )
         if not all_earnings.empty:
             all_earnings["date"] = pd.to_datetime(all_earnings["date"])
@@ -421,8 +421,8 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
     # --- P3: Fed communication features (batched — vectorized merge+ffill) ---
     try:
-        fed_all = pd.read_sql_query(
-            "SELECT date, type, hawkish_score FROM fed_communications ORDER BY date", conn
+        fed_all = router.query(
+            "SELECT date, type, hawkish_score FROM fed_communications ORDER BY date"
         )
         if not fed_all.empty:
             # Pivot to get latest score per type per date, then ffill
@@ -456,8 +456,8 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
                 "SELECT DISTINCT substr(timestamp, 1, 10) as bar_date FROM intraday_bars"
             )
         except Exception:
-            bar_dates_df = pd.read_sql_query(
-                "SELECT DISTINCT substr(timestamp, 1, 10) as bar_date FROM intraday_bars", conn
+            bar_dates_df = router.query(
+                "SELECT DISTINCT substr(timestamp, 1, 10) as bar_date FROM intraday_bars"
             )
         bar_dates = set(bar_dates_df["bar_date"].tolist()) if not bar_dates_df.empty else set()
     except Exception:
