@@ -6,15 +6,15 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.7 (Rules UI + AI Confidence Layer — DB-backed strategy rules, live-edit dashboard, AI exit wiring, champion/challenger, performance analytics)
+- **Current version**: v2.7.2 (Market Breadth + Index Fundamentals — S&P 500 PE/earnings yield/dividend yield, breadth indicators, encrypted secrets)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
 ## Architecture
 
-- **125 model features** available across price, technicals, macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, and FinBERT NLP — **32 kept after aggressive feature selection**
+- **125+ model features** available across price, technicals, macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, and market breadth/fundamentals — **32 kept after aggressive feature selection** (10 new breadth features available)
 - **17+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged)
-- **15-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch)
+- **16-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch) and market breadth computation
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
 - **HMM regime detection**: 4 states (bull_trend, bear_trend, high_vol_choppy, low_vol_range)
 - **Conformal prediction**: 90% coverage prediction sets
@@ -242,5 +242,16 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Single-stock lazy imports**: `yfinance` moved from module-level import to lazy import inside `_fetch_stock_data()` and `_fetch_company_info()`. Faster initial module load.
 - **Predicted vs Actual chart**: New dual-axis line chart on Performance page — left axis shows predicted direction (blue) vs actual direction (orange dashed) with red X markers on misses; right axis overlays SPY OHLC candlesticks at 40% opacity.
 - **news_features upsert**: `store_features()` now uses `INSERT OR REPLACE` with explicit column list for proper PostgreSQL upsert via DbRouter's `_TABLE_PKS` mapping. Fixes duplicate key errors on `news_features` table.
+
+### v2.7.2 Changes (Market Breadth + Index Fundamentals + Encrypted Secrets)
+
+- **Encrypted secrets manager** (`src/data/secrets_manager.py`): Fernet-encrypted `app_secrets` PostgreSQL table. 6 secrets migrated (API keys, DB password, session secret, seed passwords). All source files resolve secrets from encrypted DB with env var fallbacks. `config.yaml` API keys replaced with `FROM_ENCRYPTED_DB` placeholders. `cryptography>=42.0` added to requirements.
+- **Market breadth & index fundamentals** (`src/data/market_breadth.py`): S&P 500 PE ratio, forward PE, earnings yield, dividend yield from yfinance SPY info. Market breadth: % stocks above 50/200-day SMA, advance/decline ratio, 52-week highs/lows, breadth thrust. Wikipedia S&P 500 constituent list with fallback to hardcoded top-100.
+- **`market_breadth` PostgreSQL table**: Schema in `init_db.py`, PK mapping in `db_router.py`. Stores daily breadth + fundamental snapshots.
+- **Pipeline step 9.7** (`_step97_market_breadth`): Fetches fundamentals + breadth, stores in DB. Runs as part of the 16-step daily pipeline.
+- **10 new features in feature vector**: `sp500_pe`, `sp500_forward_pe`, `sp500_earnings_yield`, `sp500_dividend_yield`, `pct_above_sma50`, `pct_above_sma200`, `advance_decline_ratio`, `new_highs_52w`, `new_lows_52w`, `breadth_thrust`. Integrated into `build_feature_vector()` and `get_feature_columns()` in `features.py`.
+- **np.float64 serialization fix**: `store_breadth_fundamentals()` casts numpy types to native Python before SQL to avoid PostgreSQL `schema "np" does not exist` errors.
+- **pd.read_html FutureWarning fix**: Wikipedia scraper wraps `resp.text` in `StringIO`.
+- **lxml>=5.0** added to requirements.txt for Wikipedia HTML parsing.
 
 ```
