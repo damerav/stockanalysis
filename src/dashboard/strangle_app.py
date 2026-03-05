@@ -83,6 +83,30 @@ def _header(title: str):
         st.markdown(f"## {title}")
 
 
+@st.cache_data(ttl=15)
+def _live_spot(ticker: str = "SPY") -> float:
+    """Fetch live spot price via yfinance with 15s cache."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        price = t.fast_info.get("lastPrice") or t.fast_info.get("previousClose")
+        return round(float(price), 2) if price else 540.0
+    except Exception:
+        return 540.0
+
+@st.cache_data(ttl=15)
+def _live_spot(ticker: str = "SPY") -> float:
+    """Fetch live spot price via yfinance with 15s cache."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        price = t.fast_info.get("lastPrice") or t.fast_info.get("previousClose")
+        return round(float(price), 2) if price else 540.0
+    except Exception:
+        return 540.0
+
+
+
 # ── Database helpers ──────────────────────────────────────────────────────────
 
 def _load_positions(status: Optional[str] = None) -> pd.DataFrame:
@@ -753,7 +777,8 @@ def page_strangle():
             c1, c2 = st.columns(2)
             with c1:
                 underlying = st.text_input("Underlying", "SPY").upper()
-                spot = st.number_input("Current Spot Price", 100.0, 1000.0, 540.0, 0.01)
+                live_price = _live_spot(underlying)
+                spot = st.number_input("Current Spot Price", 100.0, 1000.0, live_price, 0.01)
                 dte = st.slider("Target DTE", 25, 60, 45)
                 inversion = st.number_input("Inversion Points ($)", 1.0, 20.0, 5.0, 0.5,
                                             help="Short Put = Spot + X | Short Call = Spot - X")
