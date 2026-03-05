@@ -2,7 +2,6 @@
 
 import logging
 import os
-import sqlite3
 import numpy as np
 import pandas as pd
 from datetime import date, datetime
@@ -10,11 +9,11 @@ from typing import Optional
 
 pd.set_option('future.no_silent_downcasting', True)
 
-from src.data.init_db import get_connection, load_config
+from src.data.init_db import load_config
 from src.data.calendar import get_event_features, has_nearby_event
 from src.data.earnings_calendar import get_earnings_features
 from src.data.fed_comms import get_fed_features
-from src.data.db_router import get_router, ANALYTICS_TABLES
+from src.data.db_router import get_router, DbRouter, ANALYTICS_TABLES
 from src.data.geopolitical_features import (
     compute_daily_geopolitical_features,
     compute_daily_finbert_features,
@@ -155,9 +154,9 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
     return result
 
 
-def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: dict = None):
+def store_technicals(conn, tech_df: pd.DataFrame, config: dict = None):
     """Store computed technicals in the database.
-    Routes to PostgreSQL if available, falls back to SQLite."""
+    Routes to PostgreSQL via DbRouter. conn parameter kept for backward compat but ignored."""
     cols = ("date", "sma_20", "sma_50", "rsi_14", "macd", "macd_signal", "macd_hist",
             "bb_upper", "bb_lower", "bb_mid", "atr_14",
             "obv", "garman_klass_vol", "stoch_k", "stoch_d")
@@ -191,25 +190,21 @@ def store_technicals(conn: sqlite3.Connection, tech_df: pd.DataFrame, config: di
             for _, row in tech_df.iterrows():
                 if pd.isna(row.get("sma_20")):
                     continue
-                conn.execute(sql, _row_vals(row))
-            conn.commit()
-            logger.debug("Technicals stored in SQLite")
+                router.execute(sql, _row_vals(row))
+            logger.debug("Technicals stored via router")
     except Exception as e:
-        logger.warning(f"Router write failed, falling back to SQLite: {e}")
-        for _, row in tech_df.iterrows():
-            if pd.isna(row.get("sma_20")):
-                continue
-            conn.execute(sql, _row_vals(row))
-            conn.commit()
+        logger.error(f"Failed to store technicals: {e}")
+        raise
 
 
 
 # --- 3A: Feature Vector Construction ---
 
-def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config: dict = None) -> dict:
+def compute_intraday_microstructure(conn, date: str, config: dict = None) -> dict:
     """Compute 8 intraday microstructure features from intraday_bars for a given date.
 
-    Reads intraday_bars and prices via DbRouter (PostgreSQL primary, SQLite fallback).
+    Reads intraday_bars and prices via DbRouter (PostgreSQL primary).
+    conn parameter kept for backward compat but ignored.
 
     Returns dict with keys: opening_gap_pct, opening_range_breakout,
     close_vs_high_pct, close_vs_low_pct, afternoon_reversal,
@@ -223,48 +218,26 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         "tick_divergence": np.nan, "vwap_reclaim_count": np.nan,
     }
     try:
-        # Try router first (PostgreSQL → SQLite fallback)
-        try:
-            router = get_router(config)
-            bars = router.read_analytics(
-                "SELECT timestamp, open, high, low, close, volume, vwap "
-                "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
-                (f"{date}%",),
-            )
-            if bars.empty or len(bars) < 10:
-                return fallback
+        router = get_router(config)
+        bars = router.query(
+            "SELECT timestamp, open, high, low, close, volume, vwap "
+            "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
+            (f"{date}%",),
+        )
+        if bars.empty or len(bars) < 10:
+            return fallback
 
-            day_open = float(bars.iloc[0]["open"])
-            day_high = float(bars["high"].max())
-            day_low = float(bars["low"].min())
-            day_close = float(bars.iloc[-1]["close"])
+        day_open = float(bars.iloc[0]["open"])
+        day_high = float(bars["high"].max())
+        day_low = float(bars["low"].min())
+        day_close = float(bars.iloc[-1]["close"])
 
-            # Previous day close from prices table
-            prev_df = router.read_analytics(
-                "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
-                (date,),
-            )
-            prev_close = float(prev_df.iloc[0]["close"]) if not prev_df.empty else day_open
-        except Exception:
-            # Fall back to SQLite
-            bars = pd.read_sql_query(
-                "SELECT timestamp, open, high, low, close, volume, vwap "
-                "FROM intraday_bars WHERE ticker='SPY' AND timestamp LIKE ? ORDER BY timestamp",
-                conn, params=(f"{date}%",),
-            )
-            if bars.empty or len(bars) < 10:
-                return fallback
-
-            day_open = float(bars.iloc[0]["open"])
-            day_high = float(bars["high"].max())
-            day_low = float(bars["low"].min())
-            day_close = float(bars.iloc[-1]["close"])
-
-            prev = conn.execute(
-                "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
-                (date,),
-            ).fetchone()
-            prev_close = float(prev[0]) if prev else day_open
+        # Previous day close from prices table
+        prev_df = router.query(
+            "SELECT close FROM prices WHERE date < ? ORDER BY date DESC LIMIT 1",
+            (date,),
+        )
+        prev_close = float(prev_df.iloc[0]["close"]) if not prev_df.empty else day_open
 
         # 1. opening_gap_pct
         opening_gap_pct = (day_open - prev_close) / prev_close if prev_close else 0.0
@@ -341,53 +314,16 @@ def compute_intraday_microstructure(conn: sqlite3.Connection, date: str, config:
         return fallback
 
 
-def build_feature_vector(conn: sqlite3.Connection, date: str = None, config: dict = None) -> Optional[pd.DataFrame]:
+def build_feature_vector(conn, date: str = None, config: dict = None) -> Optional[pd.DataFrame]:
     """Build the 35+ feature vector for model training/prediction.
 
-    Reads all tables via DbRouter (PostgreSQL primary, SQLite fallback).
+    Reads all tables via DbRouter (PostgreSQL primary).
+    conn parameter kept for backward compat but ignored when router is available.
 
     Returns DataFrame with one row per date, all features as columns.
     """
-    # Try router first (PostgreSQL → SQLite)
-    try:
-        router = get_router(config)
-        df = router.read_feature_join(date)
-    except Exception as e:
-        logger.warning(f"Router feature join failed, falling back to SQLite: {e}")
-        df = pd.DataFrame()
-
-    if df.empty:
-        # Fallback: original single-DB JOIN on SQLite
-        query = """
-        SELECT
-            p.date,
-            p.open, p.high, p.low, p.close, p.volume,
-            t.sma_20, t.sma_50, t.rsi_14,
-            t.macd, t.macd_signal, t.macd_hist,
-            t.bb_upper, t.bb_lower, t.atr_14,
-            m.vix, m.vix_change, m.us10y_yield, m.dxy, m.fed_funds, m.gold, m.crude,
-            m.vix9d, m.vix3m, m.vix6m, m.vvix, m.skew_index,
-            m.hy_spread, m.tlt_spy_ratio, m.eem_spy_ratio,
-            m.copper_gold_ratio, m.xlk_xlf_ratio, m.xlk_xle_ratio,
-            s.score as sentiment_score, s.confidence as sentiment_confidence,
-            s.article_count, s.positive_ratio, s.negative_ratio,
-            s.macro_sentiment, s.earnings_sentiment,
-            s.geopolitical_sentiment, s.technical_sentiment,
-            s.sentiment_dispersion, s.sentiment_velocity,
-            i.vwap_spread, i.intraday_momentum, i.intraday_range, i.volume_ratio,
-            o.put_call_ratio, o.max_pain, o.iv_skew, o.gex,
-            o.vanna_exposure, o.charm_exposure, o.zero_dte_pcr
-        FROM prices p
-        LEFT JOIN technicals t ON p.date = t.date
-        LEFT JOIN macro m ON p.date = m.date
-        LEFT JOIN daily_sentiment s ON p.date = s.date
-        LEFT JOIN intraday_features i ON p.date = i.date
-        LEFT JOIN options_analytics o ON p.date = o.date
-        """
-        if date:
-            query += f" WHERE p.date = '{date}'"
-        query += " ORDER BY p.date"
-        df = pd.read_sql_query(query, conn)
+    router = get_router(config)
+    df = router.read_feature_join(date)
 
     if df.empty:
         return None

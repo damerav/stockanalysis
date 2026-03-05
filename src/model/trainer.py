@@ -1194,28 +1194,53 @@ class SPYPredictor:
                           pd.Series(y), use_gpu=use_gpu)
 
 
-def evaluate_past_prediction(conn, date_str: str) -> Optional[dict]:
+def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
     """Compare yesterday's prediction to actual outcome.
 
     Returns dict with evaluation results or None if no prediction exists.
+    Accepts either a DbRouter instance or a raw connection.
     """
-    row = conn.execute(
-        "SELECT direction, confidence FROM predictions WHERE date = ?", (date_str,)
-    ).fetchone()
-    if not row:
-        return None
+    from src.data.db_router import DbRouter, get_router
 
-    predicted = row[0]
-    pred_confidence = row[1] or 0
+    # Use DbRouter for PostgreSQL-compatible queries
+    if isinstance(conn_or_router, DbRouter):
+        router = conn_or_router
+    else:
+        try:
+            router = get_router()
+        except Exception:
+            router = None
 
-    # Get actual return
-    prices = conn.execute(
-        "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date_str,)
-    ).fetchall()
-    if len(prices) < 2:
-        return None
+    if router:
+        pred_df = router.query(
+            "SELECT direction, confidence FROM predictions WHERE date = ?", (date_str,)
+        )
+        if pred_df.empty:
+            return None
+        predicted = pred_df.iloc[0]["direction"]
+        pred_confidence = pred_df.iloc[0]["confidence"] or 0
 
-    actual_return = (prices[1][0] - prices[0][0]) / prices[0][0]
+        prices_df = router.query(
+            "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date_str,)
+        )
+        if len(prices_df) < 2:
+            return None
+        actual_return = (prices_df.iloc[1]["close"] - prices_df.iloc[0]["close"]) / prices_df.iloc[0]["close"]
+    else:
+        row = conn_or_router.execute(
+            "SELECT direction, confidence FROM predictions WHERE date = ?", (date_str,)
+        ).fetchone()
+        if not row:
+            return None
+        predicted = row[0]
+        pred_confidence = row[1] or 0
+        prices = conn_or_router.execute(
+            "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date_str,)
+        ).fetchall()
+        if len(prices) < 2:
+            return None
+        actual_return = (prices[1][0] - prices[0][0]) / prices[0][0]
+
     if actual_return > 0.003:
         actual = "BULLISH"
     elif actual_return < -0.003:
@@ -1223,14 +1248,12 @@ def evaluate_past_prediction(conn, date_str: str) -> Optional[dict]:
     else:
         actual = "NEUTRAL"
 
-    # Simplified: bullish/bearish match
     correct = 1 if (
         ("BULLISH" in predicted and actual == "BULLISH") or
         ("BEARISH" in predicted and actual == "BEARISH") or
         (predicted == "NEUTRAL" and actual == "NEUTRAL")
     ) else 0
 
-    # P1: Stratified accuracy dimensions
     # Confidence tier
     if pred_confidence >= 70:
         conf_tier = "high"
@@ -1240,10 +1263,15 @@ def evaluate_past_prediction(conn, date_str: str) -> Optional[dict]:
         conf_tier = "low"
 
     # VIX regime
-    macro_row = conn.execute(
-        "SELECT vix FROM macro WHERE date = ?", (date_str,)
-    ).fetchone()
-    vix_val = macro_row[0] if macro_row and macro_row[0] else 18
+    if router:
+        macro_df = router.query("SELECT vix FROM macro WHERE date = ?", (date_str,))
+        vix_val = float(macro_df.iloc[0]["vix"]) if not macro_df.empty and macro_df.iloc[0]["vix"] else 18
+    else:
+        macro_row = conn_or_router.execute(
+            "SELECT vix FROM macro WHERE date = ?", (date_str,)
+        ).fetchone()
+        vix_val = macro_row[0] if macro_row and macro_row[0] else 18
+
     if vix_val < 15:
         vix_regime = "low"
     elif vix_val > 25:
@@ -1267,20 +1295,35 @@ def evaluate_past_prediction(conn, date_str: str) -> Optional[dict]:
         event_prox = 0
 
     # Update cumulative accuracy
-    perf_rows = conn.execute("SELECT COUNT(*), SUM(correct) FROM performance").fetchone()
-    total = (perf_rows[0] or 0) + 1
-    correct_total = (perf_rows[1] or 0) + correct
+    if router:
+        perf_df = router.query("SELECT COUNT(*) as cnt, SUM(correct) as s FROM performance")
+        total = (int(perf_df.iloc[0]["cnt"]) if not perf_df.empty else 0) + 1
+        correct_total = (int(perf_df.iloc[0]["s"] or 0) if not perf_df.empty else 0) + correct
+    else:
+        perf_rows = conn_or_router.execute("SELECT COUNT(*), SUM(correct) FROM performance").fetchone()
+        total = (perf_rows[0] or 0) + 1
+        correct_total = (perf_rows[1] or 0) + correct
     cum_accuracy = correct_total / total
 
-    conn.execute(
-        """INSERT OR REPLACE INTO performance
-           (date, predicted, actual, correct, cumulative_accuracy,
-            confidence_tier, vix_regime, day_of_week, event_proximity)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (date_str, predicted, actual, correct, cum_accuracy,
-         conf_tier, vix_regime, dow, event_prox)
-    )
-    conn.commit()
+    if router:
+        router.execute(
+            """INSERT OR REPLACE INTO performance
+               (date, predicted, actual, correct, cumulative_accuracy,
+                confidence_tier, vix_regime, day_of_week, event_proximity)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (date_str, predicted, actual, correct, cum_accuracy,
+             conf_tier, vix_regime, dow, event_prox)
+        )
+    else:
+        conn_or_router.execute(
+            """INSERT OR REPLACE INTO performance
+               (date, predicted, actual, correct, cumulative_accuracy,
+                confidence_tier, vix_regime, day_of_week, event_proximity)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (date_str, predicted, actual, correct, cum_accuracy,
+             conf_tier, vix_regime, dow, event_prox)
+        )
+        conn_or_router.commit()
 
     return {
         "date": date_str, "predicted": predicted, "actual": actual,

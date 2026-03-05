@@ -253,8 +253,25 @@ def _add_columns_if_missing(conn: sqlite3.Connection, table: str,
     conn.commit()
 
 
-def get_connection(config: dict = None) -> sqlite3.Connection:
-    """Get a connection to the database, initializing if needed."""
+def get_connection(config: dict = None):
+    """Get a database connection — PostgreSQL primary, SQLite fallback.
+
+    Returns a psycopg2 connection if PostgreSQL is configured and reachable,
+    otherwise falls back to SQLite. Callers should use %s placeholders for
+    PostgreSQL or ? for SQLite — prefer using DbRouter instead for auto-conversion.
+    """
+    # Try PostgreSQL first
+    try:
+        from src.data.db_router import DbRouter
+        router = DbRouter(config)
+        if router.using_postgres:
+            pg = router.get_pg()
+            if pg:
+                return pg
+    except Exception:
+        pass
+
+    # Fallback to SQLite
     db_path = get_db_path(config)
     if not os.path.exists(db_path):
         init_db(config)
@@ -262,7 +279,6 @@ def get_connection(config: dict = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
-    # P1: Ensure schema is up to date
     _migrate_schema(conn)
     return conn
 

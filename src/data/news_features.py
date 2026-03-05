@@ -6,7 +6,6 @@ Inspired by Finance-And-ML/US-Stock-Prediction-Using-ML-And-Spark.
 
 import os
 import re
-import sqlite3
 import logging
 import pickle
 from datetime import datetime
@@ -58,8 +57,8 @@ class NewsFeatureProcessor:
             max_df=0.95,
         )
         self._fitted = False
-        db_path = config.get("news_pipeline", {}).get("db_path", "./data/news.db")
-        self.news_conn = sqlite3.connect(db_path)
+        from src.data.db_router import get_router
+        self.router = get_router(config)
 
     def _clean_text(self, text: str) -> str:
         """Clean and normalize article text."""
@@ -96,13 +95,13 @@ class NewsFeatureProcessor:
         sentiment_positive, sentiment_negative, clean_text
         """
         if articles is None:
-            rows = self.news_conn.execute(
+            df = self.router.query(
                 "SELECT * FROM raw_articles ORDER BY published_at DESC"
-            ).fetchall()
-            cols = [d[0] for d in self.news_conn.execute(
-                "SELECT * FROM raw_articles LIMIT 0"
-            ).description]
-            articles = [dict(zip(cols, r)) for r in rows]
+            )
+            if df.empty:
+                articles = []
+            else:
+                articles = df.to_dict("records")
 
         if not articles:
             return pd.DataFrame()
@@ -174,14 +173,12 @@ class NewsFeatureProcessor:
             self._fitted = True
 
     def store_features(self, daily_df: pd.DataFrame):
-        """Store daily news features in DuckDB analytics (or SQLite fallback)."""
+        """Store daily news features via DbRouter."""
         if daily_df.empty:
             return
         try:
-            from src.data.db_router import get_router
-            router = get_router(self.config)
-            duck = router.get_analytics_conn()
-            duck.execute("""
+            # Ensure table exists
+            self.router.execute("""
                 CREATE TABLE IF NOT EXISTS news_features (
                     date TEXT PRIMARY KEY,
                     article_count INTEGER,
@@ -190,7 +187,7 @@ class NewsFeatureProcessor:
                 )
             """)
             for _, row in daily_df.iterrows():
-                duck.execute(
+                self.router.execute(
                     "INSERT OR REPLACE INTO news_features VALUES (?,?,?,?,?,?,?,?)",
                     (row["date"], int(row["article_count"]),
                      row["avg_sentiment"], row["max_sentiment"], row["min_sentiment"],
@@ -201,4 +198,4 @@ class NewsFeatureProcessor:
             logger.warning(f"Failed to store news features: {e}")
 
     def close(self):
-        self.news_conn.close()
+        pass  # Router manages connections

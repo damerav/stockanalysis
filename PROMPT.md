@@ -168,8 +168,8 @@ Pipeline NEVER aborts due to LLM unavailability
 
 ### What To Build
 
-**3A. Feature Engineering (`src/data/features.py`, ~203 lines)**
-Build a 35+ feature vector for each trading day:
+**3A. Feature Engineering (`src/data/features.py`, ~400+ lines)**
+Build a 125-feature vector for each trading day (32 kept after aggressive selection):
 ```
 TECHNICAL (from technicals table):
   price_vs_sma20, price_vs_sma50, rsi_14, macd, macd_signal, macd_hist,
@@ -181,15 +181,24 @@ MACRO (from macro table):
 SENTIMENT (from daily_sentiment table):
   llm_sentiment_score, news_count, positive_ratio, negative_ratio
 
+NEWS (from expanded news pipeline — 17 sources, 1000+ articles/fetch):
+  news_sentiment_mean, news_sentiment_std, news_volume_ratio, news_momentum
+
 INTRADAY (from intraday_features table):
   vwap_spread, intraday_momentum, intraday_range, volume_ratio
 
 OPTIONS (from options_analytics table):
   put_call_ratio, max_pain_distance, iv_skew, gex_normalized
 
+GEOPOLITICAL (from src/data/geopolitical_features.py):
+  geopolitical_risk_index, oil_shock_indicator, finbert_geopolitical_sentiment
+
 DERIVED:
   price_vs_sma20_pct, price_vs_sma50_pct, rsi_divergence, volume_trend,
   atr_percentile, momentum_5d, momentum_10d
+
+MICROSTRUCTURE, EARNINGS, FED NLP:
+  (additional features from earnings calendar, Fed communications, market microstructure)
 ```
 
 **3B. Technical Indicator Computation (`src/data/features.py`)**
@@ -200,14 +209,20 @@ DERIVED:
 - ATR(14) — Average True Range
 - All configurable via `config.yaml → technicals` section
 
-**3C. XGBoost SPY Direction Predictor (`src/model/trainer.py`, ~430 lines)**
+**3C. XGBoost SPY Direction Predictor (`src/model/trainer.py`, ~800+ lines)**
 - **Target**: Next-day SPY direction — UP (+1) / DOWN (-1) / NEUTRAL (0)
 - **Threshold**: ±0.3% daily return to classify (filters noise)
 - **Objective**: `multi:softprob` with `num_class=3`
 - **GPU**: `tree_method='gpu_hist'` for DGX Spark acceleration
-- **Lookback**: 252 trading days (1 year rolling window)
+- **Lookback**: Adaptive window from candidates [252, 504] days
 - **Validation**: Walk-forward time-series split (80/20, no shuffle)
 - **Early stopping**: 50 rounds on validation loss
+- **Feature selection**: Aggressive — keeps ~32 of 125 available features
+- **P3 Training Enhancements** (from Harvard cs249r_book research):
+  - Label smoothing (α=0.15) — blends hard labels with teacher soft probabilities
+  - Sample quality weighting — z-score anomaly detection + VIX-based penalty + label-flip detection
+  - Entropy-weighted self-distillation refit — up-weights hard/uncertain samples
+  - Knowledge distillation validation — trains student models, only adopts if accuracy improves
 - **Hyperparameters** (from config):
   ```yaml
   max_depth: 6
@@ -218,6 +233,7 @@ DERIVED:
   ```
 - **Output**: Prediction with class probabilities → map to STRONG_BULLISH through STRONG_BEARISH with confidence 0-100%
 - **Persistence**: Save model to `./models/xgb_spy_{date}.json`, log feature importances
+- **Current accuracy**: 3-class val=48.9%, test=47.8%, binary directional=54.2%
 
 **3D. Daily Retraining Pipeline Integration**
 - Retrained daily at 4:30 PM ET as part of the 13-step pipeline (Step 10)

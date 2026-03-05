@@ -225,14 +225,12 @@ def load_prediction_history(n: int = 30) -> pd.DataFrame:
     if IS_CLOUD:
         return pd.DataFrame()
     try:
-        import sqlite3
-        conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-        df = pd.read_sql_query(
-            f"SELECT date, direction, confidence FROM predictions ORDER BY date DESC LIMIT {n}",
-            conn,
+        config = _load_config_cached()
+        router = get_router(config)
+        df = router.read_analytics(
+            f"SELECT date, direction, confidence FROM predictions ORDER BY date DESC LIMIT {n}"
         )
-        conn.close()
-        return df.iloc[::-1]
+        return df.iloc[::-1] if not df.empty else df
     except Exception:
         return pd.DataFrame()
 
@@ -241,15 +239,13 @@ def load_performance() -> pd.DataFrame:
     if IS_CLOUD:
         return pd.DataFrame()
     try:
-        import sqlite3
-        conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-        df = pd.read_sql_query(
+        config = _load_config_cached()
+        router = get_router(config)
+        df = router.read_analytics(
             "SELECT date, predicted, actual, correct, cumulative_accuracy, "
             "confidence_tier, vix_regime, day_of_week, event_proximity "
-            "FROM performance ORDER BY date DESC LIMIT 30",
-            conn,
+            "FROM performance ORDER BY date DESC LIMIT 30"
         )
-        conn.close()
         return df
     except Exception:
         return pd.DataFrame()
@@ -388,14 +384,13 @@ def page_spy():
 
     # --- P3: Earnings + Fed + Options (compact row) ---
     try:
-        import sqlite3 as _sql
-        _conn = _sql.connect(os.path.join(DATA_DIR, "spy.db"))
+        _p3_router = get_router(_load_config())
         _today = datetime.now().strftime("%Y-%m-%d")
 
         p3_col1, p3_col2, p3_col3 = st.columns(3)
         with p3_col1:
             from src.data.earnings_calendar import get_earnings_features as _get_earn
-            earn = _get_earn(_conn, _today)
+            earn = _get_earn(_p3_router, _today)
             density = earn.get("earnings_density", 0)
             days_next = earn.get("days_to_next_mega", 30)
             earn_week = earn.get("earnings_week", 0)
@@ -406,35 +401,33 @@ def page_spy():
 
         with p3_col2:
             from src.data.fed_comms import get_fed_features as _get_fed
-            fed = _get_fed(_conn, _today)
+            fed = _get_fed(_p3_router, _today)
             avg = fed.get("fed_sentiment_avg", 0)
             label = "🦅 Hawkish" if avg > 0.2 else "🕊️ Dovish" if avg < -0.2 else "⚖️ Neutral"
             st.metric("Fed", label, delta=f"{avg:+.2f}")
 
         with p3_col3:
-            opt_row = _conn.execute(
+            opt_df = _p3_router.query(
                 "SELECT vanna_exposure, charm_exposure, zero_dte_pcr "
                 "FROM options_analytics WHERE date = ? ORDER BY date DESC LIMIT 1",
                 (_today,),
-            ).fetchone()
-            if opt_row and opt_row[0] is not None:
-                st.metric("Vanna", f"{opt_row[0]:,.0f}")
-                st.caption(f"Charm: {opt_row[1]:,.0f} | 0DTE P/C: {opt_row[2]:.2f}" if opt_row[1] else "")
+            )
+            if not opt_df.empty and opt_df.iloc[0]["vanna_exposure"] is not None:
+                st.metric("Vanna", f"{opt_df.iloc[0]['vanna_exposure']:,.0f}")
+                charm = opt_df.iloc[0]["charm_exposure"]
+                dte = opt_df.iloc[0]["zero_dte_pcr"]
+                st.caption(f"Charm: {charm:,.0f} | 0DTE P/C: {dte:.2f}" if charm else "")
             else:
                 st.metric("Greeks", "—")
-
-        _conn.close()
     except Exception:
         pass
 
     # --- Microstructure (collapsible) ---
     try:
-        import sqlite3 as _sql2
-        _conn2 = _sql2.connect(os.path.join(DATA_DIR, "spy.db"))
+        _micro_router = get_router(_load_config())
         _today2 = datetime.now().strftime("%Y-%m-%d")
         from src.data.features import compute_intraday_microstructure as _get_micro
-        micro = _get_micro(_conn2, _today2)
-        _conn2.close()
+        micro = _get_micro(_micro_router, _today2)
 
         import math
         has_data = any(not (isinstance(v, float) and math.isnan(v)) for v in micro.values())
@@ -1155,7 +1148,6 @@ def _render_threshold_sweep(results):
 # ======================================================================
 
 import subprocess
-import sqlite3
 import threading
 
 
@@ -1242,7 +1234,6 @@ def _admin_status_tab():
     # Database status
     with col1:
         st.markdown("**Database**")
-        db_path = os.path.join(DATA_DIR, "spy.db")
         try:
             config = _load_config()
             router = get_router(config)
@@ -1255,8 +1246,7 @@ def _admin_status_tab():
                     pg_size = size_df.iloc[0]["size"] if not size_df.empty else "?"
                 except Exception:
                     pg_size = "connected"
-                sqlite_mb = os.path.getsize(db_path) / (1024 * 1024) if os.path.exists(db_path) else 0
-                st.success(f"🐘 PostgreSQL ({pg_size}) + SQLite {sqlite_mb:.1f} MB")
+                st.success(f"🐘 PostgreSQL ({pg_size})")
                 try:
                     tbl_df = router.read_analytics(
                         "SELECT COUNT(*) as cnt FROM information_schema.tables "
@@ -1320,7 +1310,6 @@ def _admin_status_tab():
 
     # Table row counts
     st.subheader("Data Inventory")
-    db_path = os.path.join(DATA_DIR, "spy.db")
     try:
         config = _load_config()
         router = get_router(config)
@@ -1359,17 +1348,18 @@ def _admin_status_tab():
     # Latest prediction
     st.subheader("Latest Prediction")
     try:
-        conn = sqlite3.connect(db_path)
-        pred = conn.execute(
+        config = _load_config()
+        router = get_router(config)
+        pred_df = router.read_analytics(
             "SELECT date, direction, confidence, predicted_at FROM predictions ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if pred:
+        )
+        if not pred_df.empty:
+            pred = pred_df.iloc[0]
             pc1, pc2, pc3, pc4 = st.columns(4)
-            pc1.metric("Date", pred[0])
-            pc2.metric("Direction", pred[1])
-            pc3.metric("Confidence", f"{pred[2]:.0f}%")
-            pc4.metric("Generated", pred[3] or "—")
+            pc1.metric("Date", pred["date"])
+            pc2.metric("Direction", pred["direction"])
+            pc3.metric("Confidence", f"{pred['confidence']:.0f}%")
+            pc4.metric("Generated", pred["predicted_at"] or "—")
         else:
             st.info("No predictions yet")
     except Exception:
@@ -1378,21 +1368,20 @@ def _admin_status_tab():
     # P2: Model Registry
     st.subheader("Model Registry")
     try:
-        conn = sqlite3.connect(db_path)
-        reg_rows = conn.execute(
+        config = _load_config()
+        router = get_router(config)
+        reg_df = router.read_analytics(
             """SELECT model_id, training_date, val_accuracy, test_accuracy,
                       feature_count, gated, deployment_status, created_at
                FROM model_registry ORDER BY created_at DESC LIMIT 10"""
-        ).fetchall()
-        conn.close()
-        if reg_rows:
-            reg_df = pd.DataFrame(reg_rows, columns=[
-                "ID", "Date", "Val Acc", "Test Acc", "Features", "Gated", "Status", "Created"
-            ])
+        )
+        if not reg_df.empty:
+            reg_df.columns = ["ID", "Date", "Val Acc", "Test Acc", "Features", "Gated", "Status", "Created"]
             reg_df["Val Acc"] = reg_df["Val Acc"].apply(lambda x: f"{x:.3f}" if x else "—")
             reg_df["Test Acc"] = reg_df["Test Acc"].apply(lambda x: f"{x:.3f}" if x else "—")
-            reg_df["Gated"] = reg_df["Gated"].map({0: "✅", 1: "🚫"})
-            status_map = {"active": "🟢 Active", "retired": "⚪ Retired", "gated": "🚫 Gated"}
+            reg_df["Gated"] = reg_df["Gated"].map({0: "✅", 1: "🚫", False: "✅", True: "🚫"})
+            status_map = {"active": "🟢 Active", "retired": "⚪ Retired", "gated": "🚫 Gated",
+                          "candidate": "🔵 Candidate"}
             reg_df["Status"] = reg_df["Status"].map(status_map).fillna(reg_df["Status"])
             st.dataframe(reg_df, use_container_width=True, hide_index=True)
         else:
@@ -1646,13 +1635,16 @@ def _admin_actions_tab():
                     config = _load_config()
                     fetcher = FallbackFetcher(config=config)
                     articles = fetcher.get_news()
-                    conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
+                    router = get_router(config)
                     inserted = 0
                     today = datetime.now().strftime("%Y-%m-%d")
                     for a in articles:
                         try:
-                            conn.execute(
+                            router.execute(
                                 "INSERT INTO news (date, source, headline, summary, url, fetched_at) "
+                                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING"
+                                if router.using_postgres else
+                                "INSERT OR IGNORE INTO news (date, source, headline, summary, url, fetched_at) "
                                 "VALUES (?, ?, ?, ?, ?, ?)",
                                 (today, a.get("source", ""), a.get("headline", ""),
                                  a.get("summary", ""), a.get("url", ""),
@@ -1661,8 +1653,6 @@ def _admin_actions_tab():
                             inserted += 1
                         except Exception:
                             pass
-                    conn.commit()
-                    conn.close()
                     st.success(f"Fetched {len(articles)} articles, inserted {inserted} new")
                 except Exception as e:
                     st.error(f"News fetch failed: {e}")
@@ -1675,28 +1665,31 @@ def _admin_actions_tab():
                     fetcher = FallbackFetcher(config=config)
                     macro = fetcher.get_macro_fred()
                     today = datetime.now().strftime("%Y-%m-%d")
-                    # Write to database (PostgreSQL or SQLite via router)
+                    # Write to database (PostgreSQL via router)
                     try:
                         config = _load_config()
                         router = get_router(config)
-                        router.write_analytics(
-                            "INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
-                            "VALUES (?,?,?,?,?,?,?,?)",
-                            (today, macro.get("vix"), macro.get("vix_change"),
-                             macro.get("us10y_yield"), macro.get("dxy"),
-                             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
-                        )
-                    except Exception:
-                        conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-                        conn.execute(
-                            "INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
-                            "VALUES (?,?,?,?,?,?,?,?)",
-                            (today, macro.get("vix"), macro.get("vix_change"),
-                             macro.get("us10y_yield"), macro.get("dxy"),
-                             macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
-                        )
-                        conn.commit()
-                        conn.close()
+                        if router.using_postgres:
+                            router.execute(
+                                "INSERT INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
+                                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                                "ON CONFLICT (date) DO UPDATE SET vix=EXCLUDED.vix, vix_change=EXCLUDED.vix_change, "
+                                "us10y_yield=EXCLUDED.us10y_yield, dxy=EXCLUDED.dxy, fed_funds=EXCLUDED.fed_funds, "
+                                "gold=EXCLUDED.gold, crude=EXCLUDED.crude",
+                                (today, macro.get("vix"), macro.get("vix_change"),
+                                 macro.get("us10y_yield"), macro.get("dxy"),
+                                 macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
+                            )
+                        else:
+                            router.write_analytics(
+                                "INSERT OR REPLACE INTO macro (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude) "
+                                "VALUES (?,?,?,?,?,?,?,?)",
+                                (today, macro.get("vix"), macro.get("vix_change"),
+                                 macro.get("us10y_yield"), macro.get("dxy"),
+                                 macro.get("fed_funds"), macro.get("gold"), macro.get("crude"))
+                            )
+                    except Exception as db_err:
+                        st.warning(f"DB write failed: {db_err}")
                     st.success("Macro data updated")
                     st.json(macro)
                 except Exception as e:
@@ -1707,12 +1700,10 @@ def _admin_actions_tab():
                 try:
                     from src.data.features import compute_all_technicals, store_technicals
                     config = _load_config()
-                    from src.data.init_db import get_connection
-                    conn = get_connection(config)
-                    df = pd.read_sql("SELECT date, open, high, low, close, volume FROM prices ORDER BY date", conn)
+                    router = get_router(config)
+                    df = router.query("SELECT date, open, high, low, close, volume FROM prices ORDER BY date")
                     tech_df = compute_all_technicals(df, config)
-                    store_technicals(conn, tech_df, config)
-                    conn.close()
+                    store_technicals(None, tech_df, config)
                     st.success(f"Technicals computed — {len(tech_df)} rows")
                 except Exception as e:
                     st.error(f"Technicals failed: {e}")
@@ -1723,13 +1714,11 @@ def _admin_actions_tab():
         if st.button("Retrain XGBoost", key="act_train", help="Retrain SPY predictor with latest data (GPU)"):
             with st.spinner("Training XGBoost on GPU... this may take a minute."):
                 try:
-                    from src.data.init_db import get_connection
                     from src.data.features import build_feature_vector, get_feature_columns, get_target
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
-                    conn = get_connection(config)
-                    fv = build_feature_vector(conn, config=config)
-                    conn.close()
+                    router = get_router(config)
+                    fv = build_feature_vector(router, config=config)
                     target = get_target(fv)
                     predictor = SPYPredictor(config)
                     feature_cols = [c for c in get_feature_columns() if c in fv.columns]
@@ -1744,13 +1733,11 @@ def _admin_actions_tab():
             bt_days = st.session_state.get("_bt_days", 60)
             with st.spinner(f"Running {bt_days}-day backtest..."):
                 try:
-                    from src.data.init_db import get_connection
                     from src.data.features import build_feature_vector, get_feature_columns, get_target
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
-                    conn = get_connection(config)
-                    fv = build_feature_vector(conn, config=config)
-                    conn.close()
+                    router = get_router(config)
+                    fv = build_feature_vector(router, config=config)
                     if fv is None or fv.empty:
                         st.error("No feature data available")
                     else:
@@ -1808,11 +1795,8 @@ def _admin_actions_tab():
                                     art_count = len(today_arts)
                                     pos_ratio = float((today_arts["sentiment_compound"] > 0.05).mean())
                                     neg_ratio = float((today_arts["sentiment_compound"] < -0.05).mean())
-                                    # Update daily_sentiment in spy.db
-                                    cfg = _load_config()
-                                    from src.data.init_db import get_connection as _gc
-                                    _conn = _gc(cfg)
-                                    _conn.execute(
+                                    _sent_router = get_router(_load_config())
+                                    _sent_router.execute(
                                         """INSERT OR REPLACE INTO daily_sentiment
                                            (date, score, confidence, article_count,
                                             positive_ratio, negative_ratio, neutral_ratio)
@@ -1821,8 +1805,6 @@ def _admin_actions_tab():
                                          art_count, pos_ratio, neg_ratio,
                                          1 - pos_ratio - neg_ratio),
                                     )
-                                    _conn.commit()
-                                    _conn.close()
                                     st.info(f"Sentiment updated: {art_count} articles, score={avg_sent:.3f}")
                                 processor.close()
                             except Exception as se:
@@ -1831,12 +1813,11 @@ def _admin_actions_tab():
                     except Exception as ne:
                         logger.warning(f"News fetch failed (non-fatal): {ne}")
 
-                    from src.data.init_db import get_connection
                     from src.data.features import build_feature_vector, get_feature_columns, get_target
                     from src.model.trainer import SPYPredictor
                     config = _load_config()
-                    conn = get_connection(config)
-                    fv = build_feature_vector(conn, config=config)
+                    _pred_router = get_router(config)
+                    fv = build_feature_vector(_pred_router, config=config)
                     predictor = SPYPredictor(config)
                     all_feature_cols = [c for c in get_feature_columns() if c in fv.columns]
 
@@ -1859,7 +1840,6 @@ def _admin_actions_tab():
                                                  feature_names=list(all_feature_cols), force_save=True)
                         if result.get("error"):
                             st.error(f"Auto-retrain failed: {result['error']}")
-                            conn.close()
                         else:
                             st.success(f"Auto-retrained — accuracy: {result.get('accuracy', 0):.1%}")
                             feature_cols = predictor.trained_feature_names or all_feature_cols
@@ -1873,10 +1853,10 @@ def _admin_actions_tab():
                         try:
                             from src.model.regime import HMMRegimeDetector
                             regime_det = HMMRegimeDetector()
-                            price_df = pd.read_sql_query(
-                                "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60", conn)
-                            macro_df = pd.read_sql_query(
-                                "SELECT vix FROM macro ORDER BY date DESC LIMIT 60", conn)
+                            price_df = _pred_router.query(
+                                "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60")
+                            macro_df = _pred_router.query(
+                                "SELECT vix FROM macro ORDER BY date DESC LIMIT 60")
                             price_df["vix"] = macro_df["vix"].values if not macro_df.empty else 18.0
                             regime = regime_det.predict(price_df)
                             pred["regime"] = regime
@@ -1886,29 +1866,27 @@ def _admin_actions_tab():
                         pred["ensemble_used"] = predictor.ensemble is not None and predictor.use_ensemble
 
                         today = datetime.now().strftime("%Y-%m-%d")
-                        conn.execute(
+                        _pred_router.execute(
                             "INSERT OR REPLACE INTO predictions (date, direction, confidence, predicted_at) "
                             "VALUES (?, ?, ?, ?)",
                             (today, pred.get("direction", ""), pred.get("confidence", 0),
                              datetime.now().isoformat())
                         )
-                        conn.commit()
 
                         # Update spy_state.json so SPY Predictor page shows fresh data
                         from src.realtime.dashboard_bridge import write_spy_state
                         ind = {}
-                        tech_row = conn.execute(
+                        tech_df = _pred_router.query(
                             "SELECT rsi_14, macd, atr_14 FROM technicals ORDER BY date DESC LIMIT 1"
-                        ).fetchone()
-                        if tech_row:
-                            ind = {"rsi_14": tech_row[0], "macd": tech_row[1], "atr_14": tech_row[2]}
-                        macro_row = conn.execute(
+                        )
+                        if not tech_df.empty:
+                            ind = {"rsi_14": tech_df.iloc[0]["rsi_14"], "macd": tech_df.iloc[0]["macd"], "atr_14": tech_df.iloc[0]["atr_14"]}
+                        macro_df = _pred_router.query(
                             "SELECT vix, vix_change FROM macro ORDER BY date DESC LIMIT 1"
-                        ).fetchone()
-                        if macro_row:
-                            ind["vix"] = macro_row[0]
-                            ind["vix_change"] = macro_row[1]
-                        # Volume ratio and sentiment from latest features
+                        )
+                        if not macro_df.empty:
+                            ind["vix"] = macro_df.iloc[0]["vix"]
+                            ind["vix_change"] = macro_df.iloc[0]["vix_change"]
                         if "volume_ratio" in fv.columns:
                             ind["volume_ratio"] = round(float(fv["volume_ratio"].iloc[-1]), 2) if pd.notna(fv["volume_ratio"].iloc[-1]) else None
                         if "sentiment_score" in fv.columns:
@@ -1917,7 +1895,6 @@ def _admin_actions_tab():
 
                         st.success(f"{pred.get('scale_label', pred.get('direction'))} — {pred.get('confidence', 0):.0f}% confidence")
                         st.json(pred)
-                    conn.close()
                 except Exception as e:
                     st.error(f"Prediction failed: {e}")
 
@@ -1941,32 +1918,29 @@ def _admin_actions_tab():
                     from src.llm.reporter import DailyReporter
                     from src.llm.analyzer import LLMAnalyzer
                     config = _load_config()
-                    from src.data.init_db import get_connection
-                    conn = get_connection(config)
-                    pred = conn.execute(
+                    _rpt_router = get_router(config)
+                    pred_df = _rpt_router.query(
                         "SELECT date, direction, confidence FROM predictions ORDER BY date DESC LIMIT 1"
-                    ).fetchone()
-                    if not pred:
+                    )
+                    if pred_df.empty:
                         st.error("No prediction found — generate one first")
                     else:
-                        pred_date = pred[0]
-                        tech_row = conn.execute("SELECT * FROM technicals WHERE date = ?", (pred_date,)).fetchone()
-                        sent_row = conn.execute("SELECT * FROM daily_sentiment WHERE date = ?", (pred_date,)).fetchone()
-                        macro_row = conn.execute("SELECT * FROM macro WHERE date = ?", (pred_date,)).fetchone()
+                        pred_date = pred_df.iloc[0]["date"]
+                        tech_df = _rpt_router.query("SELECT * FROM technicals WHERE date = ?", (pred_date,))
+                        sent_df = _rpt_router.query("SELECT * FROM daily_sentiment WHERE date = ?", (pred_date,))
+                        macro_df = _rpt_router.query("SELECT * FROM macro WHERE date = ?", (pred_date,))
                         context = {
-                            "prediction": {"direction": pred[1], "confidence": pred[2]},
-                            "technicals": dict(tech_row) if tech_row else {},
-                            "sentiment": dict(sent_row) if sent_row else {},
-                            "macro": dict(macro_row) if macro_row else {},
+                            "prediction": {"direction": pred_df.iloc[0]["direction"], "confidence": pred_df.iloc[0]["confidence"]},
+                            "technicals": tech_df.iloc[0].to_dict() if not tech_df.empty else {},
+                            "sentiment": sent_df.iloc[0].to_dict() if not sent_df.empty else {},
+                            "macro": macro_df.iloc[0].to_dict() if not macro_df.empty else {},
                         }
                         llm = LLMAnalyzer(config)
                         reporter = DailyReporter(config)
                         report = reporter.generate_report(context, llm_available=llm.llm_available)
-                        conn.execute("UPDATE predictions SET report_text = ? WHERE date = ?", (report, pred_date))
-                        conn.commit()
+                        _rpt_router.execute("INSERT OR REPLACE INTO predictions (date, report_text) VALUES (?, ?)", (pred_date, report))
                         st.success(f"Report generated ({len(report)} chars)")
                         st.markdown(report)
-                    conn.close()
                 except Exception as e:
                     st.error(f"Report generation failed: {e}")
 
@@ -2118,13 +2092,11 @@ def _admin_actions_tab():
                     config = _load_config()
 
                     # Load intraday bars for training
-                    conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-                    bars_df = pd.read_sql_query(
+                    _es_router = get_router(config)
+                    bars_df = _es_router.query(
                         "SELECT timestamp, open, high, low, close, volume, vwap "
-                        "FROM intraday_bars WHERE ticker='SPY' ORDER BY timestamp",
-                        conn,
+                        "FROM intraday_bars WHERE ticker='SPY' ORDER BY timestamp"
                     )
-                    conn.close()
 
                     if bars_df.empty or len(bars_df) < 100:
                         st.error(f"Insufficient intraday data ({len(bars_df)} bars). Need 100+.")
@@ -2166,13 +2138,12 @@ def _admin_actions_tab():
                     from src.es_strategy.labeling import generate_training_dataset
                     config = _load_config()
 
-                    conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-                    bars_df = pd.read_sql_query(
+                    from src.data.db_router import get_router as _get_exit_router
+                    _exit_router = _get_exit_router(config)
+                    bars_df = _exit_router.query(
                         "SELECT timestamp, open, high, low, close, volume, vwap "
-                        "FROM intraday_bars WHERE ticker='SPY' ORDER BY timestamp",
-                        conn,
+                        "FROM intraday_bars WHERE ticker='SPY' ORDER BY timestamp"
                     )
-                    conn.close()
 
                     if bars_df.empty or len(bars_df) < 100:
                         st.error(f"Insufficient intraday data ({len(bars_df)} bars). Need 100+.")
@@ -2250,8 +2221,6 @@ def _admin_actions_tab():
 def _admin_db_tab():
     st.subheader("Database Explorer")
 
-    db_path = os.path.join(DATA_DIR, "spy.db")
-
     try:
         config = _load_config()
         router = get_router(config)
@@ -2272,13 +2241,8 @@ def _admin_db_tab():
             pass
 
     if not all_tables:
-        # Fallback to SQLite table list
-        if os.path.exists(db_path):
-            conn = sqlite3.connect(db_path)
-            all_tables = [r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall()]
-            conn.close()
+        # No PostgreSQL tables found
+        st.warning("No tables found in PostgreSQL")
 
     if not all_tables:
         st.error("No database tables found")
@@ -2309,12 +2273,8 @@ def _admin_db_tab():
             count_df = router.read_analytics(f"SELECT COUNT(*) as cnt FROM {selected}")
             total = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
         else:
-            conn = sqlite3.connect(db_path)
-            df = pd.read_sql_query(
-                f"SELECT * FROM {selected} ORDER BY {date_col} {order} LIMIT {limit}", conn
-            )
-            total = conn.execute(f"SELECT COUNT(*) FROM {selected}").fetchone()[0]
-            conn.close()
+            st.error("Database connection unavailable")
+            return
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.caption(f"Showing {len(df)} of {total} rows")
     except Exception as e:
@@ -2334,10 +2294,7 @@ def _admin_db_tab():
                     df = router.read_analytics(query)
                     st.caption(f"{db_label} query executed")
                 else:
-                    conn = sqlite3.connect(db_path)
-                    df = pd.read_sql_query(query, conn)
-                    conn.close()
-                    st.caption("📦 Executed on SQLite")
+                    st.error("Database connection unavailable")
                 st.dataframe(df, use_container_width=True, hide_index=True)
                 st.caption(f"{len(df)} rows returned")
             except Exception as e:
@@ -2351,25 +2308,29 @@ def _admin_db_tab():
     with mc1:
         if st.button("Vacuum Database", key="db_vacuum", help="Reclaim unused space"):
             try:
-                conn = sqlite3.connect(db_path)
-                size_before = os.path.getsize(db_path)
-                conn.execute("VACUUM")
-                conn.close()
-                size_after = os.path.getsize(db_path)
-                saved = (size_before - size_after) / 1024
-                st.success(f"Vacuum complete — saved {saved:.0f} KB")
+                if router and router.using_postgres:
+                    pg = router.get_pg()
+                    old_isolation = pg.isolation_level
+                    pg.set_isolation_level(0)  # AUTOCOMMIT required for VACUUM
+                    pg.cursor().execute("VACUUM ANALYZE")
+                    pg.set_isolation_level(old_isolation)
+                    pg.close()
+                    st.success("PostgreSQL VACUUM ANALYZE complete")
+                else:
+                    st.warning("No database connection available")
             except Exception as e:
                 st.error(f"Vacuum failed: {e}")
     with mc2:
         if st.button("Integrity Check", key="db_integrity"):
             try:
-                conn = sqlite3.connect(db_path)
-                result = conn.execute("PRAGMA integrity_check").fetchone()[0]
-                conn.close()
-                if result == "ok":
-                    st.success("Database integrity: OK")
+                if router and router.using_postgres:
+                    check_df = router.read_analytics(
+                        "SELECT schemaname, tablename FROM pg_tables WHERE schemaname = 'public'"
+                    )
+                    tbl_count = len(check_df) if not check_df.empty else 0
+                    st.success(f"PostgreSQL: {tbl_count} tables in public schema — OK")
                 else:
-                    st.error(f"Integrity issue: {result}")
+                    st.warning("No database connection available")
             except Exception as e:
                 st.error(f"Check failed: {e}")
 
@@ -2488,26 +2449,24 @@ def _admin_logs_tab():
 
     elif log_source.startswith("Pipeline"):
         st.markdown("**Last Pipeline Results**")
-        db_path = os.path.join(DATA_DIR, "spy.db")
-        if os.path.exists(db_path):
-            try:
-                conn = sqlite3.connect(db_path)
-                pred = conn.execute(
-                    "SELECT date, direction, confidence, report_text, predicted_at "
-                    "FROM predictions ORDER BY date DESC LIMIT 5"
-                ).fetchall()
-                conn.close()
-                if pred:
-                    for p in pred:
-                        with st.expander(f"{p[0]} — {p[1]} ({p[2]:.0f}%) at {p[4] or '—'}"):
-                            if p[3]:
-                                st.markdown(p[3])
-                            else:
-                                st.caption("No report text")
-                else:
-                    st.info("No pipeline results yet")
-            except Exception as e:
-                st.error(f"Error: {e}")
+        try:
+            config = _load_config()
+            router = get_router(config)
+            pred_df = router.read_analytics(
+                "SELECT date, direction, confidence, report_text, predicted_at "
+                "FROM predictions ORDER BY date DESC LIMIT 5"
+            )
+            if not pred_df.empty:
+                for _, p in pred_df.iterrows():
+                    with st.expander(f"{p['date']} — {p['direction']} ({p['confidence']:.0f}%) at {p['predicted_at'] or '—'}"):
+                        if p['report_text']:
+                            st.markdown(p['report_text'])
+                        else:
+                            st.caption("No report text")
+            else:
+                st.info("No pipeline results yet")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
     elif log_source.startswith("Model"):
         st.markdown("**Trained Models**")
@@ -2544,14 +2503,13 @@ def _grafana_summary_cards():
     # Get SPY last close from DB (spy_state.json doesn't carry it)
     spy_close = None
     try:
-        import sqlite3 as _sql3
-        _c = _sql3.connect(os.path.join(DATA_DIR, "spy.db"))
-        row = _c.execute(
+        config = _load_config_cached()
+        router = get_router(config)
+        close_df = router.read_analytics(
             "SELECT close FROM prices ORDER BY date DESC LIMIT 1"
-        ).fetchone()
-        if row:
-            spy_close = row[0]
-        _c.close()
+        )
+        if not close_df.empty:
+            spy_close = close_df.iloc[0]["close"]
     except Exception:
         pass
 

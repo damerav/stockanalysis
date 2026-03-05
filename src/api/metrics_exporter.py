@@ -13,7 +13,6 @@ Usage:
 import os
 import json
 import time
-import sqlite3
 import logging
 import threading
 import urllib.parse
@@ -52,69 +51,64 @@ def _safe_float(val, default=0.0):
 
 
 def collect_spy_metrics():
-    """Collect SPY predictor metrics from DB (primary) and state files (fallback)."""
+    """Collect SPY predictor metrics from PostgreSQL (primary) and state files (fallback)."""
     lines = []
-    db_path = os.path.join(DATA_DIR, "spy.db")
 
-    if os.path.exists(db_path):
-        try:
-            conn = sqlite3.connect(db_path, timeout=5)
+    try:
+        from src.data.db_router import get_router
+        router = get_router(_load_config())
 
-            # Latest price
-            row = conn.execute(
-                "SELECT close FROM prices ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                lines.append(f'spy_last_close {_safe_float(row[0])}')
+        # Latest price
+        df = router.query("SELECT close FROM prices ORDER BY date DESC LIMIT 1")
+        if not df.empty:
+            lines.append(f'spy_last_close {_safe_float(df.iloc[0]["close"])}')
 
-            # Latest technicals (columns: sma_20, sma_50, rsi_14, macd, macd_signal, bb_upper, bb_lower, atr_14)
-            row = conn.execute(
-                "SELECT sma_20, sma_50, rsi_14, macd, macd_signal, bb_upper, bb_lower, atr_14 "
-                "FROM technicals ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                lines.append(f'spy_sma20 {_safe_float(row[0])}')
-                lines.append(f'spy_sma50 {_safe_float(row[1])}')
-                lines.append(f'spy_rsi {_safe_float(row[2])}')
-                lines.append(f'spy_macd {_safe_float(row[3])}')
-                lines.append(f'spy_macd_signal {_safe_float(row[4])}')
-                lines.append(f'spy_bb_upper {_safe_float(row[5])}')
-                lines.append(f'spy_bb_lower {_safe_float(row[6])}')
-                lines.append(f'spy_atr {_safe_float(row[7])}')
+        # Latest technicals
+        df = router.query(
+            "SELECT sma_20, sma_50, rsi_14, macd, macd_signal, bb_upper, bb_lower, atr_14 "
+            "FROM technicals ORDER BY date DESC LIMIT 1"
+        )
+        if not df.empty:
+            r = df.iloc[0]
+            lines.append(f'spy_sma20 {_safe_float(r.get("sma_20"))}')
+            lines.append(f'spy_sma50 {_safe_float(r.get("sma_50"))}')
+            lines.append(f'spy_rsi {_safe_float(r.get("rsi_14"))}')
+            lines.append(f'spy_macd {_safe_float(r.get("macd"))}')
+            lines.append(f'spy_macd_signal {_safe_float(r.get("macd_signal"))}')
+            lines.append(f'spy_bb_upper {_safe_float(r.get("bb_upper"))}')
+            lines.append(f'spy_bb_lower {_safe_float(r.get("bb_lower"))}')
+            lines.append(f'spy_atr {_safe_float(r.get("atr_14"))}')
 
-            # Latest VIX from macro
-            row = conn.execute(
-                "SELECT vix FROM macro ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                lines.append(f'spy_vix {_safe_float(row[0])}')
+        # Latest VIX
+        df = router.query("SELECT vix FROM macro ORDER BY date DESC LIMIT 1")
+        if not df.empty:
+            lines.append(f'spy_vix {_safe_float(df.iloc[0]["vix"])}')
 
-            # Latest prediction
-            row = conn.execute(
-                "SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                direction_val = {"BULLISH": 1, "BEARISH": -1, "NEUTRAL": 0}.get(
-                    str(row[0]).upper(), 0
-                )
-                lines.append(f'spy_prediction_direction {direction_val}')
-                lines.append(f'spy_prediction_confidence {_safe_float(row[1])}')
+        # Latest prediction
+        df = router.query("SELECT direction, confidence FROM predictions ORDER BY date DESC LIMIT 1")
+        if not df.empty:
+            direction_val = {"BULLISH": 1, "BEARISH": -1, "NEUTRAL": 0}.get(
+                str(df.iloc[0]["direction"]).upper(), 0
+            )
+            lines.append(f'spy_prediction_direction {direction_val}')
+            lines.append(f'spy_prediction_confidence {_safe_float(df.iloc[0]["confidence"])}')
 
-            # Table row counts
-            tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
-                       "predictions", "intraday_bars", "options_chain",
-                       "options_analytics", "intraday_features", "performance"]
-            for t in tables:
-                try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                    lines.append(f'spy_table_rows{{table="{t}"}} {count}')
-                except Exception:
-                    pass
-            conn.close()
-        except Exception as e:
-            logger.debug(f"SPY DB read error: {e}")
+        # Table row counts
+        tables = ["prices", "technicals", "news", "daily_sentiment", "macro",
+                   "predictions", "intraday_bars", "options_chain",
+                   "options_analytics", "intraday_features", "performance"]
+        for t in tables:
+            try:
+                cnt_df = router.query(f"SELECT COUNT(*) as cnt FROM {t}")
+                if not cnt_df.empty:
+                    lines.append(f'spy_table_rows{{table="{t}"}} {int(cnt_df.iloc[0]["cnt"])}')
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"SPY DB read error: {e}")
 
     return lines
+
 
 
 
@@ -165,13 +159,23 @@ def collect_system_health():
     """Collect system health metrics: DB, Ollama, model, API."""
     lines = []
 
-    # Database health
-    db_path = os.path.join(DATA_DIR, "spy.db")
-    if os.path.exists(db_path):
-        size_mb = os.path.getsize(db_path) / (1024 * 1024)
-        lines.append(f"system_db_size_mb {size_mb:.2f}")
-        lines.append("system_db_online 1")
-    else:
+    # Database health — check PostgreSQL
+    try:
+        from src.data.db_router import get_router
+        router = get_router(_load_config())
+        if router.using_postgres:
+            import psycopg2
+            pg = router.get_pg()
+            cur = pg.cursor()
+            cur.execute("SELECT pg_database_size(current_database())")
+            size_bytes = cur.fetchone()[0]
+            size_mb = size_bytes / (1024 * 1024)
+            cur.close()
+            lines.append(f"system_db_size_mb {size_mb:.2f}")
+            lines.append("system_db_online 1")
+        else:
+            lines.append("system_db_online 0")
+    except Exception:
         lines.append("system_db_online 0")
 
     # Ollama health
@@ -354,7 +358,7 @@ def generate_metrics():
 
 
 def query_historical(series, days=365):
-    """Query historical time series data from SQLite.
+    """Query historical time series data from PostgreSQL.
 
     Returns list of {"time": "YYYY-MM-DD", "value": float} dicts.
 
@@ -363,10 +367,6 @@ def query_historical(series, days=365):
       bb_upper, bb_lower, bb_mid, atr_14, vix,
       prediction_direction, prediction_confidence
     """
-    db_path = os.path.join(DATA_DIR, "spy.db")
-    if not os.path.exists(db_path):
-        return []
-
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
     # Map series name to table.column
@@ -392,22 +392,25 @@ def query_historical(series, days=365):
     table, column = series_map[series]
 
     try:
-        conn = sqlite3.connect(db_path, timeout=5)
-        rows = conn.execute(
+        from src.data.db_router import get_router
+        router = get_router(_load_config())
+        df = router.query(
             f"SELECT date, {column} FROM {table} WHERE date >= ? ORDER BY date ASC",
             (cutoff,),
-        ).fetchall()
-        conn.close()
+        )
+        if df.empty:
+            return []
 
         results = []
-        for date_str, val in rows:
+        for _, row in df.iterrows():
+            val = row[column]
             if val is None:
                 continue
             if series == "prediction_direction":
                 val = {"BULLISH": 1, "BEARISH": -1, "NEUTRAL": 0}.get(
                     str(val).upper(), 0
                 )
-            results.append({"time": date_str + "T00:00:00Z", "value": float(val)})
+            results.append({"time": str(row["date"]) + "T00:00:00Z", "value": float(val)})
         return results
     except Exception as e:
         logger.debug(f"Historical query error ({series}): {e}")

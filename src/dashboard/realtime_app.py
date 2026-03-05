@@ -35,34 +35,31 @@ def load_state() -> dict:
 
 
 def load_prediction_history(n: int = 20) -> pd.DataFrame:
-    """Load recent predictions from SQLite (local mode only)."""
+    """Load recent predictions from PostgreSQL (local mode only)."""
     if IS_CLOUD:
         return pd.DataFrame()
     try:
-        import sqlite3
-        conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-        df = pd.read_sql_query(
-            f"SELECT date, direction, confidence FROM predictions ORDER BY date DESC LIMIT {n}",
-            conn
+        from src.data.db_router import get_router
+        router = get_router()
+        df = router.query(
+            f"SELECT date, direction, confidence FROM predictions ORDER BY date DESC LIMIT {n}"
         )
-        conn.close()
-        return df.iloc[::-1]  # reverse to chronological
+        return df.iloc[::-1] if not df.empty else df
     except Exception:
         return pd.DataFrame()
 
 
 def load_performance() -> pd.DataFrame:
-    """Load performance tracking from SQLite."""
+    """Load performance tracking from PostgreSQL."""
     if IS_CLOUD:
         return pd.DataFrame()
     try:
-        import sqlite3
-        conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-        df = pd.read_sql_query(
+        from src.data.db_router import get_router
+        router = get_router()
+        df = router.query(
             "SELECT date, predicted, actual, correct, cumulative_accuracy "
-            "FROM performance ORDER BY date DESC LIMIT 30", conn
+            "FROM performance ORDER BY date DESC LIMIT 30"
         )
-        conn.close()
         return df
     except Exception:
         return pd.DataFrame()

@@ -9,7 +9,6 @@ Admin-only. Can read data, run backtests, retrain models, and modify config.
 import json
 import logging
 import os
-import sqlite3
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -360,48 +359,9 @@ RULES:
             return {"error": "Only SELECT queries are allowed."}
 
         try:
-            if db == "news":
-                # Try PostgreSQL first for news (raw_articles table)
-                try:
-                    from src.data.db_router import get_router
-                    router = get_router(self.config)
-                    if router.using_postgres:
-                        df = router.query(sql)
-                        if not df.empty:
-                            if len(df) > 50:
-                                return {
-                                    "rows": len(df), "columns": list(df.columns),
-                                    "data": df.head(50).to_dict(orient="records"),
-                                    "truncated": True, "note": f"Showing first 50 of {len(df)} rows",
-                                }
-                            return {"rows": len(df), "columns": list(df.columns),
-                                    "data": df.to_dict(orient="records")}
-                except Exception:
-                    pass
-                # Fallback to news.db SQLite
-                db_path = self.config.get("news_pipeline", {}).get("db_path", "./data/news.db")
-                conn = sqlite3.connect(db_path)
-            else:
-                # Try PostgreSQL first
-                try:
-                    from src.data.db_router import get_router
-                    router = get_router(self.config)
-                    if router.using_postgres:
-                        df = router.query(sql)
-                        if len(df) > 50:
-                            return {
-                                "rows": len(df), "columns": list(df.columns),
-                                "data": df.head(50).to_dict(orient="records"),
-                                "truncated": True, "note": f"Showing first 50 of {len(df)} rows",
-                            }
-                        return {"rows": len(df), "columns": list(df.columns),
-                                "data": df.to_dict(orient="records")}
-                except Exception:
-                    pass
-                conn = get_connection(self.config)
-
-            df = pd.read_sql_query(sql, conn)
-            conn.close()
+            from src.data.db_router import get_router
+            router = get_router(self.config)
+            df = router.query(sql)
 
             if len(df) > 50:
                 return {

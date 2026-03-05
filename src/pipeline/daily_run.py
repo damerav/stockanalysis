@@ -8,7 +8,6 @@ Usage:
 import argparse
 import json
 import logging
-import sqlite3
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -46,7 +45,7 @@ class DailyPipeline:
 
     def __init__(self, config: dict):
         self.config = config
-        self.conn: Optional[sqlite3.Connection] = None
+        self.conn = None
         self.polygon: Optional[PolygonFetcher] = None
         self.fallback: Optional[FallbackFetcher] = None
         self.llm: Optional[LLMAnalyzer] = None
@@ -189,13 +188,13 @@ class DailyPipeline:
         return {"table_counts": counts}
 
     def _get_conn(self):
-        """Return a usable SQLite connection for external functions.
+        """Return the DbRouter for external functions.
         External functions (evaluate_past_prediction, store_earnings, etc.)
-        use '?' placeholders and conn.execute() directly — they need SQLite.
+        now accept DbRouter instances and route queries to PostgreSQL.
         Functions like build_feature_vector/store_technicals already call
         get_router() internally for PostgreSQL routing."""
         if self.router:
-            return self.router.get_sqlite()
+            return self.router
         return self.conn
 
     def _step1_evaluate(self) -> dict:
@@ -261,7 +260,7 @@ class DailyPipeline:
             expanded_count = nf.fetch_all()
             category_stats = nf.get_category_sentiment_summary(days=1)
 
-            # Bridge today's articles from news.db → spy.db news table
+            # Bridge today's articles from news.db → PostgreSQL news table
             recent = nf.get_recent(days=1)
             bridged = 0
             for a in recent:
@@ -347,7 +346,7 @@ class DailyPipeline:
         except Exception as e:
             logger.warning(f"Expanded news processing failed (non-fatal): {e}")
 
-        # --- Part B: LLM sentiment analysis on spy.db news table (original path) ---
+        # --- Part B: LLM sentiment analysis on news table (original path) ---
         if not self.llm.llm_available:
             logger.info("LLM unavailable — using expanded news sentiment")
             if expanded_sentiment:
@@ -379,7 +378,7 @@ class DailyPipeline:
         articles = [{"headline": r["headline"], "summary": r["summary"]} for _, r in news_df.iterrows()]
 
         if not articles:
-            logger.info("No articles in spy.db — using expanded sentiment")
+            logger.info("No articles in DB — using expanded sentiment")
             if expanded_sentiment:
                 sentiment = {
                     "score": expanded_sentiment.get("avg_sentiment", 0),
@@ -855,7 +854,7 @@ class DailyPipeline:
             "sentiment": {},
             "macro": {},
         }
-        # _db_fetchone returns tuples, not sqlite3.Row — use _db_query for dict access
+        # _db_fetchone returns tuples, not dict — use _db_query for dict access
         for key, sql in [("technicals", "SELECT * FROM technicals WHERE date = ?"),
                          ("sentiment", "SELECT * FROM daily_sentiment WHERE date = ?"),
                          ("macro", "SELECT * FROM macro WHERE date = ?")]:

@@ -6,13 +6,18 @@ days_to_next_mega_earnings, earnings_surprise_momentum.
 """
 
 import logging
-import sqlite3
 from datetime import datetime, timedelta, date
 from typing import Optional
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def _get_router(config=None):
+    """Get a DbRouter instance for PostgreSQL access."""
+    from src.data.db_router import get_router
+    return get_router(config)
 
 # Top 20 SPX constituents by weight (mega-caps that move the index)
 MEGA_CAPS = [
@@ -56,19 +61,23 @@ def fetch_earnings_yf(tickers: list[str] = None) -> list[dict]:
     return results
 
 
-def store_earnings(conn: sqlite3.Connection, earnings: list[dict]):
-    """Store earnings calendar data."""
+def store_earnings(conn_or_router, earnings: list[dict]):
+    """Store earnings calendar data via DbRouter (PostgreSQL primary)."""
+    from src.data.db_router import DbRouter
+    if isinstance(conn_or_router, DbRouter):
+        router = conn_or_router
+    else:
+        router = _get_router()
     for e in earnings:
-        conn.execute(
+        router.execute(
             """INSERT OR REPLACE INTO earnings_calendar
                (date, ticker, eps_estimate)
                VALUES (?, ?, ?)""",
             (e["date"], e["ticker"], e.get("eps_estimate")),
         )
-    conn.commit()
 
 
-def get_earnings_features(conn: sqlite3.Connection, target_date: str) -> dict:
+def get_earnings_features(conn_or_router, target_date: str) -> dict:
     """Compute earnings-related features for a given date.
 
     Returns:
@@ -76,6 +85,12 @@ def get_earnings_features(conn: sqlite3.Connection, target_date: str) -> dict:
         days_to_next_mega: Days until next mega-cap earnings
         earnings_week: 1 if any mega-cap reports this week
     """
+    from src.data.db_router import DbRouter
+    if isinstance(conn_or_router, DbRouter):
+        router = conn_or_router
+    else:
+        router = _get_router()
+
     try:
         d = datetime.strptime(target_date, "%Y-%m-%d").date()
     except Exception:
@@ -84,20 +99,20 @@ def get_earnings_features(conn: sqlite3.Connection, target_date: str) -> dict:
     # Count mega-caps reporting within ±3 days
     window_start = (d - timedelta(days=3)).strftime("%Y-%m-%d")
     window_end = (d + timedelta(days=3)).strftime("%Y-%m-%d")
-    row = conn.execute(
-        "SELECT COUNT(*) FROM earnings_calendar WHERE date BETWEEN ? AND ?",
+    density_df = router.query(
+        "SELECT COUNT(*) as cnt FROM earnings_calendar WHERE date BETWEEN ? AND ?",
         (window_start, window_end),
-    ).fetchone()
-    density = row[0] if row else 0
+    )
+    density = int(density_df.iloc[0]["cnt"]) if not density_df.empty else 0
 
     # Days to next mega-cap earnings
-    next_row = conn.execute(
-        "SELECT MIN(date) FROM earnings_calendar WHERE date >= ?",
+    next_df = router.query(
+        "SELECT MIN(date) as d FROM earnings_calendar WHERE date >= ?",
         (target_date,),
-    ).fetchone()
-    if next_row and next_row[0]:
+    )
+    if not next_df.empty and next_df.iloc[0]["d"]:
         try:
-            next_date = datetime.strptime(next_row[0], "%Y-%m-%d").date()
+            next_date = datetime.strptime(str(next_df.iloc[0]["d"]), "%Y-%m-%d").date()
             days_to_next = (next_date - d).days
         except Exception:
             days_to_next = 30
@@ -107,11 +122,11 @@ def get_earnings_features(conn: sqlite3.Connection, target_date: str) -> dict:
     # Is this an earnings week?
     week_start = (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
     week_end = (d + timedelta(days=4 - d.weekday())).strftime("%Y-%m-%d")
-    week_row = conn.execute(
-        "SELECT COUNT(*) FROM earnings_calendar WHERE date BETWEEN ? AND ?",
+    week_df = router.query(
+        "SELECT COUNT(*) as cnt FROM earnings_calendar WHERE date BETWEEN ? AND ?",
         (week_start, week_end),
-    ).fetchone()
-    earnings_week = 1 if (week_row and week_row[0] > 0) else 0
+    )
+    earnings_week = 1 if (not week_df.empty and int(week_df.iloc[0]["cnt"]) > 0) else 0
 
     return {
         "earnings_density": density,

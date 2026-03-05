@@ -6,13 +6,18 @@ Only runs ~8 times per year (after each FOMC meeting).
 """
 
 import logging
-import sqlite3
 import requests
 import feedparser
 from datetime import datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _get_router(config=None):
+    """Get a DbRouter instance for PostgreSQL access."""
+    from src.data.db_router import get_router
+    return get_router(config)
 
 FED_RSS_URL = "https://www.federalreserve.gov/feeds/press_monetary.xml"
 BEIGE_BOOK_RSS = "https://www.federalreserve.gov/feeds/beigebook.xml"
@@ -122,29 +127,34 @@ def _keyword_score(text: str) -> float:
     return round((hawk_count - dove_count) / total, 3)
 
 
-def update_fed_communications(conn: sqlite3.Connection,
+def update_fed_communications(conn_or_router,
                                llm_analyzer=None) -> dict:
     """Fetch and score latest Fed communications. Returns summary."""
+    from src.data.db_router import DbRouter
+    if isinstance(conn_or_router, DbRouter):
+        router = conn_or_router
+    else:
+        router = _get_router()
+
     results = {"fomc": None, "beige_book": None}
 
     # Check if we already have recent data
-    latest = conn.execute(
+    latest_df = router.query(
         "SELECT date, type FROM fed_communications ORDER BY date DESC LIMIT 1"
-    ).fetchone()
-    latest_date = latest[0] if latest else "2000-01-01"
+    )
+    latest_date = str(latest_df.iloc[0]["date"]) if not latest_df.empty else "2000-01-01"
 
     # FOMC statement
     fomc = fetch_latest_fomc_statement()
     if fomc and fomc["date"] > latest_date:
         score = score_fed_communication(fomc["text"], llm_analyzer)
-        conn.execute(
+        router.execute(
             """INSERT OR REPLACE INTO fed_communications
                (date, type, hawkish_score, summary, scored_at)
                VALUES (?, ?, ?, ?, ?)""",
             (fomc["date"], "fomc_statement", score,
              fomc["text"][:500], datetime.now().isoformat()),
         )
-        conn.commit()
         results["fomc"] = {"date": fomc["date"], "score": score}
         logger.info(f"FOMC statement scored: {score:+.2f} ({fomc['date']})")
 
@@ -152,21 +162,20 @@ def update_fed_communications(conn: sqlite3.Connection,
     bb = fetch_latest_beige_book()
     if bb and bb["date"] > latest_date:
         score = score_fed_communication(bb["text"], llm_analyzer)
-        conn.execute(
+        router.execute(
             """INSERT OR REPLACE INTO fed_communications
                (date, type, hawkish_score, summary, scored_at)
                VALUES (?, ?, ?, ?, ?)""",
             (bb["date"], "beige_book", score,
              bb["text"][:500], datetime.now().isoformat()),
         )
-        conn.commit()
         results["beige_book"] = {"date": bb["date"], "score": score}
         logger.info(f"Beige Book scored: {score:+.2f} ({bb['date']})")
 
     return results
 
 
-def get_fed_features(conn: sqlite3.Connection, target_date: str) -> dict:
+def get_fed_features(conn_or_router, target_date: str) -> dict:
     """Get Fed communication features for a given date.
 
     Returns:
@@ -174,19 +183,25 @@ def get_fed_features(conn: sqlite3.Connection, target_date: str) -> dict:
         beige_book_score: Most recent Beige Book score (-1 to +1)
         fed_sentiment_avg: Average of both scores
     """
-    fomc_row = conn.execute(
+    from src.data.db_router import DbRouter
+    if isinstance(conn_or_router, DbRouter):
+        router = conn_or_router
+    else:
+        router = _get_router()
+
+    fomc_df = router.query(
         "SELECT hawkish_score FROM fed_communications "
         "WHERE type = 'fomc_statement' AND date <= ? ORDER BY date DESC LIMIT 1",
         (target_date,),
-    ).fetchone()
-    fomc_score = fomc_row[0] if fomc_row else 0.0
+    )
+    fomc_score = float(fomc_df.iloc[0]["hawkish_score"]) if not fomc_df.empty else 0.0
 
-    bb_row = conn.execute(
+    bb_df = router.query(
         "SELECT hawkish_score FROM fed_communications "
         "WHERE type = 'beige_book' AND date <= ? ORDER BY date DESC LIMIT 1",
         (target_date,),
-    ).fetchone()
-    bb_score = bb_row[0] if bb_row else 0.0
+    )
+    bb_score = float(bb_df.iloc[0]["hawkish_score"]) if not bb_df.empty else 0.0
 
     avg = (fomc_score + bb_score) / 2 if (fomc_score or bb_score) else 0.0
 

@@ -10,7 +10,6 @@ Replicates all 5 Grafana dashboards:
 
 import os
 import json
-import sqlite3
 import logging
 from datetime import datetime, timedelta
 
@@ -141,23 +140,13 @@ def _pg_connect():
         return None
 
 
-def _sqlite_connect():
-    """Create a fresh SQLite connection (thread-safe)."""
-    db_path = os.path.join(DATA_DIR, "spy.db")
-    if not os.path.exists(db_path):
-        return None
-    conn = sqlite3.connect(db_path, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def _convert_sql_for_pg(sql: str) -> str:
     """Convert ? placeholders to %s for PostgreSQL."""
     return sql.replace("?", "%s")
 
 
 def _query_df(sql: str, params=()) -> pd.DataFrame:
-    """Thread-safe query: tries PostgreSQL first, falls back to SQLite."""
+    """Thread-safe query: uses PostgreSQL via fresh connection per query."""
     # Try PostgreSQL
     pg = _pg_connect()
     if pg:
@@ -173,21 +162,8 @@ def _query_df(sql: str, params=()) -> pd.DataFrame:
             except Exception:
                 pass
 
-    # Fallback to fresh SQLite connection
-    conn = _sqlite_connect()
-    if conn is None:
-        return pd.DataFrame()
-    try:
-        df = pd.read_sql_query(sql, conn, params=params)
-        conn.close()
-        return df
-    except Exception as e:
-        logger.warning(f"SQLite query failed: {e}")
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return pd.DataFrame()
+    logger.warning("PostgreSQL unavailable for monitoring query")
+    return pd.DataFrame()
 
 
 def _query_single(sql: str, params=()) -> tuple:
@@ -557,7 +533,12 @@ def tab_system_health():
     """System Health monitoring — mirrors Grafana system-health dashboard."""
 
     # ── Row 1: Service status badges ──
-    db_online = os.path.exists(os.path.join(DATA_DIR, "spy.db"))
+    db_online = _pg_connect() is not None
+    if db_online:
+        try:
+            _pg_connect().close()
+        except Exception:
+            pass
     ollama_online = _check_service("http://localhost:11434/api/tags")
     dashboard_online = _check_service("http://localhost:8501")
     api_online = _check_service("http://localhost:8100/health")
@@ -609,9 +590,19 @@ def tab_system_health():
     c1, c2, c3 = st.columns(3)
 
     with c1:
-        db_path = os.path.join(DATA_DIR, "spy.db")
-        db_size = os.path.getsize(db_path) / (1024 * 1024) if os.path.exists(db_path) else 0
-        st.markdown(_metric_card("Database Size", f"{db_size:.1f} MB", "blue"), unsafe_allow_html=True)
+        # Get PostgreSQL database size
+        pg_size = "N/A"
+        try:
+            pg = _pg_connect()
+            if pg:
+                cur = pg.cursor()
+                cur.execute("SELECT pg_size_pretty(pg_database_size(current_database()))")
+                pg_size = cur.fetchone()[0]
+                cur.close()
+                pg.close()
+        except Exception:
+            pass
+        st.markdown(_metric_card("Database Size", pg_size, "blue"), unsafe_allow_html=True)
 
     with c2:
         uptime_str = "—"

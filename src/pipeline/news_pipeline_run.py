@@ -5,7 +5,6 @@ Usage:
 """
 
 import logging
-import sqlite3
 import sys
 import os
 
@@ -61,10 +60,9 @@ def run_news_pipeline(config: dict = None):
 
     # Get price data for targets
     try:
-        db_path = config.get("database", {}).get("path", "./data/spy.db")
-        conn = sqlite3.connect(db_path)
-        prices = pd.read_sql_query("SELECT date, close FROM prices ORDER BY date", conn)
-        conn.close()
+        from src.data.db_router import get_router
+        router = get_router(config)
+        prices = router.query("SELECT date, close FROM prices ORDER BY date")
     except Exception as e:
         logger.warning(f"Could not load prices for target creation: {e}")
         prices = pd.DataFrame()

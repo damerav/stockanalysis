@@ -181,17 +181,18 @@ class LSTMPredictor:
         pred_scaled = self.model.predict(X, verbose=0)[0]
 
         # Inverse transform: create dummy array with close in first column
-        dummy = np.zeros((len(pred_scaled), len(cols)))
+        n_pred = len(pred_scaled)
+        dummy = np.zeros((n_pred, len(cols)))
         dummy[:, 0] = pred_scaled
         pred_prices = self.scaler.inverse_transform(dummy)[:, 0]
 
         last_date = pd.to_datetime(df["date"].iloc[-1])
         dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1),
-                               periods=self.n_future)
+                               periods=n_pred)
 
         return pd.DataFrame({
             "date": dates.strftime("%Y-%m-%d"),
-            "day": range(1, self.n_future + 1),
+            "day": range(1, n_pred + 1),
             "predicted_close": pred_prices,
         })
 

@@ -23,16 +23,21 @@ TOOLS_TO_TEST = [
     ("get_regime_history",          {"days": 14}),
     ("get_pipeline_status",         {}),
     ("analyze_feature_correlations",{"threshold": 0.85}),
-    # LLM-dependent tools (need Ollama)
+    # Vector search (needs embeddings — will gracefully error if none)
+    ("search_similar_news",         {"query": "Fed rate hike inflation", "limit": 5}),
+    # LLM-dependent tools (need Ollama + DeepSeek R1, slow)
     ("assess_news_risk",            {"days": 2}),
     ("explain_regime",              {}),
     ("generate_alpha_hypothesis",   {}),
     # Heavy tools
     ("compare_strategies",          {"days": 30}),
+    ("run_backtest",                {"days": 30}),
+    ("retrain_model",              {}),
 ]
 
-# Skip these heavy tools unless --full flag
-HEAVY = {"compare_strategies", "run_backtest", "retrain_model"}
+# Skip these heavy/LLM tools unless --full flag
+HEAVY = {"compare_strategies", "run_backtest", "retrain_model",
+         "assess_news_risk", "explain_regime", "generate_alpha_hypothesis"}
 run_full = "--full" in sys.argv
 
 print("=" * 70)

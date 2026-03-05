@@ -78,7 +78,6 @@ class DbRouter:
         self._pg_config = _get_pg_config(config)
         self._pg_conn = None
         self._sqlite = None
-        os.makedirs(os.path.dirname(self._sqlite_path) or ".", exist_ok=True)
         if self._pg_config:
             try:
                 import psycopg2
@@ -92,14 +91,17 @@ class DbRouter:
                 self._pg_conn.autocommit = True
                 logger.info(f"DbRouter: PostgreSQL connected ({self._pg_config['dbname']})")
             except Exception as e:
-                logger.warning(f"PostgreSQL unavailable, falling back to SQLite: {e}")
+                logger.warning(f"PostgreSQL unavailable: {e}")
                 self._pg_conn = None
-        self._sqlite = sqlite3.connect(self._sqlite_path, timeout=10)
-        self._sqlite.row_factory = sqlite3.Row
-        self._sqlite.execute("PRAGMA journal_mode=WAL")
-        self._sqlite.execute("PRAGMA busy_timeout=5000")
+        # Only create SQLite connection if PostgreSQL is unavailable
+        if not self._pg_conn:
+            os.makedirs(os.path.dirname(self._sqlite_path) or ".", exist_ok=True)
+            self._sqlite = sqlite3.connect(self._sqlite_path, timeout=10)
+            self._sqlite.row_factory = sqlite3.Row
+            self._sqlite.execute("PRAGMA journal_mode=WAL")
+            self._sqlite.execute("PRAGMA busy_timeout=5000")
         backend = "PostgreSQL" if self._pg_conn else "SQLite"
-        logger.info(f"DbRouter ready: primary={backend}, SQLite={self._sqlite_path}")
+        logger.info(f"DbRouter ready: primary={backend}")
 
     @property
     def using_postgres(self) -> bool:
@@ -108,7 +110,8 @@ class DbRouter:
     def get_pg(self):
         return self._pg_conn
 
-    def get_sqlite(self) -> sqlite3.Connection:
+    def get_sqlite(self):
+        """Get SQLite connection (may be None if PostgreSQL is primary)."""
         return self._sqlite
 
     def query(self, sql: str, params: tuple = None) -> pd.DataFrame:
@@ -118,13 +121,16 @@ class DbRouter:
                 return pd.read_sql_query(pg_sql, self._pg_conn,
                                          params=pg_params if pg_params else None)
             except Exception as e:
-                logger.warning(f"PostgreSQL query failed, falling back: {e}")
-        try:
-            return pd.read_sql_query(sql, self._sqlite,
-                                     params=params if params else None)
-        except Exception as e:
-            logger.error(f"SQLite query also failed: {e}")
-            return pd.DataFrame()
+                logger.warning(f"PostgreSQL query failed: {e}")
+                if not self._sqlite:
+                    return pd.DataFrame()
+        if self._sqlite:
+            try:
+                return pd.read_sql_query(sql, self._sqlite,
+                                         params=params if params else None)
+            except Exception as e:
+                logger.error(f"SQLite query also failed: {e}")
+        return pd.DataFrame()
 
     def execute(self, sql: str, params: tuple = None):
         if self._pg_conn:
@@ -135,12 +141,15 @@ class DbRouter:
                 cur.close()
                 return
             except Exception as e:
-                logger.warning(f"PostgreSQL execute failed, falling back: {e}")
-        if params:
-            self._sqlite.execute(sql, params)
-        else:
-            self._sqlite.execute(sql)
-        self._sqlite.commit()
+                logger.warning(f"PostgreSQL execute failed: {e}")
+                if not self._sqlite:
+                    raise
+        if self._sqlite:
+            if params:
+                self._sqlite.execute(sql, params)
+            else:
+                self._sqlite.execute(sql)
+            self._sqlite.commit()
 
     def read_analytics(self, sql: str, params: tuple = None) -> pd.DataFrame:
         return self.query(sql, params)
@@ -157,6 +166,9 @@ class DbRouter:
         return self._sqlite
 
     def read_sqlite(self, sql: str, params: tuple = None) -> pd.DataFrame:
+        """Read from SQLite (fallback). Returns empty DataFrame if SQLite unavailable."""
+        if not self._sqlite:
+            return pd.DataFrame()
         try:
             if params:
                 return pd.read_sql_query(sql, self._sqlite, params=params)
@@ -203,6 +215,9 @@ class DbRouter:
             except Exception:
                 df_sent = df_intra = df_opts = pd.DataFrame()
         else:
+            # SQLite fallback (if available)
+            if not self._sqlite:
+                return pd.DataFrame()
             ph = ",".join(["?"] * len(dates_list))
             df_sent = pd.read_sql_query(
                 f"SELECT date, score as sentiment_score, confidence as sentiment_confidence, "

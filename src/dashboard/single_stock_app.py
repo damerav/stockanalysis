@@ -5,7 +5,6 @@ news & sentiment tab. Inspired by ErikThiart/ai-stock-dashboard.
 """
 
 import os
-import sqlite3
 import logging
 from datetime import datetime, timedelta
 
@@ -48,10 +47,10 @@ def _fetch_stock_data(ticker: str, period: str = "1y") -> pd.DataFrame:
     """Fetch OHLCV data via yfinance (or DB for SPY)."""
     if ticker == "SPY":
         try:
-            conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-            df = pd.read_sql_query(
-                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date", conn)
-            conn.close()
+            from src.data.db_router import get_router
+            router = get_router()
+            df = router.query(
+                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date")
             if not df.empty:
                 df["date"] = pd.to_datetime(df["date"])
                 return df

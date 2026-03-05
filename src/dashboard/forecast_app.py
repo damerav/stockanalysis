@@ -5,7 +5,6 @@ Includes a live price ticker that auto-refreshes via yfinance.
 """
 
 import os
-import sqlite3
 import logging
 from datetime import datetime
 
@@ -42,12 +41,11 @@ def _load_prices(ticker: str = "SPY", period: str = "1y") -> pd.DataFrame:
     """Load price data — from DB for SPY, yfinance for others."""
     if ticker == "SPY":
         try:
-            conn = sqlite3.connect(os.path.join(DATA_DIR, "spy.db"))
-            df = pd.read_sql_query(
-                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date",
-                conn,
+            from src.data.db_router import get_router
+            router = get_router()
+            df = router.query(
+                "SELECT date, open, high, low, close, volume FROM prices ORDER BY date"
             )
-            conn.close()
             if not df.empty:
                 return df
         except Exception:
