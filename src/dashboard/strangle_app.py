@@ -94,6 +94,62 @@ def _live_spot(ticker: str = "SPY") -> float:
     except Exception:
         return 540.0
 
+
+def _bs_price(S: float, K: float, T: float, r: float, sigma: float, opt_type: str) -> float:
+    """Black-Scholes option price for simulation mode.
+
+    S=spot, K=strike, T=years to expiry, r=risk-free rate, sigma=IV (annualized).
+    opt_type: 'call' or 'put'.
+    """
+    from math import log, sqrt, exp
+    # Standard normal CDF approximation (Abramowitz & Stegun)
+    def _norm_cdf(x):
+        import math
+        return (1.0 + math.erf(x / sqrt(2.0))) / 2.0
+
+    if T <= 0:
+        # At expiration
+        if opt_type == "call":
+            return max(S - K, 0)
+        return max(K - S, 0)
+
+    d1 = (log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt(T))
+    d2 = d1 - sigma * sqrt(T)
+
+    if opt_type == "call":
+        return S * _norm_cdf(d1) - K * exp(-r * T) * _norm_cdf(d2)
+    else:
+        return K * exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+
+
+def _theoretical_spread_price(
+    spot: float, short_put: float, short_call: float,
+    long_put: float, long_call: float, dte: int, vix: float = 20.0,
+) -> dict:
+    """Price the 4-leg spread using Black-Scholes with VIX as IV proxy.
+
+    Returns same dict format as _price_spread() for seamless integration.
+    """
+    T = dte / 365.0
+    r = 0.045  # approximate risk-free rate
+    sigma = vix / 100.0  # VIX is annualized IV in percentage points
+
+    sp_price = round(_bs_price(spot, short_put, T, r, sigma, "put"), 2)
+    sc_price = round(_bs_price(spot, short_call, T, r, sigma, "call"), 2)
+    lp_price = round(_bs_price(spot, long_put, T, r, sigma, "put"), 2)
+    lc_price = round(_bs_price(spot, long_call, T, r, sigma, "call"), 2)
+
+    net_credit = round((sp_price + sc_price) - (lp_price + lc_price), 2)
+    leg_str = (
+        f"Short Put ${sp_price} | Short Call ${sc_price} | "
+        f"Long Put ${lp_price} | Long Call ${lc_price} (theoretical @ VIX={vix:.1f})"
+    )
+    return {
+        "short_put_price": sp_price, "short_call_price": sc_price,
+        "long_put_price": lp_price, "long_call_price": lc_price,
+        "net_credit": net_credit, "credit_per_leg_str": leg_str,
+    }
+
 @st.cache_data(ttl=15)
 def _live_spot(ticker: str = "SPY") -> float:
     """Fetch live spot price via yfinance with 15s cache."""
@@ -773,6 +829,12 @@ def page_strangle():
                     else:
                         st.warning("Some checks failed. Consider waiting for better conditions or adjusting parameters.")
 
+        # Mode toggle (outside form so it persists)
+        sim_mode = st.toggle("🧪 Simulation Mode (theoretical pricing, no Polygon needed)",
+                             value=True, key="sim_mode_toggle")
+        if sim_mode:
+            st.caption("Using Black-Scholes theoretical pricing with VIX as IV proxy. Trades are paper/simulated.")
+
         with st.form("new_trade_form"):
             c1, c2 = st.columns(2)
             with c1:
@@ -786,7 +848,7 @@ def page_strangle():
                 wing = st.number_input("Wing Width ($)", 10.0, 60.0, 25.0, 1.0,
                                        help="Long Put = Short Put - W | Long Call = Short Call + W")
                 profit_target_pct = st.slider("Profit Target (% of Credit)", 5, 50, 10)
-                manual_credit = st.number_input("Manual Credit Override (0 = fetch from Polygon)", 0.0, 200.0, 0.0, 0.01)
+                manual_credit = st.number_input("Manual Credit Override (0 = auto-price)", 0.0, 200.0, 0.0, 0.01)
             submitted = st.form_submit_button("📐 Price & Open Trade")
 
         if submitted:
@@ -809,6 +871,15 @@ def page_strangle():
             credit_info = {}
             if manual_credit > 0:
                 credit_info = {"net_credit": manual_credit, "credit_per_leg_str": "Manual override"}
+            elif sim_mode:
+                # Simulation mode: use Black-Scholes theoretical pricing
+                try:
+                    ts_data = _fetch_vix_term_structure()
+                    vix_now = ts_data.get("vix") or 20.0
+                except Exception:
+                    vix_now = 20.0
+                credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
+                st.info(f"🧪 Theoretical pricing @ VIX={vix_now:.1f} (simulation mode)")
             else:
                 with st.spinner("Fetching options chain from Polygon..."):
                     chain = _fetch_chain_for_strike(underlying, expiry,
@@ -816,7 +887,14 @@ def page_strangle():
                     if not chain.empty:
                         credit_info = _price_spread(chain, short_put, short_call, long_put, long_call)
                     else:
-                        st.warning("Could not fetch options chain. Enter credit manually and re-submit.")
+                        # Auto-fallback to theoretical pricing
+                        st.warning("Polygon chain unavailable — falling back to theoretical pricing.")
+                        try:
+                            ts_data = _fetch_vix_term_structure()
+                            vix_now = ts_data.get("vix") or 20.0
+                        except Exception:
+                            vix_now = 20.0
+                        credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
 
             if credit_info:
                 net_credit = credit_info["net_credit"]
@@ -850,8 +928,10 @@ def page_strangle():
                     pass
 
                 if st.button("✅ Confirm & Open Position"):
+                    # Tag paper trades with [PAPER] prefix
+                    trade_underlying = f"[PAPER] {underlying}" if sim_mode else underlying
                     new_id = _open_position(
-                        underlying, spot, expiry, dte, short_put, short_call, long_put, long_call,
+                        trade_underlying, spot, expiry, dte, short_put, short_call, long_put, long_call,
                         inversion, wing, net_credit, credit_info.get("credit_per_leg_str", ""),
                         profit_target_pct, entry_vix or 0.0,
                     )
