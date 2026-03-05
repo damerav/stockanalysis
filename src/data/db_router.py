@@ -24,6 +24,8 @@ _TABLE_PKS = {
     "earnings_calendar": "date, ticker", "fed_communications": "date",
     "users": "username", "news": "id", "raw_articles": "id",
     "finbert_cache": "article_id", "model_registry": "id",
+    "news_features": "date", "feature_store_meta": "key",
+    "strategy_rules": "rule_group, rule_key",
 }
 
 ANALYTICS_TABLES = {"prices", "technicals", "macro", "intraday_bars", "options_chain"}
@@ -87,7 +89,14 @@ class DbRouter:
     """Routes queries to PostgreSQL (primary) with SQLite fallback."""
 
     def __init__(self, config: dict = None):
-        self.config = config or {}
+        if config is None or not config:
+            try:
+                import yaml
+                with open("config.yaml") as f:
+                    config = yaml.safe_load(f) or {}
+            except Exception:
+                config = {}
+        self.config = config
         self._sqlite_path = _get_sqlite_path(config)
         self._pg_config = _get_pg_config(config)
         self._pg_conn = None
@@ -119,10 +128,21 @@ class DbRouter:
         # Only create SQLite connection if PostgreSQL is unavailable
         if not self._pg_conn:
             os.makedirs(os.path.dirname(self._sqlite_path) or ".", exist_ok=True)
-            self._sqlite = sqlite3.connect(self._sqlite_path, timeout=10)
-            self._sqlite.row_factory = sqlite3.Row
-            self._sqlite.execute("PRAGMA journal_mode=WAL")
-            self._sqlite.execute("PRAGMA busy_timeout=5000")
+            try:
+                self._sqlite = sqlite3.connect(self._sqlite_path, timeout=10)
+                self._sqlite.row_factory = sqlite3.Row
+                self._sqlite.execute("PRAGMA journal_mode=WAL")
+                self._sqlite.execute("PRAGMA busy_timeout=5000")
+            except sqlite3.DatabaseError:
+                logger.warning(f"SQLite file corrupted ({self._sqlite_path}), recreating")
+                try:
+                    os.remove(self._sqlite_path)
+                except OSError:
+                    pass
+                self._sqlite = sqlite3.connect(self._sqlite_path, timeout=10)
+                self._sqlite.row_factory = sqlite3.Row
+                self._sqlite.execute("PRAGMA journal_mode=WAL")
+                self._sqlite.execute("PRAGMA busy_timeout=5000")
         backend = "PostgreSQL" if self._pg_conn else "SQLite"
         logger.info(f"DbRouter ready: primary={backend}")
 

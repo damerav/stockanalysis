@@ -107,11 +107,16 @@ st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 # --- Sync config.toml to match session theme (makes Streamlit native widgets correct) ---
 _sync_config_toml(get_theme())
 
-# --- Load unified design system CSS (single source of truth for all styling) ---
-_css_path = os.path.join(os.path.dirname(__file__), "style.css")
-if os.path.exists(_css_path):
-    with open(_css_path) as _css_f:
-        st.markdown(f"<style>{_css_f.read()}</style>", unsafe_allow_html=True)
+# --- Load unified design system CSS (cached in session to avoid disk reads) ---
+if "_css_cache" not in st.session_state:
+    _css_path = os.path.join(os.path.dirname(__file__), "style.css")
+    if os.path.exists(_css_path):
+        with open(_css_path) as _css_f:
+            st.session_state["_css_cache"] = _css_f.read()
+    else:
+        st.session_state["_css_cache"] = ""
+if st.session_state["_css_cache"]:
+    st.markdown(f"<style>{st.session_state['_css_cache']}</style>", unsafe_allow_html=True)
 
 # --- Inject light theme overrides if in light mode ---
 # CSS [data-theme="light"] selector requires JS to set the attribute on the root,
@@ -205,6 +210,16 @@ st.sidebar.selectbox(
 # SPY PREDICTOR PAGE
 # ======================================================================
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_spy_state_cached() -> dict:
+    """Cached spy_state.json read (30s TTL)."""
+    try:
+        with open(os.path.join(DATA_DIR, "spy_state.json"), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
 def load_spy_state() -> dict:
     if IS_CLOUD:
         try:
@@ -215,13 +230,10 @@ def load_spy_state() -> dict:
             pass
         return {}
     else:
-        try:
-            with open(os.path.join(DATA_DIR, "spy_state.json"), "r") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+        return _load_spy_state_cached()
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_prediction_history(n: int = 30) -> pd.DataFrame:
     if IS_CLOUD:
         return pd.DataFrame()
@@ -236,6 +248,7 @@ def load_prediction_history(n: int = 30) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_performance() -> pd.DataFrame:
     if IS_CLOUD:
         return pd.DataFrame()
@@ -623,6 +636,16 @@ def page_spy():
 # ES STRATEGY PAGE
 # ======================================================================
 
+@st.cache_data(ttl=10, show_spinner=False)
+def _load_es_state_cached() -> dict:
+    """Cached es_state.json read (10s TTL)."""
+    try:
+        with open(os.path.join(DATA_DIR, "es_state.json"), "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
 def load_es_state() -> dict:
     if IS_CLOUD:
         try:
@@ -633,11 +656,7 @@ def load_es_state() -> dict:
             pass
         return {}
     else:
-        try:
-            with open(os.path.join(DATA_DIR, "es_state.json"), "r") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+        return _load_es_state_cached()
 
 
 def page_es():
@@ -3198,22 +3217,31 @@ _pg = st.navigation(_pages)
 
 # ── Global live price ticker (auto-refreshes every 15s via st.fragment) ──
 @st.fragment(run_every=15)
+@st.cache_data(ttl=15, show_spinner=False)
+def _fetch_ticker_price(symbol: str) -> tuple:
+    """Cached live price fetch (15s TTL). Returns (price, prev_close) or (0, 0)."""
+    try:
+        import yfinance as _yf
+        _fi = _yf.Ticker(symbol).fast_info
+        _price = float(getattr(_fi, "last_price", 0) or 0)
+        _prev = float(getattr(_fi, "previous_close", 0) or 0)
+        return (_price, _prev)
+    except Exception:
+        return (0.0, 0.0)
+
+
 def _global_live_ticker():
-    import yfinance as _yf
-    from datetime import datetime as _dt
     _colors = get_colors()
     _sym = st.session_state.get("live_ticker_symbol", "SPY")
     try:
-        _fi = _yf.Ticker(_sym).fast_info
-        _price = float(getattr(_fi, "last_price", 0) or 0)
-        _prev = float(getattr(_fi, "previous_close", 0) or 0)
+        _price, _prev = _fetch_ticker_price(_sym)
         if _price <= 0 or _prev <= 0:
             return
         _chg = _price - _prev
         _pct = (_chg / _prev) * 100
         _arrow = "▲" if _chg >= 0 else "▼"
         _c = _colors["green"] if _chg >= 0 else _colors["red"]
-        _now = _dt.now().strftime("%H:%M:%S")
+        _now = datetime.now().strftime("%H:%M:%S")
         st.markdown(
             f'<div style="display:flex; align-items:center; gap:14px; '
             f'padding:6px 14px; background:{_colors["card"]}; '

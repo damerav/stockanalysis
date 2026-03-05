@@ -69,7 +69,11 @@ class DailyPipeline:
             self.router = None
 
         # Legacy self.conn — only used as fallback if router is None
-        self.conn = get_connection(self.config)
+        try:
+            self.conn = get_connection(self.config)
+        except Exception as e:
+            logger.warning(f"Legacy SQLite connection unavailable (non-fatal): {e}")
+            self.conn = None
 
         api_key = self.config.get("polygon", {}).get("api_key", "")
         if api_key and api_key != "YOUR_POLYGON_KEY":
@@ -714,13 +718,22 @@ class DailyPipeline:
         regime = "low_vol_range"
         regime_info = {}
         try:
-            # Train/update regime detector
-            price_macro = fv[["close", "volume"]].copy()
-            if "vix" in fv.columns:
-                price_macro["vix"] = fv["vix"]
-            regime_info = self.regime_detector.fit(price_macro)
-            regime = self.regime_detector.predict(price_macro.tail(60))
-            logger.info(f"Current regime: {regime}")
+            # Use prices table directly for regime detection (feature store
+            # may not include close/volume columns)
+            if self.router:
+                price_macro = self.router.query(
+                    "SELECT p.close, p.volume, m.vix FROM prices p "
+                    "LEFT JOIN macro m ON p.date = m.date ORDER BY p.date"
+                )
+            else:
+                price_macro = self._db_query(
+                    "SELECT p.close, p.volume, m.vix FROM prices p "
+                    "LEFT JOIN macro m ON p.date = m.date ORDER BY p.date"
+                )
+            if not price_macro.empty and len(price_macro) > 60:
+                regime_info = self.regime_detector.fit(price_macro)
+                regime = self.regime_detector.predict(price_macro.tail(60))
+                logger.info(f"Current regime: {regime}")
         except Exception as e:
             logger.warning(f"Regime detection failed (non-fatal): {e}")
 

@@ -13,7 +13,6 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ def _fetch_stock_data(ticker: str, period: str = "1y") -> pd.DataFrame:
         except Exception:
             pass
     try:
+        import yfinance as yf
         data = yf.download(ticker, period=period, progress=False)
         if data.empty:
             return pd.DataFrame()
@@ -71,6 +71,7 @@ def _fetch_stock_data(ticker: str, period: str = "1y") -> pd.DataFrame:
 def _fetch_company_info(ticker: str) -> dict:
     """Fetch company metadata from yfinance."""
     try:
+        import yfinance as yf
         t = yf.Ticker(ticker)
         info = t.info or {}
         return {

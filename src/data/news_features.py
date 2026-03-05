@@ -188,7 +188,10 @@ class NewsFeatureProcessor:
             """)
             for _, row in daily_df.iterrows():
                 self.router.execute(
-                    "INSERT OR REPLACE INTO news_features VALUES (?,?,?,?,?,?,?,?)",
+                    """INSERT OR REPLACE INTO news_features
+                       (date, article_count, avg_sentiment, max_sentiment,
+                        min_sentiment, sentiment_std, positive_ratio, negative_ratio)
+                       VALUES (?,?,?,?,?,?,?,?)""",
                     (row["date"], int(row["article_count"]),
                      row["avg_sentiment"], row["max_sentiment"], row["min_sentiment"],
                      row["sentiment_std"], row["positive_ratio"], row["negative_ratio"]),

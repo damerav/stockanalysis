@@ -380,14 +380,28 @@ def get_connection(config: dict = None):
 
     # Fallback to SQLite
     db_path = get_db_path(config)
-    if not os.path.exists(db_path):
+    try:
+        if not os.path.exists(db_path):
+            init_db(config)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        _migrate_schema(conn)
+        return conn
+    except sqlite3.DatabaseError:
+        # Corrupted SQLite file — remove and recreate
+        logger.warning(f"SQLite file corrupted ({db_path}), recreating")
+        try:
+            os.remove(db_path)
+        except OSError:
+            pass
         init_db(config)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    _migrate_schema(conn)
-    return conn
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        return conn
 
 
 if __name__ == "__main__":
