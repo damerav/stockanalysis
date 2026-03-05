@@ -1,8 +1,8 @@
 """Migrate analytics tables from SQLite to DuckDB.
 
-Enhancement 26: One-time migration script that copies historical data from
-the 5 analytics tables (prices, technicals, macro, intraday_bars, options_chain)
-from SQLite into DuckDB. Validates row counts after migration.
+DEPRECATED: This migration script is no longer needed. The platform has fully
+migrated to PostgreSQL (v2.5+). DuckDB was an intermediate analytics layer
+that has been superseded. Kept for historical reference only.
 
 Usage:
     python -m src.data.migrate_to_duckdb [--config config.yaml]
@@ -13,13 +13,10 @@ import logging
 import sqlite3
 import os
 
-import duckdb
 import pandas as pd
 
 from src.data.init_db import load_config
-from src.data.db_router import (
-    _get_duckdb_path, _get_sqlite_path, ANALYTICS_TABLES, DUCKDB_SCHEMA,
-)
+from src.data.db_router import _get_sqlite_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +25,9 @@ TABLES_TO_MIGRATE = ["prices", "technicals", "macro", "intraday_bars", "options_
 
 def migrate(config: dict = None):
     """Copy all rows from SQLite analytics tables into DuckDB."""
-    if config is None:
-        config = load_config()
+    logger.warning("migrate_to_duckdb is DEPRECATED. Platform uses PostgreSQL now.")
+    logger.warning("This script is kept for historical reference only. Exiting.")
+    return False
 
     sqlite_path = _get_sqlite_path(config)
     duckdb_path = _get_duckdb_path(config)
