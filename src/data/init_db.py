@@ -200,6 +200,51 @@ def init_db(config: dict = None) -> str:
                 """)
                 from datetime import datetime
                 _seed_strategy_rules_pg(router, datetime.now().isoformat())
+                # Inverted strangle tables (PostgreSQL)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS inverted_strangle_positions (
+                        id              SERIAL PRIMARY KEY,
+                        trade_date      TEXT    NOT NULL,
+                        underlying      TEXT    NOT NULL DEFAULT 'SPY',
+                        spot_at_open    REAL    NOT NULL,
+                        expiry_date     TEXT    NOT NULL,
+                        dte_at_open     INTEGER NOT NULL,
+                        status          TEXT    NOT NULL DEFAULT 'OPEN',
+                        short_put       REAL    NOT NULL,
+                        short_call      REAL    NOT NULL,
+                        long_put        REAL    NOT NULL,
+                        long_call       REAL    NOT NULL,
+                        inversion_pts   REAL    NOT NULL DEFAULT 5.0,
+                        wing_pts        REAL    NOT NULL DEFAULT 25.0,
+                        initial_credit  REAL    NOT NULL,
+                        credit_per_leg  TEXT,
+                        profit_target   REAL    NOT NULL,
+                        current_value   REAL,
+                        current_pnl     REAL,
+                        close_date      TEXT,
+                        close_price     REAL,
+                        close_reason    TEXT,
+                        roll_count      INTEGER NOT NULL DEFAULT 0,
+                        notes           TEXT,
+                        vix_at_open     REAL
+                    )
+                """)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS inverted_strangle_adjustments (
+                        id              SERIAL PRIMARY KEY,
+                        position_id     INTEGER NOT NULL,
+                        adj_date        TEXT    NOT NULL,
+                        adj_type        TEXT    NOT NULL,
+                        old_short_put   REAL,
+                        old_short_call  REAL,
+                        new_short_put   REAL,
+                        new_short_call  REAL,
+                        new_spot        REAL,
+                        debit_paid      REAL,
+                        notes           TEXT,
+                        FOREIGN KEY (position_id) REFERENCES inverted_strangle_positions(id)
+                    )
+                """)
                 logger.info("strategy_rules table ready in PostgreSQL")
             except Exception as e:
                 logger.warning(f"strategy_rules PostgreSQL setup failed: {e}")
@@ -310,6 +355,53 @@ def _migrate_schema(conn: sqlite3.Connection):
             new_value   TEXT NOT NULL,
             changed_at  TEXT NOT NULL,
             changed_by  TEXT NOT NULL DEFAULT 'system'
+        )
+    """)
+
+    # Inverted strangle positions table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS inverted_strangle_positions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date      TEXT    NOT NULL,
+            underlying      TEXT    NOT NULL DEFAULT 'SPY',
+            spot_at_open    REAL    NOT NULL,
+            expiry_date     TEXT    NOT NULL,
+            dte_at_open     INTEGER NOT NULL,
+            status          TEXT    NOT NULL DEFAULT 'OPEN',
+            short_put       REAL    NOT NULL,
+            short_call      REAL    NOT NULL,
+            long_put        REAL    NOT NULL,
+            long_call       REAL    NOT NULL,
+            inversion_pts   REAL    NOT NULL DEFAULT 5.0,
+            wing_pts        REAL    NOT NULL DEFAULT 25.0,
+            initial_credit  REAL    NOT NULL,
+            credit_per_leg  TEXT,
+            profit_target   REAL    NOT NULL,
+            current_value   REAL,
+            current_pnl     REAL,
+            close_date      TEXT,
+            close_price     REAL,
+            close_reason    TEXT,
+            roll_count      INTEGER NOT NULL DEFAULT 0,
+            notes           TEXT,
+            vix_at_open     REAL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS inverted_strangle_adjustments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            position_id     INTEGER NOT NULL,
+            adj_date        TEXT    NOT NULL,
+            adj_type        TEXT    NOT NULL,
+            old_short_put   REAL,
+            old_short_call  REAL,
+            new_short_put   REAL,
+            new_short_call  REAL,
+            new_spot        REAL,
+            debit_paid      REAL,
+            notes           TEXT,
+            FOREIGN KEY (position_id) REFERENCES inverted_strangle_positions(id)
         )
     """)
 
