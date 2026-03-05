@@ -195,6 +195,57 @@ def page_performance():
                        height=340)
     st.plotly_chart(fig1, use_container_width=True, key="perf_accuracy_trend")
 
+    # ── Predicted vs Actual (daily line chart) ───────────────────────
+    st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
+                f'font-size:0.95rem;">Predicted vs Actual (Daily)</p>',
+                unsafe_allow_html=True)
+
+    _dir_map = {
+        "STRONG_BULLISH": 2, "BULLISH": 1, "NEUTRAL": 0,
+        "BEARISH": -1, "STRONG_BEARISH": -2,
+        # lowercase fallbacks
+        "strong_bullish": 2, "bullish": 1, "neutral": 0,
+        "bearish": -1, "strong_bearish": -2,
+        "UP": 1, "DOWN": -1, "FLAT": 0,
+        "up": 1, "down": -1, "flat": 0,
+    }
+    pv = df[["date", "predicted", "actual", "correct"]].copy()
+    pv["pred_val"] = pv["predicted"].map(_dir_map).fillna(0)
+    pv["actual_val"] = pv["actual"].map(_dir_map).fillna(0)
+
+    fig_pva = go.Figure()
+    fig_pva.add_trace(go.Scatter(
+        x=pv["date"], y=pv["pred_val"], name="Predicted",
+        mode="lines+markers",
+        line=dict(color=colors["blue"], width=2),
+        marker=dict(size=6, symbol="circle"),
+    ))
+    fig_pva.add_trace(go.Scatter(
+        x=pv["date"], y=pv["actual_val"], name="Actual",
+        mode="lines+markers",
+        line=dict(color=colors["orange"], width=2, dash="dash"),
+        marker=dict(size=6, symbol="diamond"),
+    ))
+    # Highlight misses with red markers
+    misses = pv[pv["correct"] == 0]
+    if not misses.empty:
+        fig_pva.add_trace(go.Scatter(
+            x=misses["date"], y=misses["actual_val"], name="Miss",
+            mode="markers",
+            marker=dict(size=10, color=colors["red"], symbol="x", line=dict(width=2)),
+        ))
+    fig_pva.update_layout(
+        **layout, height=320,
+        yaxis=dict(
+            tickvals=[-2, -1, 0, 1, 2],
+            ticktext=["Strong Bear", "Bearish", "Neutral", "Bullish", "Strong Bull"],
+            gridcolor=colors["grid"], zeroline=True,
+            zerolinecolor=colors["text_muted"], zerolinewidth=1,
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig_pva, use_container_width=True, key="perf_pred_vs_actual")
+
     # ── Stratified Performance ───────────────────────────────────────
     st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
                 f'font-size:0.95rem;">Stratified Performance</p>', unsafe_allow_html=True)
