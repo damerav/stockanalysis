@@ -268,8 +268,8 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 ### v2.8.0 Changes (SPY Prediction Enhancements — 65+ New Features)
 
 - **5 new FRED macro series**: 3-Month Treasury yield (`DTB3`), yield curve 10Y-3M spread (`T10Y3M`, recession signal), Sahm Rule (`SAHMREALTIME`, real-time recession indicator), U. of Michigan Consumer Sentiment (`UMCSENT`), ISM Manufacturing PMI (`NAPM`). All added to `get_macro_fred()` in `fetcher.py`.
-- **Shiller CAPE Ratio**: Fetched from datahub.io Shiller dataset in `fetch_index_fundamentals()`. Stored in `market_breadth` table (`sp500_cape` column).
-- **Buffett Indicator**: Wilshire 5000 / GDP ratio from FRED CSV. Stored in `market_breadth` table (`buffett_indicator` column).
+- **Shiller CAPE Ratio**: Fetched from datahub.io Shiller dataset in `fetch_index_fundamentals()`. Skips zero values (dataset lags recent months). Stored in `market_breadth` table (`sp500_cape` column).
+- **Buffett Indicator**: Wilshire 5000 / GDP ratio via FRED API (requires API key). FRED CSV endpoint returns 404 for Wilshire series — uses API with key fallback. Stored in `market_breadth` table (`buffett_indicator` column). Returns None if FRED key unavailable.
 - **40+ comprehensive technical indicators via pandas-ta**: ADX, CCI, Aroon, Parabolic SAR, DPO, TRIX, Vortex, Williams %R, MFI, multi-period RSI (2/9/21), CMO, PPO, ROC, Keltner Channels, Donchian Channels, Ulcer Index, CMF, VWMA, EOM, EMA (9/21/200), HMA, WMA, DEMA, TEMA, KAMA, Ichimoku Cloud. Added to `compute_all_technicals()` with defensive `.iloc` column access.
 - **Multi-timeframe features**: Weekly RSI, weekly 5-week momentum, weekly MACD histogram, monthly RSI, monthly 3-month momentum. Resampled from daily prices in `build_feature_vector()`.
 - **StockTwits social sentiment**: New `src/data/social_fetcher.py` — scrapes StockTwits for SPY bullish/bearish ratio with 1-hour cache. Features: `st_bullish_pct`, `st_bearish_pct`, `st_bull_bear_ratio`, `st_message_volume`.
