@@ -44,6 +44,20 @@ def _get_pg_config(config: dict = None) -> Optional[dict]:
     if not pg:
         return None
     if pg.get("dbname") and pg.get("user"):
+        # Allow env var override for password
+        if os.environ.get("STOCKAPP_DB_PASSWORD"):
+            pg = dict(pg)  # don't mutate original
+            pg["password"] = os.environ["STOCKAPP_DB_PASSWORD"]
+        elif pg.get("password") in ("FROM_ENCRYPTED_DB", ""):
+            # Try secrets manager
+            try:
+                from src.data.secrets_manager import get_secret
+                db_pw = get_secret("db_password")
+                if db_pw:
+                    pg = dict(pg)
+                    pg["password"] = db_pw
+            except Exception:
+                pass
         return pg
     return None
 

@@ -4,10 +4,10 @@ polygon:
   ws_options_url: "wss://socket.polygon.io/options"
 
 fred:
-  api_key: "dff4b18b046e602a474a8d1037619af1"
+  api_key: "FROM_ENCRYPTED_DB"
 
 finnhub:
-  api_key: "d6dn6u9r01qm89pk83m0d6dn6u9r01qm89pk83mg"
+  api_key: "FROM_ENCRYPTED_DB"
 
 analysis:
   signal_interval: 300
@@ -80,14 +80,14 @@ database:
     port: 5432
     dbname: "stockanalysis"
     user: "stockapp"
-    password: "stockapp_secure_2024"
+    password: "stockapp_secure_2024"  # Bootstrap credential — use STOCKAPP_DB_PASSWORD env var in production
 
 # Authentication
 auth:
   mode: "local"                  # "local" or "google"
-  session_secret: "change-me-to-random-secret"  # Signs session tokens
+  session_secret: "change-me-to-random-secret"  # Signs session tokens — use SESSION_SECRET env var or encrypted DB
   # Users are stored in the database with bcrypt-hashed passwords.
-  # Seed users (admin/admin123, user/user123) are auto-created on first run.
+  # Seed user passwords stored in encrypted app_secrets table.
   # Manage users via Admin → Users tab in the dashboard.
   # Google OAuth (mode: google)
   google_client_id: ""           # Set via GOOGLE_CLIENT_ID env var or here

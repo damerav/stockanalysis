@@ -40,7 +40,7 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
 - **Activate**: `source .venv/bin/activate`
 - **Note**: `lsof` is NOT installed — use `fuser -k <port>/tcp` to kill processes
 - **ML dependencies**: FinBERT (`ProsusAI/finbert`) + `transformers` + `torch` installed for NLP sentiment
-- **PostgreSQL**: Docker container `postgres` on port 5432, database `stockanalysis`, user `stockapp`, password `stockapp_secure_2024`
+- **PostgreSQL**: Docker container `postgres` on port 5432, database `stockanalysis`, user `stockapp` (password in encrypted `app_secrets` table — see `src/data/secrets_manager.py`)
 - **Ollama**: Running with `deepseek-r1:70b` (42.5GB, deep analysis) and `deepseek-r1:14b` (9GB, fast routing/tool calls)
 - **Mutagen**: Currently PAUSED — use SCP to transfer files directly
 
@@ -131,9 +131,10 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 
 ## API Keys
 
-- **FRED**: `dff4b18b046e602a474a8d1037619af1`
-- **Finnhub**: `d6dn6u9r01qm89pk83m0d6dn6u9r01qm89pk83mg`
-- **Polygon**: Not yet configured (placeholder in config.yaml)
+- **FRED**: Stored in encrypted `app_secrets` table (key: `fred_api_key`)
+- **Finnhub**: Stored in encrypted `app_secrets` table (key: `finnhub_api_key`)
+- **Polygon**: Not yet configured
+- All secrets managed via `src/data/secrets_manager.py` with Fernet encryption
 - Keys are masked in the Admin config editor with a "Reveal sensitive values" toggle
 
 ## spy_state.json Fields

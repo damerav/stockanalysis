@@ -212,6 +212,13 @@ class NewsFetcher:
                 config = yaml.safe_load(f) or {}
         self.config = config
         self.finnhub_key = config.get("finnhub", {}).get("api_key", "")
+        # Resolve from encrypted DB if placeholder
+        try:
+            from src.data.secrets_manager import get_secret
+            if not self.finnhub_key or self.finnhub_key == "FROM_ENCRYPTED_DB":
+                self.finnhub_key = get_secret("finnhub_api_key", fallback=self.finnhub_key or "")
+        except Exception:
+            pass
         from src.data.db_router import get_router
         self.router = get_router(config)
 

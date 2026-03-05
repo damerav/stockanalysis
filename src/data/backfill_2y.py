@@ -66,6 +66,13 @@ def backfill_historical(years: int = 3, config: dict = None):
     db_path = init_db(config)
     conn = get_connection(config)
     fred_key = config.get("fred", {}).get("api_key", "")
+    # Resolve from encrypted DB if placeholder
+    try:
+        from src.data.secrets_manager import get_secret
+        if not fred_key or fred_key == "FROM_ENCRYPTED_DB":
+            fred_key = get_secret("fred_api_key", fallback=fred_key or "")
+    except Exception:
+        pass
 
     try:
         router = get_router(config)

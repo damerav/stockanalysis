@@ -25,7 +25,7 @@ def get_pg_dsn(config: dict) -> str:
     port = pg.get("port", 5432)
     dbname = pg.get("dbname", "stockanalysis")
     user = pg.get("user", "stockapp")
-    password = pg.get("password", "stockapp_secure_2024")
+    password = os.environ.get("STOCKAPP_DB_PASSWORD", pg.get("password", ""))
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
 

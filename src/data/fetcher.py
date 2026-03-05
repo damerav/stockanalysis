@@ -20,6 +20,15 @@ class FallbackFetcher:
         else:
             self.finnhub_key = finnhub_key
             self.fred_key = fred_key
+        # Resolve from encrypted DB if config values are placeholders
+        try:
+            from src.data.secrets_manager import get_secret
+            if not self.finnhub_key or self.finnhub_key == "FROM_ENCRYPTED_DB":
+                self.finnhub_key = get_secret("finnhub_api_key", fallback=self.finnhub_key or "")
+            if not self.fred_key or self.fred_key == "FROM_ENCRYPTED_DB":
+                self.fred_key = get_secret("fred_api_key", fallback=self.fred_key or "")
+        except Exception:
+            pass
 
     # --- Price data fallback (yfinance) ---
 

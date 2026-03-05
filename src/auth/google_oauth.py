@@ -29,11 +29,23 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 SCOPES = "openid email profile"
 
-# Default seed users (migrated to DB on first run)
-_SEED_USERS = {
-    "admin": {"password": "admin123", "role": "admin", "name": "Administrator"},
-    "user": {"password": "user123", "role": "viewer", "name": "Default User"},
-}
+# Default seed users (passwords loaded from encrypted DB or env vars)
+def _get_seed_users() -> dict:
+    """Build seed user dict with passwords from encrypted storage."""
+    try:
+        from src.data.secrets_manager import get_secret
+        admin_pw = get_secret("seed_admin_password", fallback=os.environ.get("SEED_ADMIN_PASSWORD"))
+        user_pw = get_secret("seed_user_password", fallback=os.environ.get("SEED_USER_PASSWORD"))
+    except Exception:
+        admin_pw = os.environ.get("SEED_ADMIN_PASSWORD")
+        user_pw = os.environ.get("SEED_USER_PASSWORD")
+    if not admin_pw or not user_pw:
+        logger.warning("Seed passwords not found in encrypted DB or env vars — seeding skipped")
+        return {}
+    return {
+        "admin": {"password": admin_pw, "role": "admin", "name": "Administrator"},
+        "user": {"password": user_pw, "role": "viewer", "name": "Default User"},
+    }
 
 
 def _get_auth_config() -> dict:
@@ -51,18 +63,31 @@ def _get_auth_config() -> dict:
         cfg = {}
 
     auth = cfg.get("auth", {})
+
+    # Load secrets from encrypted DB, fall back to env vars, then config
+    try:
+        from src.data.secrets_manager import get_secret
+        session_secret = get_secret("session_secret") or os.environ.get(
+            "SESSION_SECRET", auth.get("session_secret", ""))
+        google_secret = get_secret("google_client_secret") or os.environ.get(
+            "GOOGLE_CLIENT_SECRET", auth.get("google_client_secret", ""))
+    except Exception:
+        session_secret = os.environ.get("SESSION_SECRET", auth.get("session_secret", ""))
+        google_secret = os.environ.get("GOOGLE_CLIENT_SECRET", auth.get("google_client_secret", ""))
+
+    # Warn if session secret is still a placeholder
+    if not session_secret or session_secret in ("FROM_ENCRYPTED_DB", "change-me-to-random-secret"):
+        session_secret = "stockanalysis-fallback-" + os.environ.get("HOSTNAME", "local")
+        logger.warning("No session secret configured — using hostname-derived fallback")
+
     return {
         "mode": auth.get("mode", "local"),
         "users": auth.get("users", {}),  # only used for seed migration
         "client_id": os.environ.get("GOOGLE_CLIENT_ID", auth.get("google_client_id", "")),
-        "client_secret": os.environ.get(
-            "GOOGLE_CLIENT_SECRET", auth.get("google_client_secret", "")
-        ),
+        "client_secret": google_secret,
         "allowed_domains": auth.get("allowed_domains", []),
         "allowed_emails": auth.get("allowed_emails", []),
-        "session_secret": os.environ.get(
-            "SESSION_SECRET", auth.get("session_secret", "stockanalysis-default-secret")
-        ),
+        "session_secret": session_secret,
     }
 
 
@@ -103,12 +128,13 @@ def _pg_connect():
         return None
     try:
         import psycopg2
+        password = os.environ.get("STOCKAPP_DB_PASSWORD", pg.get("password", ""))
         conn = psycopg2.connect(
             host=pg.get("host", "localhost"),
             port=pg.get("port", 5432),
             dbname=pg["dbname"],
             user=pg["user"],
-            password=pg.get("password", ""),
+            password=password,
         )
         conn.autocommit = True
         return conn
@@ -148,7 +174,7 @@ def _ensure_users_seeded():
             return
 
         cfg = _get_auth_config()
-        seed = cfg.get("users", {}) or _SEED_USERS
+        seed = cfg.get("users", {}) or _get_seed_users()
         now = datetime.now().isoformat()
         for username, data in seed.items():
             pw = data.get("password", "changeme")

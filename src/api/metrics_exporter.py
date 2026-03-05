@@ -457,11 +457,22 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
     def _get_session_secret(self):
         """Get session secret for token verification."""
+        # Try encrypted DB first, then env var, then config fallback
+        try:
+            from src.data.secrets_manager import get_secret
+            secret = get_secret("session_secret")
+            if secret:
+                return secret
+        except Exception:
+            pass
         config = _load_config()
-        return os.environ.get(
-            "SESSION_SECRET",
-            config.get("auth", {}).get("session_secret", "stockanalysis-default-secret"),
-        )
+        secret = os.environ.get("SESSION_SECRET")
+        if secret:
+            return secret
+        cfg_secret = config.get("auth", {}).get("session_secret", "")
+        if cfg_secret and cfg_secret != "FROM_ENCRYPTED_DB":
+            return cfg_secret
+        return "stockanalysis-fallback-" + os.environ.get("HOSTNAME", "local")
 
     def _verify_token(self):
         """Verify auth token from query param or header. Returns email or None."""
