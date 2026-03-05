@@ -6,14 +6,14 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.8.0 (SPY Prediction Enhancements — 65+ new features, pandas-ta technicals, multi-timeframe, social sentiment, valuation context)
+- **Current version**: v2.8.1 (Inverted Strangle Dashboard + Predictive Risk Engine + Buffett Indicator Fix)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
 ## Architecture
 
 - **206 model features** available across price, technicals (40+ via pandas-ta), macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, market breadth/fundamentals, valuation (CAPE, Buffett), multi-timeframe (weekly/monthly RSI/momentum), social sentiment (StockTwits), and sector rotation (13 ETFs) — **32 kept after aggressive feature selection** (feature selection will expand with retrain)
-- **18+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged)
+- **18+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged). Includes `inverted_strangle_positions` (27 columns) and `inverted_strangle_adjustments` (11 columns) for options strategy tracking.
 - **16-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch) and market breadth computation
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
 - **HMM regime detection**: 4 states (bull_trend, bear_trend, high_vol_choppy, low_vol_range)
@@ -106,6 +106,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/dashboard/style.css` — CSS token-based design system (dark/light theme variables, pill tabs, compact headers, sidebar styling)
 - `src/dashboard/template.py` — HTML template helpers for themed components
 - `src/dashboard/forecast_app.py` — REMOVED from navigation (vanilla LSTM, slow, duplicated ensemble predictions). File kept on disk but disconnected.
+- `src/dashboard/strangle_app.py` — Inverted Strangle with Defined Risk (6 tabs). Imported in `app.py` via `from src.dashboard.strangle_app import page_strangle`. Includes Predictive & Risk Mitigation Engine (IV Rank, VIX term structure, SKEW, spike probability). Live spot price via yfinance.
 
 ### Core Modules
 - `src/data/` — Data fetching, features (206 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, encrypted secrets management, StockTwits social sentiment (`social_fetcher.py`)
@@ -167,7 +168,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - All Plotly charts use `get_plotly_layout()` from `theme.py` (theme-aware)
 - All metric cards use `themed_metric_card()` from `theme.py`
 - `use_container_width=True` on all `st.plotly_chart()` calls
-- Navigation: `st.navigation` with pages — Markets group (SPY Predictor, Performance, ES Strategy, Tune & Backtest, What-If, Single-Stock, Quant Agent) and Operations group (Monitoring, Grafana Dashboards, Strategy Rules, Admin). Forecast page removed.
+- Navigation: `st.navigation` with pages — Markets group (SPY Predictor, Performance, ES Strategy, Inverted Strangle, Tune & Backtest, What-If, Single-Stock, Quant Agent) and Operations group (Monitoring, Grafana Dashboards, Strategy Rules, Admin). Forecast page removed.
 - ES signal feed shows human-readable descriptions (e.g., "AI Rejected Signal" instead of raw `AI_REJECT`)
 - ES regime badges use dark text on yellow/green for WCAG contrast compliance
 
@@ -280,3 +281,28 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Pipeline step 5 refactored**: Dynamic column insertion for macro data (column list + values built programmatically instead of 30+ positional placeholders).
 - **pandas-ta>=0.3.14b** added to `requirements.txt`.
 - **Total feature count**: 206 unique features in `get_feature_columns()` (up from 136).
+
+### v2.8.1 Changes (Inverted Strangle Dashboard + Predictive Risk Engine + Buffett Indicator Fix)
+
+- **Buffett Indicator fix**: FRED Wilshire 5000 series (WILL5000PR/IND/INDFC) all retired (404). Replaced with yfinance `^W5000` (Wilshire 5000 Full Cap Index, 1 index point ≈ $1B market cap). GDP still from FRED API. Formula: `(^W5000 / GDP_billions) * 100`. Validated: 216.6%.
+- **Inverted Strangle dashboard** (`src/dashboard/strangle_app.py`, ~1060 lines): Full options strategy management page with 6 tabs — Open Positions, New Trade, Prediction & Risk, History & Performance, Tracker, Strategy Guide. Sell ITM put + ITM call, buy OTM wings for defined risk. P&L curves, live Greeks via Polygon, adjustment rolls, close tracking.
+- **2 new PostgreSQL tables**: `inverted_strangle_positions` (27 columns including `position_delta`, `entry_iv_rank`, `entry_vix_term_structure`) and `inverted_strangle_adjustments` (11 columns). Schema in `init_db.py`.
+- **Predictive & Risk Mitigation Engine** (4 layers in strangle_app.py):
+  - Layer 1: IV Rank/Percentile gauge using VIX 52-week history via yfinance
+  - Layer 2: VIX term structure contango/backwardation (VIX vs VIX3M via yfinance)
+  - Layer 3: CBOE SKEW index (yfinance) + Put/Call ratio (Polygon `get_options_analytics`)
+  - Layer 4: Heuristic VIX spike probability (weighted score from VIX level, term structure, SKEW, IV Rank)
+- **Pre-trade checklist**: 3 pass/fail checks (IV Rank > 50, Contango, Spike Prob < 15%) on New Trade form.
+- **Adjustment alerts**: 21 DTE rule, 50% profit target, Delta breach (>0.30) alerts on Open Positions tab.
+- **Live spot price**: New Trade form fetches live underlying price via yfinance (`_live_spot()` with 15s cache) instead of hardcoded default.
+- **Close reason expansion**: Added "21 DTE Rule", "50% Target", "Delta Adjustment" to close reason dropdown.
+- **Greeks refresh stores delta**: Refresh Greeks button auto-stores `position_delta` to DB for alert engine.
+- **Shutdown/startup scripts**: `scripts/shutdown.sh` (kills scheduler + streamlit, frees ports, clears caches) and `scripts/startup.sh` (starts scheduler, waits for HTTP 200 health check).
+- **Navigation**: Inverted Strangle page added to Markets group after ES Strategy. Total pages: 12 (8 Markets + 4 Operations).
+
+### Dashboard Source (updated)
+- `src/dashboard/strangle_app.py` — Inverted Strangle with Defined Risk. 6 tabs: Open Positions (with adjustment alerts), New Trade (with pre-trade checklist + live spot price), Prediction & Risk (IV Rank gauge, VIX term structure, SKEW, spike probability), History & Performance (cumulative P&L, win rate), Tracker (rolling metrics, VIX regime breakdown), Strategy Guide. Imported normally in `app.py` (not inlined).
+
+### Scripts
+- `scripts/shutdown.sh` — Kills scheduler + streamlit processes, frees ports 8501/8100, clears `__pycache__` and Streamlit cache
+- `scripts/startup.sh` — Starts scheduler (`src.launcher --spy`), waits for dashboard HTTP 200 on port 8501
