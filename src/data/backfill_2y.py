@@ -78,7 +78,7 @@ def backfill_historical(years: int = 3, config: dict = None):
         router = get_router(config)
         use_duck = True
     except Exception:
-        logger.warning("DuckDB unavailable, using SQLite only")
+        logger.warning("DbRouter unavailable, using SQLite only")
         router = None
         use_duck = False
 

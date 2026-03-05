@@ -132,8 +132,94 @@ class WhatIfEngine:
 
         return {"type": "es_compare", "results": results}
 
-    def _run_es_backtest(self, cfg: dict) -> dict:
-        """Run an ES backtest with the given config. Uses synthetic data if no CSV."""
+    def es_rules_backtest(self, proposed_changes: dict) -> dict:
+        """Backtest proposed strategy rule changes vs current live rules.
+
+        Runs two backtests on the same data: one with current DB rules (baseline)
+        and one with the proposed overrides applied in-memory. Returns a
+        side-by-side comparison so the user can decide before saving.
+
+        Args:
+            proposed_changes: dict of "group.key" → new_value strings.
+                e.g. {"spread.credit_C": 12.0, "tp_high.tp1_mult": 1.8}
+
+        Returns:
+            dict with baseline and proposed backtest summaries + diff.
+        """
+        cfg = copy.deepcopy(self.config)
+
+        # Normalize keys to (group, key) tuples
+        overrides = {}
+        change_labels = []
+        for raw_key, value in proposed_changes.items():
+            if "." in raw_key:
+                group, key = raw_key.split(".", 1)
+                overrides[(group, key)] = value
+                change_labels.append(f"{group}.{key}: {value}")
+
+        if not overrides:
+            return {"error": "No valid overrides provided"}
+
+        logger.info("Rules backtest: %d changes — %s", len(overrides),
+                     ", ".join(change_labels))
+
+        # Run baseline (current DB rules, no overrides)
+        try:
+            baseline = self._run_es_backtest(cfg, rule_overrides=None)
+        except Exception as e:
+            return {"error": f"Baseline backtest failed: {e}"}
+
+        # Run proposed (same data, overrides applied in-memory)
+        try:
+            proposed = self._run_es_backtest(cfg, rule_overrides=overrides)
+        except Exception as e:
+            return {"error": f"Proposed backtest failed: {e}"}
+
+        # Compute diff
+        b_pnl = baseline.get("total_pnl", 0)
+        p_pnl = proposed.get("total_pnl", 0)
+        b_trades = baseline.get("trades", 0)
+        p_trades = proposed.get("trades", 0)
+
+        return {
+            "type": "es_rules_backtest",
+            "changes": change_labels,
+            "baseline": {
+                "label": "Current Rules",
+                "total_pnl": b_pnl,
+                "trades": b_trades,
+                **{k: v for k, v in baseline.items()
+                   if k not in ("total_pnl", "trades")},
+            },
+            "proposed": {
+                "label": "Proposed Rules",
+                "total_pnl": p_pnl,
+                "trades": p_trades,
+                **{k: v for k, v in proposed.items()
+                   if k not in ("total_pnl", "trades")},
+            },
+            "diff": {
+                "pnl_delta": round(p_pnl - b_pnl, 2),
+                "trade_delta": p_trades - b_trades,
+                "pnl_pct_change": round(
+                    ((p_pnl - b_pnl) / abs(b_pnl) * 100) if b_pnl else 0, 1
+                ),
+                "verdict": (
+                    "IMPROVED" if p_pnl > b_pnl
+                    else "DEGRADED" if p_pnl < b_pnl
+                    else "NEUTRAL"
+                ),
+            },
+        }
+
+    def _run_es_backtest(self, cfg: dict, rule_overrides: dict = None) -> dict:
+        """Run an ES backtest with the given config. Uses synthetic data if no CSV.
+
+        Args:
+            cfg: Config dict for ESRunner.
+            rule_overrides: Optional dict of (group, key) → value to patch
+                            the engine in-memory after construction.
+        """
         from src.es_strategy.runner import ESRunner
 
         # Look for a CSV file in data/
@@ -151,6 +237,11 @@ class WhatIfEngine:
             return {"total_pnl": 0, "trades": 0, "error": "no backtest data"}
 
         runner = ESRunner(cfg, mode="backtest", ai_enabled=False)
+
+        # Apply rule overrides in-memory (no DB writes)
+        if rule_overrides:
+            runner.engine.apply_overrides(rule_overrides)
+
         return runner.run_backtest(csv_path)
 
     def _generate_synthetic_bars(self) -> Optional[str]:

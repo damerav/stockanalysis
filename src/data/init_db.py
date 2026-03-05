@@ -187,6 +187,17 @@ def init_db(config: dict = None) -> str:
                         breadth_thrust REAL
                     )
                 """)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS strategy_rules_history (
+                        id SERIAL PRIMARY KEY,
+                        rule_group  TEXT NOT NULL,
+                        rule_key    TEXT NOT NULL,
+                        old_value   TEXT,
+                        new_value   TEXT NOT NULL,
+                        changed_at  TEXT NOT NULL,
+                        changed_by  TEXT NOT NULL DEFAULT 'system'
+                    )
+                """)
                 from datetime import datetime
                 _seed_strategy_rules_pg(router, datetime.now().isoformat())
                 logger.info("strategy_rules table ready in PostgreSQL")
@@ -286,6 +297,19 @@ def _migrate_schema(conn: sqlite3.Connection):
             min_val     TEXT,          max_val     TEXT,
             description TEXT,          updated_at  TEXT,
             updated_by  TEXT,          PRIMARY KEY (rule_group, rule_key)
+        )
+    """)
+
+    # Strategy rules change history (for rollback)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_rules_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_group  TEXT NOT NULL,
+            rule_key    TEXT NOT NULL,
+            old_value   TEXT,
+            new_value   TEXT NOT NULL,
+            changed_at  TEXT NOT NULL,
+            changed_by  TEXT NOT NULL DEFAULT 'system'
         )
     """)
 

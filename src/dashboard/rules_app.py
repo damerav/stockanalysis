@@ -52,6 +52,100 @@ def page_rules():
             st.success("All rules reset to factory defaults.")
             st.rerun()
 
+    # ── Backtest pending changes ──
+    st.divider()
+    st.subheader("📊 Backtest Rule Changes")
+    st.caption("Compare your pending edits against current live rules before saving.")
+
+    # Collect all pending changes across all groups
+    pending = _collect_pending_changes(all_rules)
+
+    if not pending:
+        st.info("No pending changes to backtest. Edit rules above, then come here.")
+    else:
+        st.markdown(f"**{len(pending)} pending change(s):**")
+        for label in pending.values():
+            st.markdown(f"- `{label['display']}`")
+
+        if st.button("🧪 Run Backtest: Current vs Proposed", key="run_rules_bt",
+                      type="primary"):
+            _run_rules_backtest(pending)
+
+
+def _collect_pending_changes(all_rules: dict) -> dict:
+    """Scan session_state for widget values that differ from DB values."""
+    changes = {}
+    for group, rules in all_rules.items():
+        for key, meta in rules.items():
+            widget_key = f"rule_{group}_{key}"
+            if widget_key not in st.session_state:
+                continue
+            widget_val = st.session_state[widget_key]
+            db_val = meta["value"]
+            vtype = meta["type"]
+
+            changed = False
+            if vtype == "float":
+                changed = abs(float(widget_val) - float(db_val)) > 1e-8
+            elif vtype == "int":
+                changed = int(widget_val) != int(db_val)
+            elif vtype == "bool":
+                changed = bool(widget_val) != bool(db_val)
+            else:
+                changed = str(widget_val) != str(db_val)
+
+            if changed:
+                flat_key = f"{group}.{key}"
+                changes[flat_key] = {
+                    "value": widget_val,
+                    "old": db_val,
+                    "display": f"{group}.{key}: {db_val} → {widget_val}",
+                }
+    return changes
+
+
+def _run_rules_backtest(pending: dict):
+    """Execute the What-If rules backtest and render results."""
+    from src.whatif.engine import WhatIfEngine
+
+    overrides = {k: v["value"] for k, v in pending.items()}
+
+    with st.spinner("Running backtests (current rules vs proposed)..."):
+        engine = WhatIfEngine()
+        result = engine.es_rules_backtest(overrides)
+
+    if "error" in result:
+        st.error(f"Backtest failed: {result['error']}")
+        return
+
+    baseline = result["baseline"]
+    proposed = result["proposed"]
+    diff = result["diff"]
+
+    # Verdict banner
+    verdict = diff["verdict"]
+    if verdict == "IMPROVED":
+        st.success(f"✅ Proposed rules IMPROVED P&L by ${diff['pnl_delta']:+,.0f} "
+                    f"({diff['pnl_pct_change']:+.1f}%)")
+    elif verdict == "DEGRADED":
+        st.error(f"⚠️ Proposed rules DEGRADED P&L by ${diff['pnl_delta']:+,.0f} "
+                  f"({diff['pnl_pct_change']:+.1f}%)")
+    else:
+        st.info("➖ No P&L difference between current and proposed rules.")
+
+    # Side-by-side metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Current P&L", f"${baseline['total_pnl']:+,.0f}",
+                   help=f"{baseline['trades']} trades")
+    with col2:
+        st.metric("Proposed P&L", f"${proposed['total_pnl']:+,.0f}",
+                   delta=f"${diff['pnl_delta']:+,.0f}",
+                   help=f"{proposed['trades']} trades")
+    with col3:
+        st.metric("Trade Count Δ", f"{diff['trade_delta']:+d}",
+                   help=f"Current: {baseline['trades']}, Proposed: {proposed['trades']}")
+
 
 def _render_group(group: str, rules: dict, c: dict):
     """Render editable fields for one rule group."""
@@ -107,8 +201,8 @@ def _render_group(group: str, rules: dict, c: dict):
             if new_val != str(val):
                 changes[key] = new_val
 
-    # Save + Reset buttons for this group
-    col_save, col_reset, _ = st.columns([1, 1, 3])
+    # Save + Reset + Revert buttons for this group
+    col_save, col_reset, col_revert, _ = st.columns([1, 1, 1, 2])
     with col_save:
         if st.button(f"💾 Save {group}", key=f"save_{group}"):
             if changes:
@@ -132,3 +226,34 @@ def _render_group(group: str, rules: dict, c: dict):
             rs.reset_to_defaults(group=group, updated_by="admin_ui")
             st.success(f"{group} reset to defaults.")
             st.rerun()
+    with col_revert:
+        if st.button(f"⏪ Revert {group}", key=f"revert_{group}"):
+            count = rs.revert_group(group, updated_by="admin_ui")
+            if count > 0:
+                st.success(f"Reverted {count} rule(s) in {group} to previous values.")
+                import os
+                try:
+                    with open(os.path.join("data", ".reload_rules"), "w") as f:
+                        f.write("1")
+                except Exception:
+                    pass
+                st.rerun()
+            else:
+                st.warning(f"No history found for {group} — nothing to revert.")
+
+    # Show recent history for this group
+    with st.expander(f"📜 Change History ({group})", expanded=False):
+        history = rs.get_history(group=group, limit=20)
+        if history:
+            for entry in history:
+                old_v = entry.get("old_value", "?")
+                new_v = entry.get("new_value", "?")
+                at = (entry.get("changed_at") or "")[:16]
+                by = entry.get("changed_by", "?")
+                key_name = entry.get("rule_key", "?")
+                if new_v == "RESET_TO_DEFAULT":
+                    st.caption(f"🔄 `{key_name}` reset to default (was {old_v}) — {at} by {by}")
+                else:
+                    st.caption(f"`{key_name}`: {old_v} → {new_v} — {at} by {by}")
+        else:
+            st.caption("No changes recorded yet.")

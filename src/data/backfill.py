@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def _insert_prices_duck(router, df):
-    """Insert price rows into the analytics database (PostgreSQL or DuckDB)."""
+    """Insert price rows into the database via DbRouter."""
     for _, row in df.iterrows():
         router.execute(
             """INSERT OR REPLACE INTO prices (date, open, high, low, close, volume)
@@ -24,10 +24,7 @@ def _insert_prices_duck(router, df):
 
 
 def bulk_load(days: int = 252, config: dict = None):
-    """Load historical data for initial setup.
-
-    Enhancement 26: Writes prices to DuckDB, operational data to SQLite.
-    """
+    """Load historical data for initial setup."""
     if config is None:
         config = load_config()
 
@@ -36,12 +33,12 @@ def bulk_load(days: int = 252, config: dict = None):
     conn = get_connection(config)
     logger.info(f"Database ready at {db_path}")
 
-    # Get DuckDB router
+    # Get DB router
     try:
         router = get_router(config)
         use_duck = True
     except Exception as e:
-        logger.warning(f"DuckDB unavailable, using SQLite only: {e}")
+        logger.warning(f"DbRouter unavailable, using SQLite only: {e}")
         use_duck = False
 
     api_key = config.get("polygon", {}).get("api_key", "")
@@ -130,12 +127,12 @@ def bulk_load(days: int = 252, config: dict = None):
     logger.info(f"Loaded {len(news)} news articles")
 
     # --- Summary ---
-    # Check DuckDB analytics tables
+    # Check analytics tables
     if use_duck:
         for table in ["prices", "technicals", "macro", "intraday_bars", "options_chain"]:
             count_df = router.read_analytics(f"SELECT COUNT(*) as cnt FROM {table}")
             count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
-            logger.info(f"  {table} (DuckDB): {count} rows")
+            logger.info(f"  {table}: {count} rows")
 
     # Check SQLite operational tables
     sqlite_tables = ["news", "daily_sentiment", "predictions",

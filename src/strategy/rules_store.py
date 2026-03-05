@@ -105,16 +105,32 @@ def get_all_rules() -> dict:
 
 
 def set_rule(group: str, key: str, value: Any, updated_by: str = "ui") -> bool:
-    """Update a single rule value."""
+    """Update a single rule value. Logs the old value to history for rollback."""
     try:
         r = _router()
+        # Read old value for history
+        df = r.query(
+            "SELECT rule_value FROM strategy_rules WHERE rule_group=? AND rule_key=?",
+            (group, key),
+        )
+        old_value = df.iloc[0]["rule_value"] if not df.empty else None
+
+        now = datetime.now().isoformat()
         r.execute(
             "UPDATE strategy_rules SET rule_value=?, updated_at=?, updated_by=? "
             "WHERE rule_group=? AND rule_key=?",
-            (str(value), datetime.now().isoformat(), updated_by, group, key),
+            (str(value), now, updated_by, group, key),
         )
+        # Log to history
+        if old_value is not None and str(old_value) != str(value):
+            r.execute(
+                "INSERT INTO strategy_rules_history "
+                "(rule_group, rule_key, old_value, new_value, changed_at, changed_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (group, key, str(old_value), str(value), now, updated_by),
+            )
         r.close()
-        logger.info(f"Rule updated: {group}.{key} = {value} by {updated_by}")
+        logger.info(f"Rule updated: {group}.{key} = {value} (was {old_value}) by {updated_by}")
         return True
     except Exception as e:
         logger.error(f"rules_store.set_rule({group}.{key}): {e}")
@@ -127,9 +143,28 @@ def set_group(group: str, updates: dict, updated_by: str = "ui") -> bool:
 
 
 def reset_to_defaults(group: Optional[str] = None, updated_by: str = "ui") -> bool:
-    """Reset rules to factory defaults by deleting and re-seeding."""
+    """Reset rules to factory defaults by deleting and re-seeding.
+    Logs all current values to history before resetting."""
     try:
         r = _router()
+        # Log current values to history before reset
+        if group:
+            df = r.query(
+                "SELECT rule_group, rule_key, rule_value FROM strategy_rules "
+                "WHERE rule_group=?", (group,),
+            )
+        else:
+            df = r.query("SELECT rule_group, rule_key, rule_value FROM strategy_rules")
+        now = datetime.now().isoformat()
+        for _, row in df.iterrows():
+            r.execute(
+                "INSERT INTO strategy_rules_history "
+                "(rule_group, rule_key, old_value, new_value, changed_at, changed_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row["rule_group"], row["rule_key"], row["rule_value"],
+                 "RESET_TO_DEFAULT", now, updated_by),
+            )
+        # Delete and re-seed
         if group:
             r.execute("DELETE FROM strategy_rules WHERE rule_group=?", (group,))
         else:
@@ -145,3 +180,90 @@ def reset_to_defaults(group: Optional[str] = None, updated_by: str = "ui") -> bo
     except Exception as e:
         logger.error(f"rules_store.reset_to_defaults: {e}")
         return False
+
+
+def get_history(group: str = None, key: str = None, limit: int = 50) -> list[dict]:
+    """Get change history for rules. Newest first."""
+    try:
+        r = _router()
+        if group and key:
+            df = r.query(
+                "SELECT * FROM strategy_rules_history "
+                "WHERE rule_group=? AND rule_key=? ORDER BY changed_at DESC",
+                (group, key),
+            )
+        elif group:
+            df = r.query(
+                "SELECT * FROM strategy_rules_history "
+                "WHERE rule_group=? ORDER BY changed_at DESC",
+                (group,),
+            )
+        else:
+            df = r.query(
+                "SELECT * FROM strategy_rules_history ORDER BY changed_at DESC"
+            )
+        r.close()
+        if df.empty:
+            return []
+        return df.head(limit).to_dict("records")
+    except Exception as e:
+        logger.warning(f"rules_store.get_history: {e}")
+        return []
+
+
+def revert_rule(group: str, key: str, updated_by: str = "ui") -> bool:
+    """Revert a single rule to its previous value from history."""
+    try:
+        history = get_history(group, key, limit=1)
+        if not history:
+            logger.warning(f"No history for {group}.{key} — nothing to revert")
+            return False
+        entry = history[0]
+        old_val = entry.get("old_value")
+        if old_val is None or old_val == "RESET_TO_DEFAULT":
+            logger.warning(f"Cannot revert {group}.{key} — previous was a reset")
+            return False
+        return set_rule(group, key, old_val, updated_by=f"revert:{updated_by}")
+    except Exception as e:
+        logger.error(f"rules_store.revert_rule({group}.{key}): {e}")
+        return False
+
+
+def revert_group(group: str, updated_by: str = "ui") -> int:
+    """Revert all rules in a group to their most recent previous values.
+    Returns count of rules reverted."""
+    try:
+        r = _router()
+        # Get the latest history entry per key in this group
+        df = r.query(
+            "SELECT DISTINCT ON (rule_key) rule_key, old_value, changed_at "
+            "FROM strategy_rules_history WHERE rule_group=? "
+            "ORDER BY rule_key, changed_at DESC",
+            (group,),
+        )
+        r.close()
+        if df.empty:
+            # Fallback for SQLite (no DISTINCT ON)
+            r2 = _router()
+            df = r2.query(
+                "SELECT rule_key, old_value, changed_at FROM strategy_rules_history "
+                "WHERE rule_group=? ORDER BY changed_at DESC",
+                (group,),
+            )
+            r2.close()
+            if df.empty:
+                return 0
+            # Deduplicate: keep first (most recent) per key
+            df = df.drop_duplicates(subset=["rule_key"], keep="first")
+
+        count = 0
+        for _, row in df.iterrows():
+            old_val = row["old_value"]
+            if old_val and old_val != "RESET_TO_DEFAULT":
+                if set_rule(group, row["rule_key"], old_val,
+                            updated_by=f"revert:{updated_by}"):
+                    count += 1
+        return count
+    except Exception as e:
+        logger.error(f"rules_store.revert_group({group}): {e}")
+        return 0

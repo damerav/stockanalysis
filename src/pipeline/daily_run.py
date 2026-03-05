@@ -216,7 +216,7 @@ class DailyPipeline:
         return result or {"no_prediction": True}
 
     def _step2_prices(self) -> dict:
-        """Step 2: Fetch today's daily prices. Enhancement 26: Writes to DuckDB."""
+        """Step 2: Fetch today's daily prices."""
         def _write_price(row):
             if self.router:
                 self.router.write_analytics(
@@ -531,7 +531,7 @@ class DailyPipeline:
 
 
     def _step6_options_chain(self) -> dict:
-        """Step 6: Fetch options chain snapshot. Enhancement 26: Writes to DuckDB."""
+        """Step 6: Fetch options chain snapshot."""
         if not self.polygon:
             return {"skipped": True, "reason": "no polygon key"}
         try:
@@ -594,7 +594,7 @@ class DailyPipeline:
             return {"error": str(e)}
 
     def _step8_technicals(self) -> dict:
-        """Step 8: Compute daily technicals. Enhancement 26: Reads prices from DuckDB."""
+        """Step 8: Compute daily technicals."""
         if self.router:
             df = self.router.read_analytics(
                 "SELECT date, open, high, low, close, volume FROM prices ORDER BY date"
@@ -610,7 +610,7 @@ class DailyPipeline:
         return {"rows": len(tech_df)}
 
     def _step9_intraday(self) -> dict:
-        """Step 9: Build intraday features. Enhancement 26: Reads intraday_bars from DuckDB."""
+        """Step 9: Build intraday features."""
         # Check if we have intraday bars for today
         bar_count = 0
         if self.router:

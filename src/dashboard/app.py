@@ -906,11 +906,14 @@ def page_whatif():
 def _whatif_es_tab(engine: WhatIfEngine):
     scenario = st.selectbox(
         "Scenario Type",
-        ["K/C Sweep", "Lot Sizing", "Risk Limits", "Custom Compare"],
+        ["Rules What-If", "K/C Sweep", "Lot Sizing", "Risk Limits", "Custom Compare"],
         key="es_scenario",
     )
 
-    if scenario == "K/C Sweep":
+    if scenario == "Rules What-If":
+        _whatif_rules(engine)
+
+    elif scenario == "K/C Sweep":
         st.subheader("Keltner Channel Parameter Sweep")
         col1, col2 = st.columns(2)
         with col1:
@@ -967,6 +970,118 @@ def _whatif_es_tab(engine: WhatIfEngine):
             with st.spinner("Running backtests..."):
                 result = engine.es_compare_scenarios(scenarios)
             _render_comparison_bar(result)
+
+
+def _whatif_rules(engine: WhatIfEngine):
+    """Rules-aware What-If: load rules, let user tweak, backtest."""
+    from src.strategy import rules_store as rs
+
+    st.subheader("Strategy Rules What-If")
+    st.caption("Tweak any rule below and backtest against current live settings. "
+               "Nothing is saved — this is simulation only.")
+
+    all_rules = rs.get_all_rules()
+    if not all_rules:
+        st.warning("No rules in database.")
+        return
+
+    groups = sorted(all_rules.keys())
+    selected_groups = st.multiselect(
+        "Rule groups to edit", groups,
+        default=[g for g in ["spread", "tp_high", "risk"] if g in groups],
+        key="wi_rule_groups",
+    )
+    if not selected_groups:
+        st.info("Select at least one rule group above.")
+        return
+
+    proposed = {}
+    for group in selected_groups:
+        rules = all_rules[group]
+        st.markdown(f"**{group}**")
+        cols = st.columns(min(len(rules), 4))
+        for i, (key, meta) in enumerate(rules.items()):
+            col = cols[i % len(cols)]
+            val, vtype = meta["value"], meta["type"]
+            wk = f"wi_{group}_{key}"
+            desc = meta.get("description", "")
+            with col:
+                if vtype == "float":
+                    nv = st.number_input(key, value=float(val), step=0.01,
+                                         format="%.4f", key=wk, help=desc)
+                    if abs(nv - float(val)) > 1e-8:
+                        proposed[f"{group}.{key}"] = nv
+                elif vtype == "int":
+                    nv = st.number_input(key, value=int(val), step=1, key=wk, help=desc)
+                    if nv != int(val):
+                        proposed[f"{group}.{key}"] = nv
+                elif vtype == "bool":
+                    nv = st.checkbox(key, value=bool(val), key=wk, help=desc)
+                    if nv != bool(val):
+                        proposed[f"{group}.{key}"] = nv
+                else:
+                    nv = st.text_input(key, value=str(val), key=wk, help=desc)
+                    if nv != str(val):
+                        proposed[f"{group}.{key}"] = nv
+
+    st.divider()
+    if not proposed:
+        st.info("Change any rule value above to enable backtesting.")
+        return
+
+    st.markdown(f"**{len(proposed)} proposed change(s):**")
+    for k, v in proposed.items():
+        g, ky = k.split(".", 1)
+        old = all_rules[g][ky]["value"]
+        st.markdown(f"- `{k}`: {old} → **{v}**")
+
+    if st.button("🧪 Backtest: Current vs Proposed", key="wi_run_bt", type="primary"):
+        with st.spinner("Running two backtests (current rules vs proposed)..."):
+            result = engine.es_rules_backtest(proposed)
+        _whatif_rules_result(result)
+
+
+def _whatif_rules_result(result: dict):
+    """Render side-by-side backtest comparison for rules what-if."""
+    if "error" in result:
+        st.error(f"Backtest failed: {result['error']}")
+        return
+
+    baseline = result["baseline"]
+    proposed = result["proposed"]
+    diff = result["diff"]
+
+    verdict = diff["verdict"]
+    if verdict == "IMPROVED":
+        st.success(f"✅ Proposed rules IMPROVED P&L by ${diff['pnl_delta']:+,.0f} "
+                    f"({diff['pnl_pct_change']:+.1f}%)")
+    elif verdict == "DEGRADED":
+        st.error(f"⚠️ Proposed rules DEGRADED P&L by ${diff['pnl_delta']:+,.0f} "
+                  f"({diff['pnl_pct_change']:+.1f}%)")
+    else:
+        st.info("➖ No P&L difference between current and proposed rules.")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Current P&L", f"${baseline['total_pnl']:+,.0f}",
+                   help=f"{baseline['trades']} trades")
+    with col2:
+        st.metric("Proposed P&L", f"${proposed['total_pnl']:+,.0f}",
+                   delta=f"${diff['pnl_delta']:+,.0f}",
+                   help=f"{proposed['trades']} trades")
+    with col3:
+        st.metric("Trade Count Δ", f"{diff['trade_delta']:+d}",
+                   help=f"Current: {baseline['trades']}, Proposed: {proposed['trades']}")
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Current", x=["P&L", "Trades"],
+                         y=[baseline["total_pnl"], baseline["trades"]],
+                         marker_color="#2962FF"))
+    fig.add_trace(go.Bar(name="Proposed", x=["P&L", "Trades"],
+                         y=[proposed["total_pnl"], proposed["trades"]],
+                         marker_color="#26A69A"))
+    fig.update_layout(barmode="group", title="Current vs Proposed Rules", height=350)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def _whatif_spy_tab(engine: WhatIfEngine):

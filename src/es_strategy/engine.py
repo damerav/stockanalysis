@@ -437,6 +437,92 @@ class ESStrategyEngine:
         self.C = credit_C
         logger.info(f"Spread updated: K={strike_K}, C={credit_C}")
         return True
+    # Mapping from (rule_group, rule_key) → engine attribute path
+    _RULE_ATTR_MAP = {
+        ("spread", "credit_C"): "C",
+        ("spread", "strike_K"): "K",
+        ("sizing", "max_lots"): "max_lots",
+        ("entry", "anti_chase_atr_pct"): "_anti_chase_atr_pct",
+        ("entry", "phase2_enabled"): "_phase2_enabled",
+        ("entry", "phase2_min_filters"): "_phase2_min_filters",
+        ("entry", "phase2_roc_threshold"): "_phase2_roc_threshold",
+        ("risk", "jump_exit_points"): "jump_exit_pts",
+        ("risk", "emergency_stop_pct"): "emergency_stop_pct",
+        ("risk", "circuit_breaker_usd"): "circuit_breaker_usd",
+        ("session", "session_close_ct"): "session_close_ct",
+        ("session", "session_reset_ct"): "session_reset_ct",
+        ("ai", "ai_enabled"): "ai_enabled",
+        ("ai", "trail_ai_enabled"): "_trail_ai_enabled",
+    }
+
+    def apply_overrides(self, overrides: dict):
+        """Apply rule overrides in-memory without touching the database.
+
+        Args:
+            overrides: dict keyed by (group, key) tuples or flat "group.key" strings.
+                       Values are the desired parameter values.
+
+        Example:
+            engine.apply_overrides({
+                ("spread", "credit_C"): 12.0,
+                ("tp_high", "tp1_mult"): 1.8,
+            })
+        """
+        for raw_key, value in overrides.items():
+            # Normalize key to (group, key) tuple
+            if isinstance(raw_key, str) and "." in raw_key:
+                group, key = raw_key.split(".", 1)
+            elif isinstance(raw_key, (tuple, list)) and len(raw_key) == 2:
+                group, key = raw_key
+            else:
+                continue
+
+            # Direct attribute mapping
+            attr = self._RULE_ATTR_MAP.get((group, key))
+            if attr:
+                setattr(self, attr, value)
+                continue
+
+            # TP multiplier groups
+            if group in ("tp_low", "tp_med", "tp_high"):
+                regime_label = {"tp_low": "Low", "tp_med": "Med", "tp_high": "High"}[group]
+                if regime_label in self._tp_multipliers:
+                    tp_key_map = {"tp1_mult": "tp1", "tp2_mult": "tp2",
+                                  "runner_trail_mult": "runner_trail"}
+                    mapped = tp_key_map.get(key)
+                    if mapped:
+                        self._tp_multipliers[regime_label][mapped] = value
+                continue
+
+            # Regime detector params
+            if group == "regime":
+                if key == "lookback_minutes":
+                    self.regime_detector.lookback = int(value)
+                elif key == "pct_low":
+                    self.regime_detector.pct_low = int(value)
+                elif key == "pct_high":
+                    self.regime_detector.pct_high = int(value)
+                continue
+
+            # RL agent params (rebuild agent with new params)
+            if group == "rl":
+                rl_map = {"rl_alpha": "alpha", "rl_gamma": "gamma",
+                          "rl_epsilon": "epsilon", "rl_lambda_dd": "lambda_dd"}
+                rl_attr = rl_map.get(key)
+                if rl_attr:
+                    setattr(self.rl_trail, rl_attr, value)
+                continue
+
+            # AI thresholds
+            if group == "ai":
+                if key == "entry_conf_threshold":
+                    # Stored externally in AILayer, not engine — skip for backtest
+                    pass
+                elif key == "ai_fail_closed":
+                    pass  # AILayer config
+                continue
+
+
 
     def save_rl_agent(self):
         """Save RL trailing agent Q-table."""

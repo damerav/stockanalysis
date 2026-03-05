@@ -52,11 +52,14 @@ def main():
 def render_es_tab(engine: WhatIfEngine):
     scenario = st.selectbox(
         "Scenario Type",
-        ["K/C Sweep", "Lot Sizing", "Risk Limits", "Custom Compare"],
+        ["Rules What-If", "K/C Sweep", "Lot Sizing", "Risk Limits", "Custom Compare"],
         key="es_scenario",
     )
 
-    if scenario == "K/C Sweep":
+    if scenario == "Rules What-If":
+        _render_rules_whatif(engine)
+
+    elif scenario == "K/C Sweep":
         st.subheader("Keltner Channel Parameter Sweep")
         col1, col2 = st.columns(2)
         with col1:
@@ -118,6 +121,148 @@ def render_es_tab(engine: WhatIfEngine):
             with st.spinner("Running backtests..."):
                 result = engine.es_compare_scenarios(scenarios)
             _render_comparison_bar(result)
+
+
+def _render_rules_whatif(engine: WhatIfEngine):
+    """Full rules-aware What-If: load all 42 rules, let user tweak, backtest."""
+    from src.strategy import rules_store as rs
+
+    st.subheader("Strategy Rules What-If")
+    st.caption("Tweak any rule below and backtest against current live settings. "
+               "Nothing is saved — this is simulation only.")
+
+    all_rules = rs.get_all_rules()
+    if not all_rules:
+        st.warning("No rules in database.")
+        return
+
+    # Group selector
+    groups = sorted(all_rules.keys())
+    selected_groups = st.multiselect(
+        "Rule groups to edit",
+        groups,
+        default=["spread", "tp_high", "risk"],
+        key="wi_rule_groups",
+    )
+
+    if not selected_groups:
+        st.info("Select at least one rule group above.")
+        return
+
+    # Render editable fields for selected groups
+    proposed = {}
+    for group in selected_groups:
+        rules = all_rules[group]
+        st.markdown(f"**{group}**")
+        cols = st.columns(min(len(rules), 4))
+        for i, (key, meta) in enumerate(rules.items()):
+            col = cols[i % len(cols)]
+            val = meta["value"]
+            vtype = meta["type"]
+            widget_key = f"wi_{group}_{key}"
+            desc = meta.get("description", "")
+
+            with col:
+                if vtype == "float":
+                    new_val = st.number_input(
+                        f"{key}", value=float(val), step=0.01,
+                        format="%.4f", key=widget_key, help=desc,
+                    )
+                    if abs(new_val - float(val)) > 1e-8:
+                        proposed[f"{group}.{key}"] = new_val
+                elif vtype == "int":
+                    new_val = st.number_input(
+                        f"{key}", value=int(val), step=1,
+                        key=widget_key, help=desc,
+                    )
+                    if new_val != int(val):
+                        proposed[f"{group}.{key}"] = new_val
+                elif vtype == "bool":
+                    new_val = st.checkbox(
+                        f"{key}", value=bool(val), key=widget_key, help=desc,
+                    )
+                    if new_val != bool(val):
+                        proposed[f"{group}.{key}"] = new_val
+                else:
+                    new_val = st.text_input(
+                        f"{key}", value=str(val), key=widget_key, help=desc,
+                    )
+                    if new_val != str(val):
+                        proposed[f"{group}.{key}"] = new_val
+
+    # Show pending changes and run button
+    st.divider()
+    if not proposed:
+        st.info("Change any rule value above to enable backtesting.")
+        return
+
+    st.markdown(f"**{len(proposed)} proposed change(s):**")
+    for k, v in proposed.items():
+        group, key = k.split(".", 1)
+        old = all_rules[group][key]["value"]
+        st.markdown(f"- `{k}`: {old} → **{v}**")
+
+    if st.button("🧪 Backtest: Current vs Proposed", key="wi_run_bt", type="primary"):
+        with st.spinner("Running two backtests (current rules vs proposed)..."):
+            result = engine.es_rules_backtest(proposed)
+        _render_rules_backtest_result(result)
+
+
+def _render_rules_backtest_result(result: dict):
+    """Render the side-by-side backtest comparison."""
+    if "error" in result:
+        st.error(f"Backtest failed: {result['error']}")
+        return
+
+    baseline = result["baseline"]
+    proposed = result["proposed"]
+    diff = result["diff"]
+
+    # Verdict banner
+    verdict = diff["verdict"]
+    if verdict == "IMPROVED":
+        st.success(f"✅ Proposed rules IMPROVED P&L by ${diff['pnl_delta']:+,.0f} "
+                    f"({diff['pnl_pct_change']:+.1f}%)")
+    elif verdict == "DEGRADED":
+        st.error(f"⚠️ Proposed rules DEGRADED P&L by ${diff['pnl_delta']:+,.0f} "
+                  f"({diff['pnl_pct_change']:+.1f}%)")
+    else:
+        st.info("➖ No P&L difference between current and proposed rules.")
+
+    # Side-by-side metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Current P&L", f"${baseline['total_pnl']:+,.0f}",
+                   help=f"{baseline['trades']} trades")
+    with col2:
+        st.metric("Proposed P&L", f"${proposed['total_pnl']:+,.0f}",
+                   delta=f"${diff['pnl_delta']:+,.0f}",
+                   help=f"{proposed['trades']} trades")
+    with col3:
+        st.metric("Trade Count Δ", f"{diff['trade_delta']:+d}",
+                   help=f"Current: {baseline['trades']}, Proposed: {proposed['trades']}")
+
+    # Bar chart comparison
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Current", x=["P&L", "Trades"],
+        y=[baseline["total_pnl"], baseline["trades"]],
+        marker_color="#2962FF",
+    ))
+    fig.add_trace(go.Bar(
+        name="Proposed", x=["P&L", "Trades"],
+        y=[proposed["total_pnl"], proposed["trades"]],
+        marker_color="#26A69A",
+    ))
+    fig.update_layout(barmode="group", title="Current vs Proposed Rules", height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Changes applied
+    changes = result.get("changes", [])
+    if changes:
+        with st.expander("Changes tested", expanded=False):
+            for c in changes:
+                st.markdown(f"- `{c}`")
 
 
 def _render_sweep_heatmap(result: dict, c_vals: list, k_vals: list):
