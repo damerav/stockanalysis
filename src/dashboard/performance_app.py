@@ -268,8 +268,9 @@ def page_performance():
                         line=dict(width=2)),
         ), secondary_y=False)
 
+    _pva_layout = {k: v for k, v in layout.items() if k != "legend"}
     fig_pva.update_layout(
-        **layout, height=420, xaxis_rangeslider_visible=False,
+        **_pva_layout, height=420, xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1),
     )
