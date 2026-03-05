@@ -151,6 +151,91 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
     result["stoch_k"] = stoch_k
     result["stoch_d"] = stoch_d
 
+    # --- Comprehensive technicals via pandas-ta ---
+    try:
+        import pandas_ta as ta
+        pta_df = df[["open", "high", "low", "close", "volume"]].copy()
+        pta_df.columns = ["Open", "High", "Low", "Close", "Volume"]
+        H, L, C, V = pta_df["High"], pta_df["Low"], pta_df["Close"], pta_df["Volume"]
+
+        # Trend
+        _adx = ta.adx(H, L, C, length=14)
+        if _adx is not None:
+            result["adx_14"] = _adx.iloc[:, 0]  # ADX column
+        _aroon = ta.aroon(H, L, length=14)
+        if _aroon is not None:
+            result["aroon_up"] = _aroon.iloc[:, 0]
+            result["aroon_down"] = _aroon.iloc[:, 1]
+        result["cci_20"] = ta.cci(H, L, C, length=20)
+        _psar = ta.psar(H, L, C)
+        if _psar is not None:
+            result["psar_long"] = _psar.iloc[:, 0]
+            result["psar_short"] = _psar.iloc[:, 1]
+        result["dpo_20"] = ta.dpo(C, length=20)
+        _trix = ta.trix(C, length=14)
+        if _trix is not None:
+            result["trix_14"] = _trix.iloc[:, 0]
+        _vortex = ta.vortex(H, L, C, length=14)
+        if _vortex is not None:
+            result["vortex_pos"] = _vortex.iloc[:, 0]
+            result["vortex_neg"] = _vortex.iloc[:, 1]
+
+        # Momentum
+        result["williams_r"] = ta.willr(H, L, C, length=14)
+        result["mfi_14"] = ta.mfi(H, L, C, V, length=14)
+        result["rsi_2"] = ta.rsi(C, length=2)
+        result["rsi_9"] = ta.rsi(C, length=9)
+        result["rsi_21"] = ta.rsi(C, length=21)
+        result["cmo_14"] = ta.cmo(C, length=14)
+        _ppo = ta.ppo(C)
+        if _ppo is not None:
+            result["ppo"] = _ppo.iloc[:, 0]
+        result["roc_5"] = ta.roc(C, length=5)
+        result["roc_21"] = ta.roc(C, length=21)
+
+        # Volatility
+        _kc = ta.kc(H, L, C, length=20)
+        if _kc is not None:
+            result["kc_upper_20"] = _kc.iloc[:, 0]
+            result["kc_lower_20"] = _kc.iloc[:, 2]
+        result["atr_7"] = ta.atr(H, L, C, length=7)
+        result["atr_21"] = ta.atr(H, L, C, length=21)
+        _dc = ta.donchian(H, L, length=20)
+        if _dc is not None:
+            result["donchian_high"] = _dc.iloc[:, 0]
+            result["donchian_low"] = _dc.iloc[:, 2]
+        result["ulcer_14"] = ta.ui(C, length=14)
+
+        # Volume
+        result["cmf_20"] = ta.cmf(H, L, C, V, length=20)
+        result["vwma_20"] = ta.vwma(C, V, length=20)
+        result["eom_14"] = ta.eom(H, L, C, V, length=14)
+
+        # Moving Averages
+        result["ema_9"] = ta.ema(C, length=9)
+        result["ema_21"] = ta.ema(C, length=21)
+        result["ema_200"] = ta.ema(C, length=200)
+        result["hma_20"] = ta.hma(C, length=20)
+        result["wma_20"] = ta.wma(C, length=20)
+        result["dema_20"] = ta.dema(C, length=20)
+        result["tema_20"] = ta.tema(C, length=20)
+        result["kama_10"] = ta.kama(C, length=10)
+
+        # Ichimoku Cloud
+        _ichi = ta.ichimoku(H, L, C)
+        if _ichi is not None and isinstance(_ichi, tuple) and len(_ichi) >= 1:
+            ichi_df = _ichi[0]
+            for src_col, dst_col in [("ITS_9", "ichi_tenkan"), ("IKS_26", "ichi_kijun"),
+                                      ("ISA_9", "ichi_senkou_a"), ("ISB_26", "ichi_senkou_b")]:
+                if src_col in ichi_df.columns:
+                    result[dst_col] = ichi_df[src_col]
+
+        logger.debug("pandas-ta indicators computed")
+    except ImportError:
+        logger.warning("pandas-ta not installed — skipping comprehensive technicals")
+    except Exception as e:
+        logger.warning("pandas-ta computation failed: %s", e)
+
     return result
 
 
@@ -513,9 +598,12 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
     # Fill forward macro data (reported less frequently)
     macro_cols = ["vix", "vix_change", "us10y_yield", "dxy", "fed_funds", "gold", "crude",
+                  "us3m_yield", "yield_curve_10y3m", "sahm_rule", "consumer_conf", "ism_pmi",
                   "vix9d", "vix3m", "vix6m", "vvix", "skew_index",
                   "hy_spread", "tlt_spy_ratio", "eem_spy_ratio",
-                  "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio"]
+                  "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio",
+                  "xlk", "xlf", "xle",
+                  "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia"]
     for col in macro_cols:
         if col in df.columns:
             df[col] = df[col].ffill().infer_objects(copy=False)
@@ -726,6 +814,128 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
+    # --- Earnings Yield Gap (SPY earnings yield vs. 10Y Treasury) ---
+    # "Fed Model" — positive gap means equities cheap vs. bonds
+    try:
+        if "sp500_earnings_yield" in df.columns and "us10y_yield" in df.columns:
+            df["earnings_yield_gap"] = (
+                df["sp500_earnings_yield"] - (df["us10y_yield"] / 100.0)
+            ).round(4)
+        else:
+            df["earnings_yield_gap"] = 0.0
+    except Exception as e:
+        logger.warning("Earnings yield gap failed: %s", e)
+        df["earnings_yield_gap"] = 0.0
+
+    # --- Extended Sector Rotation Ratios ---
+    try:
+        # Defensive vs. Offensive: (XLU + XLP) / (XLY + XLK)
+        if all(c in df.columns for c in ["xlu", "xlp", "xly", "xlk"]):
+            df["defensive_offensive_ratio"] = (
+                (df["xlu"] + df["xlp"]) / (df["xly"] + df["xlk"] + 1e-9)
+            ).round(4)
+        else:
+            df["defensive_offensive_ratio"] = 0.0
+        # QQQ vs. IWM (growth vs. small cap risk)
+        if "qqq" in df.columns and "iwm" in df.columns:
+            df["qqq_iwm_ratio"] = (df["qqq"] / df["iwm"].replace(0, np.nan)).round(4).fillna(1.0)
+        else:
+            df["qqq_iwm_ratio"] = 1.0
+        # Healthcare vs. Energy (defensive vs. cyclical)
+        if "xlv" in df.columns and "xle" in df.columns:
+            df["xlv_xle_ratio"] = (df["xlv"] / df["xle"].replace(0, np.nan)).round(4).fillna(1.0)
+        else:
+            df["xlv_xle_ratio"] = 1.0
+    except Exception as e:
+        logger.warning("Sector rotation features failed: %s", e)
+        df["defensive_offensive_ratio"] = 0.0
+        df["qqq_iwm_ratio"] = 1.0
+        df["xlv_xle_ratio"] = 1.0
+
+    # --- Multi-Timeframe Technical Features ---
+    try:
+        price_idx = df.set_index(pd.to_datetime(df["date"]))[["open", "high", "low", "close", "volume"]]
+        weekly = price_idx.resample("W").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum"
+        }).dropna()
+        monthly = price_idx.resample("ME").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum"
+        }).dropna()
+
+        if len(weekly) >= 14:
+            w_rsi = compute_rsi(weekly["close"], 14)
+            w_rsi_map = pd.Series(w_rsi.values, index=weekly.index.strftime("%Y-%m-%d"))
+            df["weekly_rsi"] = df["date"].map(w_rsi_map).ffill()
+            w_mom = weekly["close"].pct_change(5)
+            w_mom_map = pd.Series(w_mom.values, index=weekly.index.strftime("%Y-%m-%d"))
+            df["weekly_momentum_5w"] = df["date"].map(w_mom_map).ffill()
+            _, _, w_macd_hist = compute_macd(weekly["close"])
+            w_mh_map = pd.Series(w_macd_hist.values, index=weekly.index.strftime("%Y-%m-%d"))
+            df["weekly_macd_hist"] = df["date"].map(w_mh_map).ffill()
+
+        if len(monthly) >= 12:
+            m_rsi = compute_rsi(monthly["close"], 14)
+            m_rsi_map = pd.Series(m_rsi.values, index=monthly.index.strftime("%Y-%m-%d"))
+            df["monthly_rsi"] = df["date"].map(m_rsi_map).ffill()
+            m_mom = monthly["close"].pct_change(3)
+            m_mom_map = pd.Series(m_mom.values, index=monthly.index.strftime("%Y-%m-%d"))
+            df["monthly_momentum_3m"] = df["date"].map(m_mom_map).ffill()
+
+        for col in ["weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
+                     "monthly_rsi", "monthly_momentum_3m"]:
+            if col in df.columns:
+                df[col] = df[col].bfill().fillna(0)
+            else:
+                df[col] = 0.0
+        logger.debug("Multi-timeframe features computed")
+    except Exception as e:
+        logger.warning("Multi-timeframe features failed: %s", e)
+        for col in ["weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
+                     "monthly_rsi", "monthly_momentum_3m"]:
+            df[col] = 0.0
+
+    # --- StockTwits Social Sentiment ---
+    try:
+        from src.data.social_fetcher import get_stocktwits_sentiment
+        st_data = get_stocktwits_sentiment("SPY")
+        for col in ["st_bullish_pct", "st_bearish_pct", "st_bull_bear_ratio", "st_message_volume"]:
+            df[col] = st_data.get(col, 0.0)
+        logger.debug("StockTwits sentiment: bull=%.2f", st_data.get("st_bullish_pct", 0))
+    except Exception as e:
+        logger.warning("StockTwits features failed: %s", e)
+        for col in ["st_bullish_pct", "st_bearish_pct", "st_bull_bear_ratio", "st_message_volume"]:
+            df[col] = 0.0
+
+    # --- CAPE and Buffett from market_breadth table ---
+    try:
+        cape_df = router.query(
+            "SELECT date, sp500_cape, buffett_indicator FROM market_breadth ORDER BY date"
+        )
+        if not cape_df.empty:
+            df = df.merge(cape_df, on="date", how="left")
+            for col in ["sp500_cape", "buffett_indicator"]:
+                if col in df.columns:
+                    df[col] = df[col].ffill().fillna(0)
+        else:
+            df["sp500_cape"] = 0.0
+            df["buffett_indicator"] = 0.0
+    except Exception as e:
+        logger.debug("CAPE/Buffett features failed: %s", e)
+        df["sp500_cape"] = 0.0
+        df["buffett_indicator"] = 0.0
+
+    # Fill NaN for all v2.8 features
+    v28_cols = ["earnings_yield_gap", "defensive_offensive_ratio", "qqq_iwm_ratio",
+                "xlv_xle_ratio", "weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
+                "monthly_rsi", "monthly_momentum_3m", "st_bullish_pct", "st_bearish_pct",
+                "st_bull_bear_ratio", "st_message_volume", "sp500_cape", "buffett_indicator",
+                "us3m_yield", "yield_curve_10y3m", "sahm_rule", "consumer_conf", "ism_pmi"]
+    for col in v28_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+
     return df
 
 
@@ -801,6 +1011,30 @@ def get_feature_columns() -> list[str]:
         # Market breadth
         "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
         "new_highs_52w", "new_lows_52w", "breadth_thrust",
+        # v2.8: Macro / Valuation
+        "sp500_cape", "buffett_indicator",
+        "sahm_rule", "yield_curve_10y3m", "us3m_yield",
+        "consumer_conf", "ism_pmi", "earnings_yield_gap",
+        # v2.8: Comprehensive Technicals (pandas-ta)
+        "adx_14", "cci_20", "aroon_up", "aroon_down",
+        "psar_long", "psar_short", "dpo_20", "trix_14",
+        "vortex_pos", "vortex_neg", "williams_r", "mfi_14",
+        "rsi_2", "rsi_9", "rsi_21", "cmo_14", "ppo",
+        "roc_5", "roc_21",
+        "kc_upper_20", "kc_lower_20", "atr_7", "atr_21",
+        "donchian_high", "donchian_low", "ulcer_14",
+        "cmf_20", "vwma_20", "eom_14",
+        "ema_9", "ema_21", "ema_200",
+        "hma_20", "wma_20", "dema_20", "tema_20", "kama_10",
+        "ichi_tenkan", "ichi_kijun", "ichi_senkou_a", "ichi_senkou_b",
+        # v2.8: Multi-Timeframe
+        "weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
+        "monthly_rsi", "monthly_momentum_3m",
+        # v2.8: Social Sentiment
+        "st_bullish_pct", "st_bearish_pct", "st_bull_bear_ratio", "st_message_volume",
+        # v2.8: Sector Rotation
+        "defensive_offensive_ratio", "qqq_iwm_ratio", "xlv_xle_ratio",
+        "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia",
     ]
 
 

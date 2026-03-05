@@ -105,6 +105,8 @@ def fetch_index_fundamentals() -> dict:
         "sp500_forward_pe": None,
         "sp500_earnings_yield": None,
         "sp500_dividend_yield": None,
+        "sp500_cape": None,
+        "buffett_indicator": None,
     }
     try:
         import yfinance as yf
@@ -129,6 +131,48 @@ def fetch_index_fundamentals() -> dict:
                      result["sp500_dividend_yield"] or 0)
     except Exception as e:
         logger.warning("fetch_index_fundamentals failed: %s", e)
+
+    # --- Shiller CAPE Ratio (from Shiller's dataset via datahub.io) ---
+    try:
+        cape_url = "https://datahub.io/core/s-and-p-500/r/data.csv"
+        cape_df = pd.read_csv(cape_url, timeout=15)
+        cape_col = next((c for c in cape_df.columns if "PE10" in c.upper() or "CAPE" in c.upper()), None)
+        if cape_col:
+            cape_df[cape_col] = pd.to_numeric(cape_df[cape_col], errors="coerce")
+            cape_df = cape_df.dropna(subset=[cape_col])
+            if not cape_df.empty:
+                result["sp500_cape"] = round(float(cape_df[cape_col].iloc[-1]), 2)
+                logger.info("Shiller CAPE: %.2f", result["sp500_cape"])
+    except Exception as e:
+        logger.warning("CAPE fetch failed: %s", e)
+
+    # --- Buffett Indicator: Wilshire 5000 / GDP (from FRED CSV, free) ---
+    try:
+        w5000_df = pd.read_csv(
+            "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WILL5000PR",
+            timeout=15
+        )
+        w5000_df.columns = ["date", "value"]
+        w5000_df["value"] = pd.to_numeric(w5000_df["value"], errors="coerce")
+        w5000_df = w5000_df.dropna(subset=["value"])
+
+        gdp_df = pd.read_csv(
+            "https://fred.stlouisfed.org/graph/fredgraph.csv?id=GDP",
+            timeout=15
+        )
+        gdp_df.columns = ["date", "gdp"]
+        gdp_df["gdp"] = pd.to_numeric(gdp_df["gdp"], errors="coerce")
+        gdp_df = gdp_df.dropna(subset=["gdp"])
+
+        if not w5000_df.empty and not gdp_df.empty:
+            latest_w5000 = float(w5000_df["value"].iloc[-1])
+            latest_gdp = float(gdp_df["gdp"].iloc[-1])
+            if latest_gdp > 0:
+                result["buffett_indicator"] = round((latest_w5000 / latest_gdp) * 100, 2)
+                logger.info("Buffett Indicator: %.1f%%", result["buffett_indicator"])
+    except Exception as e:
+        logger.warning("Buffett Indicator fetch failed: %s", e)
+
     return result
 
 
@@ -259,7 +303,8 @@ def store_breadth_fundamentals(router, date: str, fundamentals: dict, breadth: d
     merged = {**fundamentals, **breadth}
     cols = ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield", "sp500_dividend_yield",
             "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
-            "new_highs_52w", "new_lows_52w", "breadth_thrust"]
+            "new_highs_52w", "new_lows_52w", "breadth_thrust",
+            "sp500_cape", "buffett_indicator"]
     # Cast numpy types to native Python to avoid PostgreSQL serialization errors
     def _native(v):
         if v is None:

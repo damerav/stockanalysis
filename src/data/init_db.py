@@ -313,6 +313,32 @@ def _migrate_schema(conn: sqlite3.Connection):
         )
     """)
 
+    # v2.8: New columns for market_breadth table
+    breadth_new_cols = [
+        ("sp500_cape", "REAL"),
+        ("buffett_indicator", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "market_breadth", breadth_new_cols)
+
+    # v2.8: New columns for macro table (extended FRED series)
+    macro_ext_cols = [
+        ("us3m_yield", "REAL"),
+        ("yield_curve_10y3m", "REAL"),
+        ("sahm_rule", "REAL"),
+        ("consumer_conf", "REAL"),
+        ("ism_pmi", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "macro", macro_ext_cols)
+
+    # v2.8: New columns for macro table (sector ETF prices)
+    sector_etf_cols = [
+        ("xlk", "REAL"), ("xlf", "REAL"), ("xle", "REAL"),
+        ("xlv", "REAL"), ("xli", "REAL"), ("xlu", "REAL"), ("xlb", "REAL"),
+        ("xlp", "REAL"), ("xly", "REAL"), ("xlre", "REAL"),
+        ("qqq", "REAL"), ("iwm", "REAL"), ("dia", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "macro", sector_etf_cols)
+
     conn.commit()
     seed_strategy_rules(conn)
 

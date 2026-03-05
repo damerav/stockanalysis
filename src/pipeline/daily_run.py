@@ -492,41 +492,29 @@ class DailyPipeline:
             "xlk_xlf_ratio": cross.get("xlk_xlf_ratio"),
             "xlk_xle_ratio": cross.get("xlk_xle_ratio"),
         })
+        # v2.8: Sector ETF prices for rotation features
+        for etf in ["xlk", "xlf", "xle", "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia"]:
+            macro[etf] = cross.get(etf)
+
+        # Build column list and values dynamically
+        _macro_cols = [
+            "vix", "vix_change", "us10y_yield", "dxy", "fed_funds", "gold", "crude",
+            "us3m_yield", "yield_curve_10y3m", "sahm_rule", "consumer_conf", "ism_pmi",
+            "vix9d", "vix3m", "vix6m", "vvix", "skew_index",
+            "hy_spread", "tlt_spy_ratio", "eem_spy_ratio",
+            "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio",
+            "xlk", "xlf", "xle",
+            "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia",
+        ]
+        _col_str = ", ".join(_macro_cols)
+        _ph_str = ", ".join(["?"] * len(_macro_cols))
+        _vals = tuple([self.today] + [macro.get(c) for c in _macro_cols])
+        _sql = f"INSERT OR REPLACE INTO macro (date, {_col_str}) VALUES (?, {_ph_str})"
 
         if self.router:
-            self.router.write_analytics(
-                """INSERT OR REPLACE INTO macro
-                   (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
-                    vix9d, vix3m, vix6m, vvix, skew_index,
-                    hy_spread, tlt_spy_ratio, eem_spy_ratio,
-                    copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (self.today, macro.get("vix"), macro.get("vix_change"),
-                 macro.get("us10y_yield"), macro.get("dxy"),
-                 macro.get("fed_funds"), macro.get("gold"), macro.get("crude"),
-                 macro.get("vix9d"), macro.get("vix3m"), macro.get("vix6m"),
-                 macro.get("vvix"), macro.get("skew_index"),
-                 macro.get("hy_spread"), macro.get("tlt_spy_ratio"),
-                 macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
-                 macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
-            )
+            self.router.write_analytics(_sql, _vals)
         else:
-            self._db_execute(
-                """INSERT OR REPLACE INTO macro
-                   (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude,
-                    vix9d, vix3m, vix6m, vvix, skew_index,
-                    hy_spread, tlt_spy_ratio, eem_spy_ratio,
-                    copper_gold_ratio, xlk_xlf_ratio, xlk_xle_ratio)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (self.today, macro.get("vix"), macro.get("vix_change"),
-                 macro.get("us10y_yield"), macro.get("dxy"),
-                 macro.get("fed_funds"), macro.get("gold"), macro.get("crude"),
-                 macro.get("vix9d"), macro.get("vix3m"), macro.get("vix6m"),
-                 macro.get("vvix"), macro.get("skew_index"),
-                 macro.get("hy_spread"), macro.get("tlt_spy_ratio"),
-                 macro.get("eem_spy_ratio"), macro.get("copper_gold_ratio"),
-                 macro.get("xlk_xlf_ratio"), macro.get("xlk_xle_ratio")),
-            )
+            self._db_execute(_sql, _vals)
         return macro
 
 

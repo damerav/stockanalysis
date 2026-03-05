@@ -473,6 +473,54 @@ def page_spy():
     except Exception:
         pass
 
+    # --- Market Valuation Context Panel ---
+    with st.expander("📊 Market Valuation Context", expanded=False):
+        try:
+            _val_router = get_router(_load_config())
+            breadth_df = _val_router.query(
+                "SELECT * FROM market_breadth ORDER BY date DESC LIMIT 1"
+            )
+            _val_macro = _fetch_live_macro()
+            if not breadth_df.empty:
+                row = breadth_df.iloc[0]
+                vc1, vc2, vc3, vc4 = st.columns(4)
+                with vc1:
+                    cape = row.get("sp500_cape")
+                    cape_sig = "🔴 Overvalued" if cape and cape > 30 else ("🟡 Elevated" if cape and cape > 20 else "🟢 Fair")
+                    st.metric("Shiller CAPE", f"{cape:.1f}" if cape else "N/A",
+                              help="Cyclically Adjusted P/E. Historical avg ~17. >30 = historically overvalued.")
+                    st.caption(cape_sig)
+                with vc2:
+                    buffett = row.get("buffett_indicator")
+                    buffett_sig = "🔴 Strongly OV" if buffett and buffett > 150 else ("🟡 Overvalued" if buffett and buffett > 100 else "🟢 Fair")
+                    st.metric("Buffett Indicator", f"{buffett:.0f}%" if buffett else "N/A",
+                              help="Market Cap / GDP. >100% = overvalued. >150% = strongly overvalued.")
+                    st.caption(buffett_sig)
+                with vc3:
+                    ey = row.get("sp500_earnings_yield")
+                    ry = _val_macro.get("us10y_yield") if _val_macro else None
+                    if ey and ry:
+                        ey_gap = ey - (ry / 100.0)
+                        ey_sig = "🟢 Equities Cheap" if ey_gap > 0 else "🔴 Bonds Better"
+                        st.metric("Earnings Yield Gap", f"{ey_gap:.2%}",
+                                  help="S&P 500 Earnings Yield minus 10Y Treasury Yield. Positive = equities attractive vs. bonds.")
+                        st.caption(ey_sig)
+                    else:
+                        st.metric("Earnings Yield Gap", "N/A")
+                with vc4:
+                    yc = _val_macro.get("yield_curve_10y3m") if _val_macro else None
+                    if yc is not None:
+                        yc_sig = "🔴 Inverted" if yc < 0 else "🟢 Normal"
+                        st.metric("Yield Curve (10Y-3M)", f"{yc:.2f}%",
+                                  help="10Y minus 3M Treasury spread. Negative = inverted = recession signal.")
+                        st.caption(yc_sig)
+                    else:
+                        st.metric("Yield Curve (10Y-3M)", "N/A")
+            else:
+                st.info("Run the daily pipeline to populate valuation data.")
+        except Exception as e:
+            st.warning(f"Valuation context unavailable: {e}")
+
     # --- SHAP drivers (compact) ---
     shap_drivers = prediction.get("shap_drivers", [])
     if shap_drivers:

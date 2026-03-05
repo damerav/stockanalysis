@@ -121,6 +121,11 @@ class FallbackFetcher:
         series = {
             "vix": "VIXCLS",
             "us10y_yield": "DGS10",
+            "us3m_yield": "DTB3",              # 3-Month Treasury Bill rate
+            "yield_curve_10y3m": "T10Y3M",     # 10Y-3M spread (recession signal)
+            "sahm_rule": "SAHMREALTIME",       # Sahm Rule recession indicator
+            "consumer_conf": "UMCSENT",        # U. of Michigan Consumer Sentiment
+            "ism_pmi": "NAPM",                 # ISM Manufacturing PMI
             "dxy": "DTWEXBGS",
             "fed_funds": "FEDFUNDS",
             "gold": None,  # fetched via yfinance below
@@ -276,6 +281,16 @@ class FallbackFetcher:
             "xle": "XLE",       # Energy sector
             "cper": "CPER",     # Copper ETF
             "gld": "GLD",       # Gold ETF
+            "xlv": "XLV",       # Healthcare
+            "xli": "XLI",       # Industrials
+            "xlu": "XLU",       # Utilities (defensive)
+            "xlb": "XLB",       # Materials
+            "xlp": "XLP",       # Consumer Staples (defensive)
+            "xly": "XLY",       # Consumer Discretionary
+            "xlre": "XLRE",     # Real Estate
+            "qqq": "QQQ",       # Nasdaq-100 (growth vs. value)
+            "iwm": "IWM",       # Russell 2000 (small cap risk appetite)
+            "dia": "DIA",       # Dow Jones (value vs. growth)
         }
         prices = {}
         try:
@@ -322,5 +337,9 @@ class FallbackFetcher:
         xle_p = prices.get("xle")
         result["xlk_xlf_ratio"] = (xlk_p / xlf_p) if xlk_p and xlf_p else None
         result["xlk_xle_ratio"] = (xlk_p / xle_p) if xlk_p and xle_p else None
+
+        # Pass through sector ETF prices for rotation features
+        for etf in ["xlk", "xlf", "xle", "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia"]:
+            result[etf] = prices.get(etf)
 
         return result

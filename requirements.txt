@@ -31,6 +31,8 @@ sqlalchemy>=2.0
 cryptography>=42.0
 # HTML parsing (Wikipedia S&P 500 list)
 lxml>=5.0
+# Comprehensive technical indicators
+pandas-ta>=0.3.14b
 # LSTM forecaster + news pipeline
 tensorflow>=2.15; platform_machine != "aarch64"
 nltk>=3.8
