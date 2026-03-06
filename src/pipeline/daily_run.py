@@ -690,8 +690,12 @@ class DailyPipeline:
                 fetch_index_fundamentals, fetch_market_breadth,
                 store_breadth_fundamentals,
             )
+            from src.data.fear_greed_fetcher import fetch_fear_greed_index
             fundamentals = fetch_index_fundamentals()
             breadth = fetch_market_breadth()
+            fear_greed = fetch_fear_greed_index()
+            # Merge fear_greed into breadth dict so store picks it up
+            breadth.update(fear_greed)
             if self.router:
                 store_breadth_fundamentals(self.router, self.today, fundamentals, breadth)
             return {"fundamentals": fundamentals, "breadth": breadth}

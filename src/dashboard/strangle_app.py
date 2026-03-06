@@ -806,10 +806,10 @@ def _run_adjustment_alerts(open_pos: pd.DataFrame) -> list[dict]:
 def page_strangle():
     _header("🕷️ Inverted Strangle — Defined Risk")
 
-    tab_open, tab_new, tab_predict, tab_history, tab_tracker, tab_guardrails, tab_whatif, tab_guide = st.tabs([
+    tab_open, tab_new, tab_predict, tab_history, tab_tracker, tab_guardrails, tab_whatif, tab_guide, tab_deepdive = st.tabs([
         "📋 Open Positions", "➕ New Trade", "🔮 Prediction & Risk",
         "📊 History & Performance", "📈 Tracker", "🛡️ Guardrails & C2C",
-        "🤔 What-If Engine", "📖 Strategy Guide",
+        "🤔 What-If Engine", "📖 Strategy Guide", "📜 Strategy Deep-Dive",
     ])
 
     # ── Tab 1: Open Positions ─────────────────────────────────────────────────
@@ -1044,102 +1044,123 @@ def page_strangle():
             expiry_candidates = _get_expiry_dates(dte)
             expiry = expiry_candidates[0] if expiry_candidates else (datetime.now() + timedelta(days=dte)).strftime("%Y-%m-%d")
 
-            st.markdown("### Proposed Trade Structure")
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Long Put (Wing)", f"${long_put:.2f}")
-            col2.metric("Short Put (ITM)", f"${short_put:.2f}")
-            col3.metric("Short Call (ITM)", f"${short_call:.2f}")
-            col4.metric("Long Call (Wing)", f"${long_call:.2f}")
-            st.caption(f"Expiry: {expiry} ({dte} DTE) | Inversion: ${inversion} | Wing: ${wing}")
-
             credit_info = {}
             if manual_credit > 0:
                 credit_info = {"net_credit": manual_credit, "credit_per_leg_str": "Manual override"}
             elif sim_mode:
-                # Paper trading: yfinance live quotes → Black-Scholes fallback
-                with st.spinner("Fetching live options quotes..."):
-                    credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
-                if credit_info:
-                    st.info("📡 Live yfinance mid-prices (paper trade)")
-                else:
+                credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
+                if not credit_info:
                     try:
                         ts_data = _fetch_vix_term_structure()
                         vix_now = ts_data.get("vix") or 20.0
                     except Exception:
                         vix_now = 20.0
                     credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
-                    st.info(f"🧪 Theoretical pricing @ VIX={vix_now:.1f} (market closed or chain unavailable)")
             else:
-                with st.spinner("Fetching options chain from Polygon..."):
-                    chain = _fetch_chain_for_strike(underlying, expiry,
-                                                    [short_put, short_call, long_put, long_call], ["put", "call"])
-                    if not chain.empty:
-                        credit_info = _price_spread(chain, short_put, short_call, long_put, long_call)
-                    else:
-                        # Auto-fallback to yfinance then theoretical
-                        credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
-                        if credit_info:
-                            st.warning("Polygon unavailable — using yfinance live quotes.")
-                        else:
-                            st.warning("No live quotes available — using theoretical pricing.")
-                            try:
-                                ts_data = _fetch_vix_term_structure()
-                                vix_now = ts_data.get("vix") or 20.0
-                            except Exception:
-                                vix_now = 20.0
-                            credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
+                chain = _fetch_chain_for_strike(underlying, expiry,
+                                                [short_put, short_call, long_put, long_call], ["put", "call"])
+                if not chain.empty:
+                    credit_info = _price_spread(chain, short_put, short_call, long_put, long_call)
+                else:
+                    credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
+                    if not credit_info:
+                        try:
+                            ts_data = _fetch_vix_term_structure()
+                            vix_now = ts_data.get("vix") or 20.0
+                        except Exception:
+                            vix_now = 20.0
+                        credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
 
             if credit_info:
                 net_credit = credit_info["net_credit"]
-                profit_target_price = round(net_credit * (1 - profit_target_pct / 100), 2)
-
-                st.markdown("### Pricing")
-                p1, p2, p3 = st.columns(3)
-                p1.metric("Net Credit Received", f"${net_credit:.2f}")
-                p2.metric(f"Profit Target ({profit_target_pct}%)", f"${profit_target_price:.2f}")
-                p3.metric("Max Risk", f"${wing - net_credit:.2f}")
-                st.caption(credit_info.get("credit_per_leg_str", ""))
-
-                preview_pos = pd.Series({
-                    "long_put": long_put, "short_put": short_put,
-                    "short_call": short_call, "long_call": long_call,
-                    "initial_credit": net_credit, "profit_target": profit_target_price,
-                })
-                st.plotly_chart(_pnl_curve(preview_pos), use_container_width=True, key="pnl_preview")
-
-                # Capture entry conditions for the position record
+                # Capture entry conditions
                 entry_iv_rank = None
                 entry_ts = None
                 entry_vix = None
                 try:
                     iv_data = _fetch_iv_rank()
-                    ts_data = _fetch_vix_term_structure()
+                    ts_data2 = _fetch_vix_term_structure()
                     entry_iv_rank = iv_data.get("iv_rank")
-                    entry_ts = ts_data.get("term_structure_pct")
-                    entry_vix = ts_data.get("vix")
+                    entry_ts = ts_data2.get("term_structure_pct")
+                    entry_vix = ts_data2.get("vix")
                 except Exception:
                     pass
 
-                if st.button("✅ Confirm & Open Position"):
-                    # Tag paper trades with [PAPER] prefix
-                    trade_underlying = f"[PAPER] {underlying}" if sim_mode else underlying
-                    new_id = _open_position(
-                        trade_underlying, spot, expiry, dte, short_put, short_call, long_put, long_call,
-                        inversion, wing, net_credit, credit_info.get("credit_per_leg_str", ""),
-                        profit_target_pct, entry_vix or 0.0,
-                    )
-                    # Store entry conditions
-                    if entry_iv_rank is not None or entry_ts is not None:
-                        try:
-                            r = _router()
-                            r.execute(
-                                "UPDATE inverted_strangle_positions SET entry_iv_rank=?, entry_vix_term_structure=? WHERE id=?",
-                                (entry_iv_rank, entry_ts, new_id))
-                            r.close()
-                        except Exception:
-                            pass
-                    st.success(f"Position #{new_id} opened!")
-                    st.rerun()
+                # Store trade data in session_state so confirm button survives rerun
+                st.session_state["_pending_trade"] = {
+                    "underlying": underlying, "spot": spot, "expiry": expiry, "dte": dte,
+                    "short_put": short_put, "short_call": short_call,
+                    "long_put": long_put, "long_call": long_call,
+                    "inversion": inversion, "wing": wing,
+                    "net_credit": net_credit,
+                    "credit_per_leg_str": credit_info.get("credit_per_leg_str", ""),
+                    "profit_target_pct": profit_target_pct,
+                    "entry_vix": entry_vix or 0.0,
+                    "entry_iv_rank": entry_iv_rank,
+                    "entry_ts": entry_ts,
+                    "sim_mode": sim_mode,
+                }
+            else:
+                st.session_state.pop("_pending_trade", None)
+                st.error("Could not price the spread. Check market data availability.")
+
+        # Show pending trade preview and confirm button (persists across reruns)
+        pending = st.session_state.get("_pending_trade")
+        if pending:
+            st.markdown("### Proposed Trade Structure")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Long Put (Wing)", f"${pending['long_put']:.2f}")
+            col2.metric("Short Put (ITM)", f"${pending['short_put']:.2f}")
+            col3.metric("Short Call (ITM)", f"${pending['short_call']:.2f}")
+            col4.metric("Long Call (Wing)", f"${pending['long_call']:.2f}")
+            st.caption(f"Expiry: {pending['expiry']} ({pending['dte']} DTE) | "
+                       f"Inversion: ${pending['inversion']} | Wing: ${pending['wing']}")
+
+            if pending.get("sim_mode"):
+                st.info("📡 Live yfinance mid-prices (paper trade)")
+
+            net_credit = pending["net_credit"]
+            ptp = pending["profit_target_pct"]
+            profit_target_price = round(net_credit * (1 - ptp / 100), 2)
+
+            st.markdown("### Pricing")
+            p1, p2, p3 = st.columns(3)
+            p1.metric("Net Credit Received", f"${net_credit:.2f}")
+            p2.metric(f"Profit Target ({ptp}%)", f"${profit_target_price:.2f}")
+            p3.metric("Max Risk", f"${pending['wing'] - net_credit:.2f}")
+            st.caption(pending.get("credit_per_leg_str", ""))
+
+            preview_pos = pd.Series({
+                "long_put": pending["long_put"], "short_put": pending["short_put"],
+                "short_call": pending["short_call"], "long_call": pending["long_call"],
+                "initial_credit": net_credit, "profit_target": profit_target_price,
+            })
+            st.plotly_chart(_pnl_curve(preview_pos), use_container_width=True, key="pnl_preview")
+
+            if st.button("✅ Confirm & Open Position"):
+                trade_underlying = f"[PAPER] {pending['underlying']}" if pending.get("sim_mode") else pending["underlying"]
+                new_id = _open_position(
+                    trade_underlying, pending["spot"], pending["expiry"], pending["dte"],
+                    pending["short_put"], pending["short_call"], pending["long_put"], pending["long_call"],
+                    pending["inversion"], pending["wing"], pending["net_credit"],
+                    pending.get("credit_per_leg_str", ""),
+                    pending["profit_target_pct"], pending.get("entry_vix", 0.0),
+                )
+                # Store entry conditions
+                eir = pending.get("entry_iv_rank")
+                ets = pending.get("entry_ts")
+                if eir is not None or ets is not None:
+                    try:
+                        r = _router()
+                        r.execute(
+                            "UPDATE inverted_strangle_positions SET entry_iv_rank=?, entry_vix_term_structure=? WHERE id=?",
+                            (eir, ets, new_id))
+                        r.close()
+                    except Exception:
+                        pass
+                st.session_state.pop("_pending_trade", None)
+                st.success(f"Position #{new_id} opened!")
+                st.rerun()
 
     # ── Tab 3: Prediction & Risk ──────────────────────────────────────────────
     with tab_predict:
@@ -1354,9 +1375,18 @@ def page_strangle():
                             c2c = theo["net_credit"]
 
                         r = _router()
+                        # Compute derived guardrail columns
+                        inversion_w = float(pos["inversion_pts"]) * 2
+                        c2c_intrinsic = inversion_w
+                        c2c_extrinsic = round(c2c - c2c_intrinsic, 4) if c2c is not None else None
+                        credit_vs_w = round(float(pos["initial_credit"]) - inversion_w, 4)
+                        breached_flag = 1 if (c2c is not None and c2c > float(pos["initial_credit"]) * 2) else 0
+
                         r.execute(
-                            "UPDATE inverted_strangle_positions SET cost_to_close=?, c2c_updated_at=? WHERE id=?",
-                            (c2c, datetime.now().strftime("%Y-%m-%d %H:%M"), pos_id))
+                            "UPDATE inverted_strangle_positions SET cost_to_close=?, c2c_updated_at=?, "
+                            "c2c_extrinsic=?, c2c_intrinsic=?, credit_vs_width=?, loss_rule_2_1_breached=? WHERE id=?",
+                            (c2c, datetime.now().strftime("%Y-%m-%d %H:%M"),
+                             c2c_extrinsic, c2c_intrinsic, credit_vs_w, breached_flag, pos_id))
                         r.close()
                     st.rerun()
 
@@ -1376,15 +1406,20 @@ def page_strangle():
 
                     with c1:
                         if c2c is not None:
+                            c2c_ext = float(pos.get("c2c_extrinsic") or 0) if pd.notna(pos.get("c2c_extrinsic")) else None
+                            c2c_int = float(pos.get("c2c_intrinsic") or 0) if pd.notna(pos.get("c2c_intrinsic")) else None
                             st.metric("Cost to Close (C2C)", f"${c2c:.2f}")
+                            if c2c_ext is not None and c2c_int is not None:
+                                st.caption(f"Intrinsic: ${c2c_int:.2f} | Extrinsic: ${c2c_ext:.2f}")
                         else:
                             st.metric("Cost to Close (C2C)", "—")
                             st.caption("Click Refresh C2C above")
 
                     with c2_col:
                         loss_limit = round(initial_credit * 2, 2)
+                        breached_db = int(pos.get("loss_rule_2_1_breached") or 0) if pd.notna(pos.get("loss_rule_2_1_breached")) else 0
                         if c2c is not None:
-                            breached = c2c > loss_limit
+                            breached = c2c > loss_limit or breached_db == 1
                             delta_val = round(c2c - loss_limit, 2)
                             st.metric("2:1 Loss Rule", f"${loss_limit:.2f}",
                                       delta=f"${delta_val:+.2f}",
@@ -1397,7 +1432,8 @@ def page_strangle():
                     with c3:
                         # Credit vs Inversion Width: if credit < inversion width, guaranteed loss at expiry
                         inversion_width = inversion_pts * 2  # total inversion width in dollars
-                        credit_vs_width = round(initial_credit - inversion_width, 2)
+                        cvw_db = float(pos.get("credit_vs_width") or 0) if pd.notna(pos.get("credit_vs_width")) else None
+                        credit_vs_width = cvw_db if cvw_db is not None else round(initial_credit - inversion_width, 2)
                         st.metric("Credit vs. Inversion Width", f"${credit_vs_width:+.2f}",
                                   help="Negative = guaranteed loss if underlying stays between short strikes at expiry")
                         if credit_vs_width < 0:
@@ -1675,4 +1711,212 @@ C2C = current market price to buy back all four legs. Track this daily:
 1. **Roll**: Close current position, re-open at new spot with same inversion/wing parameters
 2. **Wing Adjustment**: Widen wings for more protection (costs credit) or narrow for more credit (more risk)
 3. **Un-invert**: Close the ITM inverted strikes, sell new OTM strangle — restores extrinsic value, reduces assignment risk
+        """)
+
+    # ── Tab 9: Strategy Deep-Dive ─────────────────────────────────────────────
+    with tab_deepdive:
+        st.markdown("""
+## 📜 Defined-Risk Inverted Strangle — Complete Strategy Deep-Dive
+
+---
+
+### 1. Strategy Overview & Philosophy
+
+The **Inverted Strangle with Defined Risk** is a premium-selling strategy that profits from time decay (theta)
+while maintaining a defined maximum loss through protective wings. Unlike a traditional short strangle where
+short strikes are OTM, this strategy *inverts* the short strikes ITM, creating a position that collects
+significantly more premium at the cost of a guaranteed intrinsic loss component.
+
+**Core Thesis:** The large upfront credit from selling ITM options more than compensates for the intrinsic
+value that must be returned, provided the underlying moves enough to test one side or time decay erodes the
+extrinsic value sufficiently.
+
+**When to Use:**
+- High implied volatility environments (IV Rank > 30%)
+- Expectation of mean reversion or range-bound behavior
+- When you want defined risk (unlike naked strangles)
+- When you want higher probability of profit than directional trades
+
+---
+
+### 2. Position Construction
+
+#### Leg-by-Leg Breakdown
+
+Given a spot price S, inversion width I (default $5), and wing width W (default $25):
+
+| Leg | Strike Formula | Type | Action | Purpose |
+|-----|---------------|------|--------|---------|
+| Long Put | S + I - W | OTM Put | Buy | Downside protection (wing) |
+| Short Put | S + I | ITM Put | Sell | Premium collection |
+| Short Call | S - I | ITM Call | Sell | Premium collection |
+| Long Call | S - I + W | OTM Call | Buy | Upside protection (wing) |
+
+**Example** (SPY @ $570):
+- Long Put: $550 (buy) — Short Put: $575 (sell, ITM by $5)
+- Short Call: $565 (sell, ITM by $5) — Long Call: $590 (buy)
+
+#### Credit Composition
+
+The initial credit has two components:
+1. **Intrinsic Value** = 2 × Inversion Points (guaranteed to be returned if underlying stays between short strikes)
+2. **Extrinsic Value** = Total Credit - Intrinsic Value (this is your *real* edge — pure time value)
+
+**Key Insight:** Your true profit potential is the extrinsic portion. The intrinsic portion is "borrowed"
+and must be returned unless the underlying moves beyond a short strike.
+
+---
+
+### 3. P&L Profile
+
+- **Max Profit** = Net Credit Received (underlying expires beyond either short strike)
+- **Max Loss** = Wing Width - Net Credit (underlying expires exactly between short strikes)
+- **Breakeven Points**: Short Put - Credit and Short Call + Credit
+
+---
+
+### 4. Greek Analysis
+
+| Greek | Position | Implication |
+|-------|----------|-------------|
+| **Theta** | Positive | Time decay works in your favor. Accelerates inside 21 DTE. |
+| **Vega** | Negative | Benefits from IV crush. Enter when IV Rank > 30%. |
+| **Delta** | Near Zero | Delta-neutral at entry. Adjust if delta exceeds ±0.30. |
+| **Gamma** | Negative | Risk accelerates near short strikes inside 14 DTE. Be cautious. |
+
+**Rules:**
+- Enter with 30-45 DTE to capture the theta acceleration curve
+- A VIX spike increases C2C — monitor VIX term structure
+- Be extra cautious inside 14 DTE — consider closing early if P&L target not met
+
+---
+
+### 5. Entry Criteria & Pre-Trade Checklist
+
+#### Mandatory Checks (all must pass)
+1. IV Rank > 30% — ensures sufficient premium
+2. VIX Term Structure in Contango — VIX < VIX3M (no near-term panic)
+3. VIX Spike Probability < 15% — heuristic check for imminent volatility events
+4. DTE: 30-45 days — optimal theta decay window
+5. Credit > Inversion Width — ensures positive expected value at entry
+
+#### Preferred Conditions
+- IV Rank > 50% (ideal)
+- No major earnings/FOMC within 7 days
+- SPY not at 52-week extremes
+- Put/Call ratio < 1.5 (no extreme fear)
+
+---
+
+### 6. Position Sizing Framework
+
+| Level | Max Portfolio Risk | Notes |
+|-------|-------------------|-------|
+| Conservative | 2% per position | Start here |
+| Moderate | 5% per position | After 10+ trades |
+| Aggressive | 10% per position | Experienced only |
+
+- Max risk per trade = Wing Width - Net Credit
+- Start with 1 contract until you have 10+ trades of history
+- Never exceed 5 contracts on a single underlying
+
+---
+
+### 7. Exit Rules & Profit Targets
+
+| Exit Type | Trigger | Action |
+|-----------|---------|--------|
+| Profit Target | C2C < 90% of credit | Close (capture 10%) |
+| Time-Based | 21 DTE, P&L positive | Close for whatever profit exists |
+| Gamma Risk | 14 DTE, P&L negative | Close to avoid gamma acceleration |
+| Stop Loss | C2C > 2× credit | Close immediately (2:1 rule) |
+| **Never** hold to expiration | — | Assignment risk and pin risk |
+
+---
+
+### 8. Adjustment Decision Tree
+
+**Position Open → Check in order:**
+
+1. P&L > 10% target? → **CLOSE** (take profit)
+2. DTE < 21? → **CLOSE** (time-based exit)
+3. C2C > 2× credit? → **CLOSE** (stop loss)
+4. Delta > ±0.30? → **ROLL** to new spot or un-invert to OTM
+5. Price within $5 of wing? → **ROLL** or widen wings
+6. None of the above → **HOLD** (let theta work)
+
+#### Roll Mechanics
+1. Buy back current 4-leg spread (debit)
+2. Sell new 4-leg spread at current spot (credit)
+3. Net cost = Close Debit - New Credit
+4. **Max 2 rolls per position** — after that, take the loss
+
+#### Wing Adjustment
+- Widen wings: More protection, less credit (use when vol rising)
+- Narrow wings: Less protection, more credit (use when vol falling)
+- **Never narrow wings below $15**
+
+#### Un-Inversion (Emergency)
+- Close ITM inverted strikes, sell new OTM strangle at current spot
+- Restores extrinsic value, eliminates intrinsic drag
+- Use when position is deeply underwater and you want to reset
+
+---
+
+### 9. Market Regime Considerations
+
+| Regime | IV Rank | Action |
+|--------|---------|--------|
+| Low Vol Range | < 20% | **Avoid** — insufficient premium |
+| Normal | 20-40% | **Selective** — strong setup only |
+| Elevated | 40-60% | **Ideal** — best risk/reward |
+| High Vol | 60-80% | **Aggressive** — wide wings, smaller size |
+| Crisis | > 80% | **Avoid** — spreads too wide, assignment risk |
+
+**VIX Term Structure:**
+- Contango (VIX < VIX3M): Normal — safe to enter
+- Flat: Caution — uncertainty rising
+- Backwardation (VIX > VIX3M): Danger — avoid new entries
+
+---
+
+### 10. Cost-to-Close (C2C) Deep Dive
+
+| C2C Level | Signal | Action |
+|-----------|--------|--------|
+| < 90% of credit | 🟢 Profit target | Close for profit |
+| 90-120% of credit | 🟡 Neutral | Hold, let theta work |
+| 120-150% of credit | 🟠 Warning | Monitor closely |
+| 150-200% of credit | 🔴 Danger | Roll or adjust |
+| > 200% of credit | 🚨 Stop loss | Close immediately |
+
+**C2C Components:**
+- **C2C Intrinsic** = Inversion Width × 2 (guaranteed loss portion)
+- **C2C Extrinsic** = C2C - Intrinsic (time value — what theta erodes)
+- **Credit vs. Width** = Initial Credit - (Inversion Pts × 2). Positive = edge even if untested.
+
+---
+
+### 11. Paper Trading Protocol
+
+| Phase | Duration | Method | Focus |
+|-------|----------|--------|-------|
+| Phase 1 | Weeks 1-4 | Black-Scholes theoretical | Entry/exit discipline |
+| Phase 2 | Weeks 5-8 | Live yfinance quotes | Real spreads & slippage |
+| Phase 3 | Week 9+ | Live with 1 contract | Strict guardrail adherence |
+
+**Go-Live Criteria:** Win rate > 60% over 20+ paper trades, average winner > average loser, no 2:1 breaches.
+
+---
+
+### 12. Common Mistakes to Avoid
+
+1. **Holding through expiration** — assignment risk, pin risk, gamma explosion
+2. **Ignoring the 2:1 rule** — "it'll come back" is how accounts blow up
+3. **Trading in low IV** — insufficient premium makes the math unfavorable
+4. **Over-sizing** — one bad trade shouldn't impact more than 5% of portfolio
+5. **Rolling too many times** — max 2 rolls; after that, take the loss
+6. **Entering before earnings/FOMC** — IV crush is your friend *after* the event, not before
+7. **Neglecting C2C monitoring** — check daily, not weekly
+8. **Narrowing wings under pressure** — reduces protection when you need it most
         """)

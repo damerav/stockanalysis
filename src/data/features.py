@@ -418,7 +418,8 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         breadth_df = router.query(
             "SELECT date, sp500_pe, sp500_forward_pe, sp500_earnings_yield, "
             "sp500_dividend_yield, pct_above_sma50, pct_above_sma200, "
-            "advance_decline_ratio, new_highs_52w, new_lows_52w, breadth_thrust "
+            "advance_decline_ratio, new_highs_52w, new_lows_52w, breadth_thrust, "
+            "fear_greed_index, trin "
             "FROM market_breadth ORDER BY date"
         )
         if not breadth_df.empty:
@@ -427,7 +428,7 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
             breadth_cols = ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
                            "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
                            "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
-                           "breadth_thrust"]
+                           "breadth_thrust", "fear_greed_index", "trin"]
             for col in breadth_cols:
                 if col in df.columns:
                     df[col] = df[col].ffill().fillna(0)
@@ -435,14 +436,14 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
             for col in ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
                         "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
                         "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
-                        "breadth_thrust"]:
+                        "breadth_thrust", "fear_greed_index", "trin"]:
                 df[col] = 0.0
     except Exception as e:
         logger.debug(f"Market breadth features failed: {e}")
         for col in ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
                     "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
                     "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
-                    "breadth_thrust"]:
+                    "breadth_thrust", "fear_greed_index", "trin"]:
             df[col] = 0.0
 
     # Derived features
@@ -809,7 +810,7 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
                      "sp500_pe", "sp500_forward_pe", "sp500_earnings_yield",
                      "sp500_dividend_yield", "pct_above_sma50", "pct_above_sma200",
                      "advance_decline_ratio", "new_highs_52w", "new_lows_52w",
-                     "breadth_thrust"]
+                     "breadth_thrust", "fear_greed_index", "trin"]
     for col in new_feat_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
@@ -1011,6 +1012,7 @@ def get_feature_columns() -> list[str]:
         # Market breadth
         "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
         "new_highs_52w", "new_lows_52w", "breadth_thrust",
+        "fear_greed_index", "trin",
         # v2.8: Macro / Valuation
         "sp500_cape", "buffett_indicator",
         "sahm_rule", "yield_curve_10y3m", "us3m_yield",

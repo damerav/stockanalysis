@@ -484,7 +484,7 @@ def page_spy():
             _val_macro = _fetch_live_macro()
             if not breadth_df.empty:
                 row = breadth_df.iloc[0]
-                vc1, vc2, vc3, vc4 = st.columns(4)
+                vc1, vc2, vc3, vc4, vc5, vc6 = st.columns(6)
                 with vc1:
                     cape = row.get("sp500_cape")
                     cape_sig = "🔴 Overvalued" if cape and cape > 30 else ("🟡 Elevated" if cape and cape > 20 else "🟢 Fair")
@@ -517,6 +517,32 @@ def page_spy():
                         st.caption(yc_sig)
                     else:
                         st.metric("Yield Curve (10Y-3M)", "N/A")
+                with vc5:
+                    fg = row.get("fear_greed_index")
+                    if fg is not None and pd.notna(fg):
+                        fg = int(fg)
+                        fg_sig = ("🔥 Extreme Greed" if fg > 75
+                                  else ("😀 Greed" if fg > 55
+                                  else ("😐 Neutral" if fg > 45
+                                  else ("😨 Fear" if fg > 25
+                                  else "🥶 Extreme Fear"))))
+                        st.metric("Fear & Greed", f"{fg}",
+                                  help="Composite sentiment index (0-100). Extreme fear can signal contrarian buy opportunities.")
+                        st.caption(fg_sig)
+                    else:
+                        st.metric("Fear & Greed", "N/A")
+                with vc6:
+                    trin = row.get("trin")
+                    if trin is not None and pd.notna(trin):
+                        trin = float(trin)
+                        trin_sig = ("🟢 Buying Pressure" if trin < 0.8
+                                    else ("🔴 Selling Pressure" if trin > 1.2
+                                    else "😐 Neutral"))
+                        st.metric("TRIN (Arms Index)", f"{trin:.2f}",
+                                  help="Volume-weighted breadth. <1.0 = buying pressure, >1.0 = selling pressure.")
+                        st.caption(trin_sig)
+                    else:
+                        st.metric("TRIN (Arms Index)", "N/A")
             else:
                 st.info("Run the daily pipeline to populate valuation data.")
         except Exception as e:

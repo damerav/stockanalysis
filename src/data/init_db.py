@@ -231,7 +231,11 @@ def init_db(config: dict = None) -> str:
                         entry_iv_rank   REAL,
                         entry_vix_term_structure REAL,
                         cost_to_close   REAL,
-                        c2c_updated_at  TEXT
+                        c2c_updated_at  TEXT,
+                        c2c_extrinsic   REAL,
+                        c2c_intrinsic   REAL,
+                        credit_vs_width REAL,
+                        loss_rule_2_1_breached INTEGER NOT NULL DEFAULT 0
                     )
                 """)
                 router.execute("""
@@ -331,6 +335,10 @@ def _migrate_schema(conn: sqlite3.Connection):
     strangle_new_cols = [
         ("cost_to_close", "REAL"),
         ("c2c_updated_at", "TEXT"),
+        ("c2c_extrinsic", "REAL"),
+        ("c2c_intrinsic", "REAL"),
+        ("credit_vs_width", "REAL"),
+        ("loss_rule_2_1_breached", "INTEGER DEFAULT 0"),
     ]
     _add_columns_if_missing(conn, "inverted_strangle_positions", strangle_new_cols)
 
@@ -401,7 +409,11 @@ def _migrate_schema(conn: sqlite3.Connection):
             entry_iv_rank   REAL,
             entry_vix_term_structure REAL,
             cost_to_close   REAL,
-            c2c_updated_at  TEXT
+            c2c_updated_at  TEXT,
+            c2c_extrinsic   REAL,
+            c2c_intrinsic   REAL,
+            credit_vs_width REAL,
+            loss_rule_2_1_breached INTEGER NOT NULL DEFAULT 0
         )
     """)
 
@@ -426,6 +438,8 @@ def _migrate_schema(conn: sqlite3.Connection):
     breadth_new_cols = [
         ("sp500_cape", "REAL"),
         ("buffett_indicator", "REAL"),
+        ("fear_greed_index", "INTEGER"),
+        ("trin", "REAL"),
     ]
     _add_columns_if_missing(conn, "market_breadth", breadth_new_cols)
 

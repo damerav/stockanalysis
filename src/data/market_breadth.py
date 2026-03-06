@@ -224,6 +224,7 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
         "new_highs_52w": None,
         "new_lows_52w": None,
         "breadth_thrust": None,
+        "trin": None,
     }
 
     tickers = _get_sp500_tickers()
@@ -249,8 +250,10 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
         # Handle MultiIndex columns from yfinance
         if isinstance(data.columns, pd.MultiIndex):
             closes = data["Close"]
+            volumes = data["Volume"] if "Volume" in data.columns.get_level_values(0) else None
         else:
             closes = data[["Close"]]
+            volumes = None
 
         if closes.empty or len(closes) < 50:
             logger.warning("Insufficient data for breadth calculation")
@@ -295,6 +298,23 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
         # Breadth thrust = net advances / total
         result["breadth_thrust"] = round((advances - declines) / max(n_stocks, 1), 4)
 
+        # TRIN (Arms Index) = (Advancing Issues / Declining Issues) / (Advancing Volume / Declining Volume)
+        # TRIN < 1.0 = buying pressure, TRIN > 1.0 = selling pressure
+        if volumes is not None and declines > 0:
+            try:
+                vol_latest = volumes.iloc[-1]
+                vol_prev = volumes.iloc[-2] if len(volumes) > 1 else vol_latest
+                # Use latest day's volume, split by advancing/declining stocks
+                adv_mask = latest > prev
+                decl_mask = latest < prev
+                adv_vol = vol_latest[adv_mask].sum()
+                decl_vol = vol_latest[decl_mask].sum()
+                if decl_vol > 0 and advances > 0:
+                    trin = (advances / declines) / (adv_vol / decl_vol)
+                    result["trin"] = round(float(trin), 4)
+            except Exception as e:
+                logger.debug("TRIN calculation failed: %s", e)
+
         # 52-week highs/lows
         if len(closes) >= 252:
             high_52w = closes.iloc[-252:].max()
@@ -331,7 +351,7 @@ def store_breadth_fundamentals(router, date: str, fundamentals: dict, breadth: d
     cols = ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield", "sp500_dividend_yield",
             "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
             "new_highs_52w", "new_lows_52w", "breadth_thrust",
-            "sp500_cape", "buffett_indicator"]
+            "sp500_cape", "buffett_indicator", "fear_greed_index", "trin"]
     # Cast numpy types to native Python to avoid PostgreSQL serialization errors
     def _native(v):
         if v is None:
