@@ -262,6 +262,10 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
         # Drop tickers with too many NaNs
         valid_mask = closes.notna().sum() > 50
         closes = closes.loc[:, valid_mask]
+        if volumes is not None:
+            # Filter volumes to same tickers so boolean masks align for TRIN
+            common = closes.columns.intersection(volumes.columns)
+            volumes = volumes[common]
         n_stocks = closes.shape[1]
 
         if n_stocks < 100:
@@ -303,12 +307,13 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
         if volumes is not None and declines > 0:
             try:
                 vol_latest = volumes.iloc[-1]
-                vol_prev = volumes.iloc[-2] if len(volumes) > 1 else vol_latest
                 # Use latest day's volume, split by advancing/declining stocks
                 adv_mask = latest > prev
                 decl_mask = latest < prev
-                adv_vol = vol_latest[adv_mask].sum()
-                decl_vol = vol_latest[decl_mask].sum()
+                # Align volume to same tickers as closes
+                vol_aligned = vol_latest.reindex(adv_mask.index)
+                adv_vol = vol_aligned[adv_mask].sum()
+                decl_vol = vol_aligned[decl_mask].sum()
                 if decl_vol > 0 and advances > 0:
                     trin = (advances / declines) / (adv_vol / decl_vol)
                     result["trin"] = round(float(trin), 4)
@@ -346,7 +351,11 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
 # ---------------------------------------------------------------------------
 
 def store_breadth_fundamentals(router, date: str, fundamentals: dict, breadth: dict):
-    """Store breadth and fundamental data in the market_breadth table."""
+    """Store breadth and fundamental data in the market_breadth table.
+    
+    Uses upsert logic that preserves existing non-null values when new values
+    are null (e.g., if a data source is temporarily unavailable).
+    """
     merged = {**fundamentals, **breadth}
     cols = ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield", "sp500_dividend_yield",
             "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
@@ -363,13 +372,32 @@ def store_breadth_fundamentals(router, date: str, fundamentals: dict, breadth: d
         return v
     values = [_native(merged.get(c)) for c in cols]
 
-    sql = (
+    # First try INSERT, then UPDATE only non-null values to preserve existing data
+    insert_sql = (
         "INSERT OR REPLACE INTO market_breadth "
         "(date, " + ", ".join(cols) + ") "
         "VALUES (?, " + ", ".join(["?"] * len(cols)) + ")"
     )
     try:
-        router.execute(sql, tuple([date] + values))
+        # Check if row exists
+        existing = router.read_analytics(
+            "SELECT date FROM market_breadth WHERE date = ?", (date,)
+        )
+        if existing.empty:
+            # No existing row — insert all values
+            router.execute(insert_sql, tuple([date] + values))
+        else:
+            # Row exists — only update columns where new value is not None
+            updates = []
+            update_vals = []
+            for col, val in zip(cols, values):
+                if val is not None:
+                    updates.append(f"{col} = ?")
+                    update_vals.append(val)
+            if updates:
+                update_sql = "UPDATE market_breadth SET " + ", ".join(updates) + " WHERE date = ?"
+                update_vals.append(date)
+                router.execute(update_sql, tuple(update_vals))
         logger.info("Stored market breadth for %s", date)
     except Exception as e:
         logger.error("store_breadth_fundamentals failed: %s", e)

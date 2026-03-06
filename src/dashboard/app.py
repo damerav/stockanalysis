@@ -39,6 +39,10 @@ from src.dashboard.performance_app import page_performance
 from src.dashboard.tuning_app import page_tuning
 from src.dashboard.rules_app import page_rules
 from src.dashboard.strangle_app import page_strangle
+from src.dashboard.market_overview_app import page_market_overview
+from src.dashboard.scenario_analysis_app import page_scenario_analysis
+from src.dashboard.data_management_app import page_data_management
+from src.dashboard.system_management_app import page_system_management
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
 from src.dashboard.theme import (
@@ -103,106 +107,111 @@ RELAY_URL = os.environ.get("RELAY_URL", "")
 IS_CLOUD = bool(RELAY_URL)
 DATA_DIR = "./data"
 
-st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
+# --- Guard: Only run UI setup when executed as main Streamlit script ---
+# When imported as a module (e.g., from scenario_analysis_app), skip all UI setup.
+# Streamlit sets __name__ to "__main__" for the entry script.
+_IS_MAIN_SCRIPT = (__name__ == "__main__")
 
-# --- Sync config.toml to match session theme (makes Streamlit native widgets correct) ---
-_sync_config_toml(get_theme())
+if _IS_MAIN_SCRIPT:
+    st.set_page_config(page_title="Stock Analysis", layout="wide", page_icon="📊")
 
-# --- Load unified design system CSS (cached in session to avoid disk reads) ---
-if "_css_cache" not in st.session_state:
-    _css_path = os.path.join(os.path.dirname(__file__), "style.css")
-    if os.path.exists(_css_path):
-        with open(_css_path) as _css_f:
-            st.session_state["_css_cache"] = _css_f.read()
-    else:
-        st.session_state["_css_cache"] = ""
-if st.session_state["_css_cache"]:
-    st.markdown(f"<style>{st.session_state['_css_cache']}</style>", unsafe_allow_html=True)
+    # --- Sync config.toml to match session theme ---
+    _sync_config_toml(get_theme())
 
-# --- Inject light theme overrides if in light mode ---
-# CSS [data-theme="light"] selector requires JS to set the attribute on the root,
-# which is unreliable in Streamlit's iframe structure. Instead, we inject the
-# light-mode CSS variables directly when the theme is light.
-if get_theme() == "light":
-    st.markdown("""<style>
-    :root {
-        --color-bg-primary: #FFFFFF;
-        --color-bg-secondary: #F8F9FA;
-        --color-bg-tertiary: #E9ECEF;
-        --color-border-primary: #DEE2E6;
-        --color-border-secondary: #D1D4DC;
-        --color-text-primary: #212529;
-        --color-text-secondary: #6C757D;
-        --color-text-tertiary: #ADB5BD;
-        --color-grid: #E6E8EC;
-        --color-zeroline: #B7BDC6;
-        --color-card-bg: #FFFFFF;
-        --color-card-hover: rgba(0,123,255,0.15);
-        --color-tab-bg: #E6E8EC;
-        --color-input-bg: #FFFFFF;
-        --color-input-border: #DEE2E6;
-        --color-form-bg: #FFFFFF;
-        --color-btn-bg: #FFFFFF;
-        --color-btn-border: #B7BDC6;
-        --color-btn-text: #212529;
-        --color-btn-hover-bg: #F0F2F5;
-        --color-btn-hover-border: #6C757D;
-        --color-expander-bg: #FFFFFF;
-        --color-scrollbar: #D1D4DC;
-        --color-scrollbar-hover: #B7BDC6;
-        --color-popover-bg: #FFFFFF;
-        --color-popover-hover: #F0F2F5;
-        --sidebar-bg: linear-gradient(180deg, #FFFFFF 0%, #F8F9FA 100%);
-        --sidebar-border: #DEE2E6;
-        --sidebar-text: #212529;
-        --sidebar-text-muted: #6C757D;
-        --sidebar-btn-bg: #F0F2F5;
-        --sidebar-btn-border: #D1D4DC;
-        --sidebar-btn-hover-bg: #E6E8EC;
-        --sidebar-btn-hover-border: #B7BDC6;
-        --sidebar-nav-hover: rgba(0, 0, 0, 0.04);
-        --sidebar-nav-active-bg: rgba(0, 123, 255, 0.08);
-        --sidebar-divider: #DEE2E6;
-        --backdrop-filter: none;
-        --card-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    }
-    </style>""", unsafe_allow_html=True)
+    # --- Load unified design system CSS (cached in session to avoid disk reads) ---
+    if "_css_cache" not in st.session_state:
+        _css_path = os.path.join(os.path.dirname(__file__), "style.css")
+        if os.path.exists(_css_path):
+            with open(_css_path) as _css_f:
+                st.session_state["_css_cache"] = _css_f.read()
+        else:
+            st.session_state["_css_cache"] = ""
+    if st.session_state["_css_cache"]:
+        st.markdown(f"<style>{st.session_state['_css_cache']}</style>", unsafe_allow_html=True)
 
-# --- OAuth Callback Handling ---
-if "code" in st.query_params and not is_authenticated():
-    handle_oauth_callback()
-    st.rerun()
+    # --- Inject light theme overrides if in light mode ---
+    if get_theme() == "light":
+        st.markdown("""<style>
+        :root {
+            --color-bg-primary: #FFFFFF;
+            --color-bg-secondary: #F8F9FA;
+            --color-bg-tertiary: #E9ECEF;
+            --color-border-primary: #DEE2E6;
+            --color-border-secondary: #D1D4DC;
+            --color-text-primary: #212529;
+            --color-text-secondary: #6C757D;
+            --color-text-tertiary: #ADB5BD;
+            --color-grid: #E6E8EC;
+            --color-zeroline: #B7BDC6;
+            --color-card-bg: #FFFFFF;
+            --color-card-hover: rgba(0,123,255,0.15);
+            --color-tab-bg: #E6E8EC;
+            --color-input-bg: #FFFFFF;
+            --color-input-border: #DEE2E6;
+            --color-form-bg: #FFFFFF;
+            --color-btn-bg: #FFFFFF;
+            --color-btn-border: #B7BDC6;
+            --color-btn-text: #212529;
+            --color-btn-hover-bg: #F0F2F5;
+            --color-btn-hover-border: #6C757D;
+            --color-expander-bg: #FFFFFF;
+            --color-scrollbar: #D1D4DC;
+            --color-scrollbar-hover: #B7BDC6;
+            --color-popover-bg: #FFFFFF;
+            --color-popover-hover: #F0F2F5;
+            --sidebar-bg: linear-gradient(180deg, #FFFFFF 0%, #F8F9FA 100%);
+            --sidebar-border: #DEE2E6;
+            --sidebar-text: #212529;
+            --sidebar-text-muted: #6C757D;
+            --sidebar-btn-bg: #F0F2F5;
+            --sidebar-btn-border: #D1D4DC;
+            --sidebar-btn-hover-bg: #E6E8EC;
+            --sidebar-btn-hover-border: #B7BDC6;
+            --sidebar-nav-hover: rgba(0, 0, 0, 0.04);
+            --sidebar-nav-active-bg: rgba(0, 123, 255, 0.08);
+            --sidebar-divider: #DEE2E6;
+            --backdrop-filter: none;
+            --card-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        }
+        </style>""", unsafe_allow_html=True)
 
-# --- Auth Gate ---
-if not is_authenticated():
-    if not render_login_page():
-        st.stop()
+    # --- OAuth Callback Handling ---
+    if "code" in st.query_params and not is_authenticated():
+        handle_oauth_callback()
+        st.rerun()
 
-# --- User Info in Sidebar ---
-user = get_user()
+    # --- Auth Gate ---
+    if not is_authenticated():
+        if not render_login_page():
+            st.stop()
 
-# --- Sidebar header ---
-st.sidebar.title("📊 Stock Analysis")
-if user:
-    st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
-render_theme_toggle()
+    # --- User Info in Sidebar ---
+    user = get_user()
 
-# --- Sidebar live ticker symbol selector ---
-_TICKER_PRESETS = ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-                   "QQQ", "IWM", "DIA", "VIX"]
-if "live_ticker_symbol" not in st.session_state:
-    st.session_state["live_ticker_symbol"] = "SPY"
-# Apply pending ticker change from Admin page (must happen BEFORE widget renders)
-if "_ticker_pending" in st.session_state:
-    st.session_state["live_ticker_symbol"] = st.session_state.pop("_ticker_pending")
-# Ensure current symbol is in the list (may have been set via Admin custom input)
-_current_sym = st.session_state["live_ticker_symbol"]
-_sidebar_options = _TICKER_PRESETS if _current_sym in _TICKER_PRESETS else [_current_sym] + _TICKER_PRESETS
-st.sidebar.selectbox(
-    "📈 Live Ticker",
-    _sidebar_options,
-    key="live_ticker_symbol",
-)
+    # --- Sidebar header ---
+    st.sidebar.title("📊 Stock Analysis")
+    if user:
+        st.sidebar.caption(f"👤 {user.get('name', user.get('email', ''))}")
+    render_theme_toggle()
+
+    # --- Sidebar live ticker symbol selector ---
+    _TICKER_PRESETS = ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+                       "QQQ", "IWM", "DIA", "VIX"]
+    if "live_ticker_symbol" not in st.session_state:
+        st.session_state["live_ticker_symbol"] = "SPY"
+    if "_ticker_pending" in st.session_state:
+        st.session_state["live_ticker_symbol"] = st.session_state.pop("_ticker_pending")
+    _current_sym = st.session_state["live_ticker_symbol"]
+    _sidebar_options = _TICKER_PRESETS if _current_sym in _TICKER_PRESETS else [_current_sym] + _TICKER_PRESETS
+    st.sidebar.selectbox(
+        "📈 Live Ticker",
+        _sidebar_options,
+        key="live_ticker_symbol",
+    )
+
+# Module-level user fallback for import path
+if not _IS_MAIN_SCRIPT:
+    user = None
 
 # NOTE: st.navigation is called after all page functions are defined (see bottom of file)
 
@@ -344,59 +353,6 @@ def page_spy():
     else:
         st.info("Waiting for prediction data...")
 
-    # --- Combined info row: Regime + Model + Conf Set + Macro (2 rows of 4) ---
-    macro = _fetch_live_macro()
-    r1, r2, r3, r4 = st.columns(4)
-    with r1:
-        regime = prediction.get("regime", "")
-        regime_labels = {
-            "bull_trend": "🟢 Bull", "bear_trend": "🔴 Bear",
-            "high_vol_choppy": "🟡 Choppy", "low_vol_range": "🔵 Range",
-        }
-        st.metric("Regime", regime_labels.get(regime, regime or "—"),
-                  help="HMM-detected market regime: Bull Trend, Bear Trend, High-Vol Choppy, or Low-Vol Range. Affects neutral threshold and model weighting.")
-    with r2:
-        if prediction.get("ensemble_used"):
-            st.metric("Model", "🔗 Ensemble",
-                      help="Stacking ensemble (XGBoost + BiLSTM + LightGBM) with logistic meta-learner.")
-        else:
-            st.metric("Model", "🌲 XGB",
-                      help="XGBoost gradient-boosted tree model with isotonic calibration.")
-    with r3:
-        pred_set = prediction.get("prediction_set", [])
-        is_low_conv = prediction.get("is_low_conviction", False)
-        if pred_set:
-            set_str = "/".join(pred_set)
-            st.metric("Conf. Set", f"{'⚠️' if is_low_conv else '✅'} {set_str}",
-                      help="Conformal prediction set at 90% coverage. Multiple directions = low conviction. Single direction = high conviction.")
-        else:
-            st.metric("Conf. Set", "—",
-                      help="Conformal prediction set — shows which directions are statistically plausible.")
-    with r4:
-        v = macro.get("vix") if macro else None
-        vc = macro.get("vix_change") if macro else None
-        st.metric("VIX", f"{v:.1f}" if v else "—",
-                  delta=f"{vc:+.1f}" if vc else None, delta_color="inverse",
-                  help="CBOE Volatility Index. <15 = low vol (range-bound), 15-25 = normal, >25 = high vol (trending). Inversely correlated with SPY.")
-
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        v = macro.get("us10y_yield") if macro else None
-        st.metric("10Y Yield", f"{v:.2f}%" if v else "—",
-                  help="US 10-Year Treasury yield. Rising yields = tighter financial conditions, typically bearish for equities.")
-    with m2:
-        v = macro.get("dxy") if macro else None
-        st.metric("DXY", f"{v:.1f}" if v else "—",
-                  help="US Dollar Index. Strong dollar = headwind for multinational earnings and risk assets.")
-    with m3:
-        v = macro.get("gold") if macro else None
-        st.metric("Gold", f"${v:,.0f}" if v else "—",
-                  help="Gold spot price. Safe-haven asset — rising gold often signals risk-off sentiment.")
-    with m4:
-        v = macro.get("crude") if macro else None
-        st.metric("Crude", f"${v:.1f}" if v else "—",
-                  help="WTI Crude Oil. Impacts energy sector and inflation expectations.")
-
     # --- P3: Earnings + Fed + Options (compact row) ---
     try:
         _p3_router = get_router(_load_config())
@@ -473,80 +429,6 @@ def page_spy():
                     st.caption(f"Tick div: {td:.3f}")
     except Exception:
         pass
-
-    # --- Market Valuation Context Panel ---
-    with st.expander("📊 Market Valuation Context", expanded=False):
-        try:
-            _val_router = get_router(_load_config())
-            breadth_df = _val_router.query(
-                "SELECT * FROM market_breadth ORDER BY date DESC LIMIT 1"
-            )
-            _val_macro = _fetch_live_macro()
-            if not breadth_df.empty:
-                row = breadth_df.iloc[0]
-                vc1, vc2, vc3, vc4, vc5, vc6 = st.columns(6)
-                with vc1:
-                    cape = row.get("sp500_cape")
-                    cape_sig = "🔴 Overvalued" if cape and cape > 30 else ("🟡 Elevated" if cape and cape > 20 else "🟢 Fair")
-                    st.metric("Shiller CAPE", f"{cape:.1f}" if cape else "N/A",
-                              help="Cyclically Adjusted P/E. Historical avg ~17. >30 = historically overvalued.")
-                    st.caption(cape_sig)
-                with vc2:
-                    buffett = row.get("buffett_indicator")
-                    buffett_sig = "🔴 Strongly OV" if buffett and buffett > 150 else ("🟡 Overvalued" if buffett and buffett > 100 else "🟢 Fair")
-                    st.metric("Buffett Indicator", f"{buffett:.0f}%" if buffett else "N/A",
-                              help="Market Cap / GDP. >100% = overvalued. >150% = strongly overvalued.")
-                    st.caption(buffett_sig)
-                with vc3:
-                    ey = row.get("sp500_earnings_yield")
-                    ry = _val_macro.get("us10y_yield") if _val_macro else None
-                    if ey and ry:
-                        ey_gap = ey - (ry / 100.0)
-                        ey_sig = "🟢 Equities Cheap" if ey_gap > 0 else "🔴 Bonds Better"
-                        st.metric("Earnings Yield Gap", f"{ey_gap:.2%}",
-                                  help="S&P 500 Earnings Yield minus 10Y Treasury Yield. Positive = equities attractive vs. bonds.")
-                        st.caption(ey_sig)
-                    else:
-                        st.metric("Earnings Yield Gap", "N/A")
-                with vc4:
-                    yc = _val_macro.get("yield_curve_10y3m") if _val_macro else None
-                    if yc is not None:
-                        yc_sig = "🔴 Inverted" if yc < 0 else "🟢 Normal"
-                        st.metric("Yield Curve (10Y-3M)", f"{yc:.2f}%",
-                                  help="10Y minus 3M Treasury spread. Negative = inverted = recession signal.")
-                        st.caption(yc_sig)
-                    else:
-                        st.metric("Yield Curve (10Y-3M)", "N/A")
-                with vc5:
-                    fg = row.get("fear_greed_index")
-                    if fg is not None and pd.notna(fg):
-                        fg = int(fg)
-                        fg_sig = ("🔥 Extreme Greed" if fg > 75
-                                  else ("😀 Greed" if fg > 55
-                                  else ("😐 Neutral" if fg > 45
-                                  else ("😨 Fear" if fg > 25
-                                  else "🥶 Extreme Fear"))))
-                        st.metric("Fear & Greed", f"{fg}",
-                                  help="Composite sentiment index (0-100). Extreme fear can signal contrarian buy opportunities.")
-                        st.caption(fg_sig)
-                    else:
-                        st.metric("Fear & Greed", "N/A")
-                with vc6:
-                    trin = row.get("trin")
-                    if trin is not None and pd.notna(trin):
-                        trin = float(trin)
-                        trin_sig = ("🟢 Buying Pressure" if trin < 0.8
-                                    else ("🔴 Selling Pressure" if trin > 1.2
-                                    else "😐 Neutral"))
-                        st.metric("TRIN (Arms Index)", f"{trin:.2f}",
-                                  help="Volume-weighted breadth. <1.0 = buying pressure, >1.0 = selling pressure.")
-                        st.caption(trin_sig)
-                    else:
-                        st.metric("TRIN (Arms Index)", "N/A")
-            else:
-                st.info("Run the daily pipeline to populate valuation data.")
-        except Exception as e:
-            st.warning(f"Valuation context unavailable: {e}")
 
     # --- SHAP drivers (compact) ---
     shap_drivers = prediction.get("shap_drivers", [])
@@ -645,9 +527,10 @@ def page_spy():
         st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.9rem;margin-bottom:4px;">KEY INDICATORS</p>',
                     unsafe_allow_html=True)
         if indicators:
-            # Use macro data for VIX to stay consistent with the top row
-            _vix_val = macro.get("vix") if macro else None
-            _vix_chg = macro.get("vix_change") if macro else None
+            # Use macro data for VIX to stay consistent with the overview page
+            _live_macro = _fetch_live_macro()
+            _vix_val = _live_macro.get("vix") if _live_macro else None
+            _vix_chg = _live_macro.get("vix_change") if _live_macro else None
             if _vix_val is None:
                 _vix_val = indicators.get("vix")
                 _vix_chg = indicators.get("vix_change")
@@ -1485,56 +1368,35 @@ def _run_in_thread(target, status_key: str, args=()):
     t.start()
 
 
-def page_admin():
-    st.markdown(page_header('⚙️ Admin Console'), unsafe_allow_html=True)
-
-    tab_status, tab_actions, tab_users, tab_db, tab_config, tab_logs = st.tabs([
-        "ℹ️ System Status", "▶️ Actions", "👤 Users", "🗃️ Database", "📝 Configuration", "📜 Logs",
-    ])
-
-    with tab_status:
-        # ── Live Ticker Settings ──
-        _colors = get_colors()
-        with st.expander("📈 Live Ticker Settings", expanded=False):
-            st.caption("Pick a preset or type any valid ticker symbol.")
-            _col_preset, _col_custom = st.columns([1, 1])
-            with _col_preset:
-                _preset = st.selectbox(
-                    "Preset symbols",
-                    ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-                     "QQQ", "IWM", "DIA", "NFLX", "AMD", "COIN", "SOFI", "PLTR"],
-                    key="admin_ticker_preset",
-                )
-                if st.button("Apply preset", key="apply_preset_ticker"):
-                    st.session_state["_ticker_pending"] = _preset
-                    st.rerun()
-            with _col_custom:
-                _custom = st.text_input(
-                    "Custom symbol",
-                    placeholder="e.g. SOFI, BTC-USD, ^GSPC",
-                    key="admin_ticker_custom",
-                )
-                if st.button("Apply custom", key="apply_custom_ticker") and _custom.strip():
-                    st.session_state["_ticker_pending"] = _custom.strip().upper()
-                    st.rerun()
-            st.caption(f"Currently tracking: **{st.session_state.get('live_ticker_symbol', 'SPY')}**")
-
-        _admin_status_tab()
-    with tab_actions:
-        _admin_actions_tab()
-    with tab_users:
-        _admin_users_tab()
-    with tab_db:
-        _admin_db_tab()
-    with tab_config:
-        _admin_config_tab()
-    with tab_logs:
-        _admin_logs_tab()
-
-
 # --- System Status Tab ---
 
 def _admin_status_tab():
+    # ── Live Ticker Settings (moved from old page_admin) ──
+    _colors = get_colors()
+    with st.expander("📈 Live Ticker Settings", expanded=False):
+        st.caption("Pick a preset or type any valid ticker symbol.")
+        _col_preset, _col_custom = st.columns([1, 1])
+        with _col_preset:
+            _preset = st.selectbox(
+                "Preset symbols",
+                ["SPY", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+                 "QQQ", "IWM", "DIA", "NFLX", "AMD", "COIN", "SOFI", "PLTR"],
+                key="admin_ticker_preset",
+            )
+            if st.button("Apply preset", key="apply_preset_ticker"):
+                st.session_state["_ticker_pending"] = _preset
+                st.rerun()
+        with _col_custom:
+            _custom = st.text_input(
+                "Custom symbol",
+                placeholder="e.g. SOFI, BTC-USD, ^GSPC",
+                key="admin_ticker_custom",
+            )
+            if st.button("Apply custom", key="apply_custom_ticker") and _custom.strip():
+                st.session_state["_ticker_pending"] = _custom.strip().upper()
+                st.rerun()
+        st.caption(f"Currently tracking: **{st.session_state.get('live_ticker_symbol', 'SPY')}**")
+
     st.subheader("System Health")
 
     if st.button("\u21BB Refresh Status", key="refresh_status"):
@@ -2831,6 +2693,11 @@ def _grafana_summary_cards():
 
 def page_grafana():
     """Embed Grafana dashboards or fall back to native Plotly monitoring."""
+    st.markdown(page_header("📡 System Monitoring"), unsafe_allow_html=True)
+    st.caption(
+        "Live system monitoring powered by Grafana. Dashboards cover SPY Predictor performance, "
+        "ES Strategy P&L, system health, and the data pipeline status."
+    )
 
     # --- Check if Grafana is reachable from the server ---
     config = _load_config_cached()
@@ -3454,29 +3321,7 @@ def page_quant_agent():
 # ROUTER — st.navigation handles page dispatch
 # ======================================================================
 
-_pages = {
-    "Markets": [
-        st.Page(page_spy, title="SPY Predictor", icon=":material/query_stats:", default=True),
-        st.Page(page_performance, title="Performance", icon=":material/verified:"),
-        st.Page(page_es, title="ES Strategy", icon=":material/candlestick_chart:"),
-        st.Page(page_strangle, title="Inverted Strangle", icon=":material/mediation:"),
-        st.Page(page_tuning, title="Tune & Backtest", icon=":material/tune:"),
-        st.Page(page_whatif, title="What-If Analysis", icon=":material/science:"),
-        st.Page(page_single_stock, title="Single-Stock", icon=":material/search:"),
-        st.Page(page_quant_agent, title="Quant Agent", icon=":material/smart_toy:"),
-    ],
-    "Operations": [
-        st.Page(page_monitoring, title="Monitoring", icon=":material/monitor_heart:"),
-        st.Page(page_grafana, title="Grafana Dashboards", icon=":material/dashboard:"),
-        st.Page(page_rules, title="Strategy Rules", icon=":material/rule:"),
-        st.Page(page_admin, title="Admin", icon=":material/settings:"),
-    ],
-}
-
-_pg = st.navigation(_pages)
-
-# ── Global live price ticker (auto-refreshes every 15s via st.fragment) ──
-@st.fragment(run_every=15)
+# ── Global live price ticker helper (defined at module level for reuse) ──
 @st.cache_data(ttl=15, show_spinner=False)
 def _fetch_ticker_price(symbol: str) -> tuple:
     """Cached live price fetch (15s TTL). Returns (price, prev_close) or (0, 0)."""
@@ -3520,14 +3365,45 @@ def _global_live_ticker():
     except Exception:
         pass
 
-_global_live_ticker()
 
-st.sidebar.divider()
-mode_label = "☁️ Cloud" if IS_CLOUD else "🖥️ Local"
-st.sidebar.caption(f"{mode_label} mode")
-if user and user.get("email") != "anonymous":
-    if st.sidebar.button("🚪 Sign Out", use_container_width=True):
-        logout()
-        st.rerun()
+# ── Only run navigation + page dispatch when this is the main Streamlit script ──
+if _IS_MAIN_SCRIPT:
+    _pages = {
+        "Dashboards": [
+            st.Page(page_market_overview, title="Market Overview", icon=":material/space_dashboard:", default=True),
+            st.Page(page_spy, title="SPY Predictor", icon=":material/query_stats:"),
+            st.Page(page_es, title="ES Strategy", icon=":material/candlestick_chart:"),
+            st.Page(page_strangle, title="Inverted Strangle", icon=":material/mediation:"),
+        ],
+        "Analysis": [
+            st.Page(page_single_stock, title="Single-Stock Analysis", icon=":material/search:"),
+            st.Page(page_performance, title="Performance Tracking", icon=":material/verified:"),
+            st.Page(page_scenario_analysis, title="Scenario Analysis", icon=":material/science:"),
+            st.Page(page_tuning, title="Model Tuning", icon=":material/tune:"),
+        ],
+        "Administration": [
+            st.Page(page_rules, title="Strategy Rules", icon=":material/rule:"),
+            st.Page(page_grafana, title="System Monitoring", icon=":material/dashboard:"),
+            st.Page(page_data_management, title="Data Management", icon=":material/database:"),
+            st.Page(page_system_management, title="System Management", icon=":material/settings:"),
+            st.Page(page_quant_agent, title="Quant Agent", icon=":material/smart_toy:"),
+        ],
+    }
 
-_pg.run()
+    _pg = st.navigation(_pages)
+
+    @st.fragment(run_every=15)
+    def _live_ticker_fragment():
+        _global_live_ticker()
+
+    _live_ticker_fragment()
+
+    st.sidebar.divider()
+    mode_label = "☁️ Cloud" if IS_CLOUD else "🖥️ Local"
+    st.sidebar.caption(f"{mode_label} mode")
+    if user and user.get("email") != "anonymous":
+        if st.sidebar.button("🚪 Sign Out", use_container_width=True):
+            logout()
+            st.rerun()
+
+    _pg.run()

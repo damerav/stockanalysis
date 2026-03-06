@@ -205,13 +205,16 @@ def get_colors() -> dict:
 
 
 def render_theme_toggle():
-    """Render a compact theme toggle in the sidebar."""
+    """Render a compact theme toggle in the sidebar (safe against duplicate calls)."""
     current = get_theme()
     icon = "🌙" if current == "dark" else "☀️"
     label = "Dark" if current == "dark" else "Light"
-    if st.sidebar.button(f"{icon} {label}", key="theme_toggle", use_container_width=True):
-        set_theme("light" if current == "dark" else "dark")
-        st.rerun()
+    try:
+        if st.sidebar.button(f"{icon} {label}", key="theme_toggle", use_container_width=True):
+            set_theme("light" if current == "dark" else "dark")
+            st.rerun()
+    except Exception:
+        pass  # Already rendered in this script run (duplicate import path)
 
 
 # ══════════════════════════════════════════════════════════════════════
