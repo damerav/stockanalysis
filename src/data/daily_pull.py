@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 def get_trading_days(start: str, end: str) -> list[str]:
-    """Generate list of expected trading days (Mon-Fri, excluding known holidays)."""
-    dates = pd.bdate_range(start=start, end=end)
-    return [d.strftime("%Y-%m-%d") for d in dates]
+    """Generate list of expected trading days using NYSE calendar."""
+    from src.data.calendar import get_nyse_trading_days
+    return get_nyse_trading_days(start, end)
 
 
 def find_gaps(conn, table: str = "prices",

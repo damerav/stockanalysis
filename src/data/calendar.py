@@ -1,10 +1,70 @@
 """Economic calendar — FOMC, CPI, NFP, OpEx dates for event-aware features."""
 
+import calendar as _cal
 import logging
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# NYSE holiday calendar (cached)
+# ---------------------------------------------------------------------------
+_NYSE_HOLIDAYS: Optional[set] = None
+_NYSE_TRADING_DAYS: Optional[set] = None
+
+
+def _ensure_nyse_calendar():
+    """Lazy-load NYSE holidays + trading days for 2020-2028 (covers training window)."""
+    global _NYSE_HOLIDAYS, _NYSE_TRADING_DAYS
+    if _NYSE_HOLIDAYS is not None:
+        return
+    try:
+        import pandas_market_calendars as mcal
+        nyse = mcal.get_calendar("NYSE")
+        schedule = nyse.schedule(start_date="2020-01-01", end_date="2028-12-31")
+        _NYSE_TRADING_DAYS = {d.date() for d in schedule.index}
+        # Holidays = business days that are NOT trading days
+        import pandas as pd
+        bdays = set(pd.bdate_range("2020-01-01", "2028-12-31").date)
+        _NYSE_HOLIDAYS = bdays - _NYSE_TRADING_DAYS
+        logger.debug("NYSE calendar loaded: %d holidays, %d trading days",
+                      len(_NYSE_HOLIDAYS), len(_NYSE_TRADING_DAYS))
+    except ImportError:
+        logger.warning("pandas_market_calendars not installed — holiday features disabled")
+        _NYSE_HOLIDAYS = set()
+        _NYSE_TRADING_DAYS = set()
+    except Exception as e:
+        logger.warning("NYSE calendar load failed: %s", e)
+        _NYSE_HOLIDAYS = set()
+        _NYSE_TRADING_DAYS = set()
+
+
+def _next_trading_day(from_date: date) -> Optional[date]:
+    """Return the next NYSE trading day after from_date."""
+    _ensure_nyse_calendar()
+    if not _NYSE_TRADING_DAYS:
+        return None
+    d = from_date + timedelta(days=1)
+    for _ in range(10):  # max 10 days lookahead
+        if d in _NYSE_TRADING_DAYS:
+            return d
+        d += timedelta(days=1)
+    return None
+
+
+def _prev_trading_day(from_date: date) -> Optional[date]:
+    """Return the previous NYSE trading day before from_date."""
+    _ensure_nyse_calendar()
+    if not _NYSE_TRADING_DAYS:
+        return None
+    d = from_date - timedelta(days=1)
+    for _ in range(10):
+        if d in _NYSE_TRADING_DAYS:
+            return d
+        d -= timedelta(days=1)
+    return None
 
 # Third Friday of each month (options expiration)
 def _third_friday(year: int, month: int) -> date:
@@ -103,6 +163,36 @@ def get_event_features(from_date: Union[date, None] = None) -> dict:
     opex = _opex_date(from_date)
     days_opex = (opex - from_date).days
 
+    weekday = from_date.weekday()
+    last_day = _cal.monthrange(from_date.year, from_date.month)[1]
+
+    # --- Holiday / long-weekend features ---
+    _ensure_nyse_calendar()
+    is_pre_holiday = 0
+    is_post_holiday = 0
+    is_long_weekend_start = 0
+    is_long_weekend_end = 0
+    if _NYSE_HOLIDAYS:
+        # Pre-holiday: tomorrow is a holiday (or weekend + holiday)
+        nxt = _next_trading_day(from_date)
+        prv = _prev_trading_day(from_date)
+        if nxt:
+            gap_fwd = (nxt - from_date).days
+            # Friday before a long weekend (next trading day is Tue or later)
+            if weekday == 4 and gap_fwd > 3:
+                is_long_weekend_start = 1
+            # Non-Friday pre-holiday (e.g., Wed before Thanksgiving)
+            elif gap_fwd > 1 and weekday < 4:
+                is_pre_holiday = 1
+        if prv:
+            gap_bwd = (from_date - prv).days
+            # First trading day after a long weekend (3+ calendar day gap)
+            if gap_bwd > 3:
+                is_long_weekend_end = 1
+            # Post-holiday (gap > 1 but not a long weekend)
+            elif gap_bwd > 1:
+                is_post_holiday = 1
+
     return {
         "days_to_fomc": days_fomc,
         "is_fomc_week": int(days_fomc <= 5),
@@ -113,8 +203,27 @@ def get_event_features(from_date: Union[date, None] = None) -> dict:
         "is_triple_witching": int(_is_triple_witching(from_date)),
         "is_quarter_end": int(from_date.month in (3, 6, 9, 12)
                               and from_date.day >= 25),
-        "day_of_week": from_date.weekday(),
+        "day_of_week": weekday,
         "week_of_month": (from_date.day - 1) // 7 + 1,
+        # One-hot day-of-week (replaces raw integer for model)
+        "is_monday": int(weekday == 0),
+        "is_tuesday": int(weekday == 1),
+        "is_wednesday": int(weekday == 2),
+        "is_thursday": int(weekday == 3),
+        "is_friday": int(weekday == 4),
+        # 0DTE expiry day (SPY has Mon/Wed/Fri 0DTE since 2023)
+        "is_0dte_day": int(weekday in (0, 2, 4)),
+        # Month-end rebalancing window (last 3 trading days)
+        "is_month_end": int(from_date.day >= last_day - 2),
+        # Quarter-end window dressing (last week of quarter)
+        "is_quarter_end_week": int(
+            from_date.month in (3, 6, 9, 12) and from_date.day >= 24
+        ),
+        # Holiday / long-weekend effects
+        "is_pre_holiday": is_pre_holiday,
+        "is_post_holiday": is_post_holiday,
+        "is_long_weekend_start": is_long_weekend_start,
+        "is_long_weekend_end": is_long_weekend_end,
     }
 
 
@@ -123,3 +232,19 @@ def has_nearby_event(from_date: date, window: int = 2) -> bool:
     return (days_until_next(_FOMC, from_date) <= window
             or days_until_next(_CPI, from_date) <= window
             or days_until_next(_NFP, from_date) <= window)
+
+
+def get_nyse_trading_days(start: str, end: str) -> list[str]:
+    """Return NYSE trading days between start and end (inclusive).
+
+    Falls back to pd.bdate_range if pandas_market_calendars is unavailable.
+    """
+    _ensure_nyse_calendar()
+    if _NYSE_TRADING_DAYS:
+        from datetime import date as _date
+        s = _date.fromisoformat(start)
+        e = _date.fromisoformat(end)
+        return sorted(d.isoformat() for d in _NYSE_TRADING_DAYS if s <= d <= e)
+    # Fallback
+    import pandas as pd
+    return [d.strftime("%Y-%m-%d") for d in pd.bdate_range(start=start, end=end)]

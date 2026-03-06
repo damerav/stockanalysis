@@ -31,6 +31,8 @@ sqlalchemy>=2.0
 cryptography>=42.0
 # HTML parsing (Wikipedia S&P 500 list)
 lxml>=5.0
+# NYSE trading calendar (holidays, half-days)
+pandas_market_calendars>=4.4
 # Comprehensive technical indicators
 pandas-ta>=0.3.14b
 # LSTM forecaster + news pipeline

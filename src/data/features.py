@@ -1006,6 +1006,12 @@ def get_feature_columns() -> list[str]:
         "days_to_cpi", "days_to_nfp", "days_to_opex",
         "is_triple_witching", "is_quarter_end",
         "day_of_week", "week_of_month",
+        # Day-of-week one-hot + expiry/rebalancing calendar
+        "is_monday", "is_tuesday", "is_wednesday", "is_thursday", "is_friday",
+        "is_0dte_day", "is_month_end", "is_quarter_end_week",
+        # Holiday / long-weekend effects
+        "is_pre_holiday", "is_post_holiday",
+        "is_long_weekend_start", "is_long_weekend_end",
         # P3: Earnings calendar
         "earnings_density", "days_to_next_mega", "earnings_week",
         # P3: Fed communication
