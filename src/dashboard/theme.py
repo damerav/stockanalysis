@@ -486,6 +486,7 @@ def theme_css() -> str:
     }}
     [data-testid="stExpander"] summary {{
         color: {c['text_secondary']} !important;
+        background-color: transparent !important;
         font-weight: 600 !important;
         font-size: 0.82rem !important;
     }}

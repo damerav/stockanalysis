@@ -465,6 +465,7 @@ p, span, label, .stMarkdown, .stText,
 }
 [data-testid="stExpander"] summary {
     color: var(--color-text-secondary) !important;
+    background-color: transparent !important;
     font-weight: 600 !important;
     font-size: 0.82rem !important;
     letter-spacing: 0.02em;
