@@ -499,6 +499,33 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         vix_ma20 = df["vix"].rolling(20).mean()
         df["vix_mean_reversion"] = (df["vix"] - vix_ma20) / vix_ma20.replace(0, np.nan)
 
+    # --- Price level features ---
+    # 52-week high/low proximity (how far from yearly extremes)
+    high_52w = df["high"].rolling(252, min_periods=100).max()
+    low_52w = df["low"].rolling(252, min_periods=100).min()
+    df["pct_from_52w_high"] = (df["close"] - high_52w) / high_52w.replace(0, np.nan)
+    df["pct_from_52w_low"] = (df["close"] - low_52w) / low_52w.replace(0, np.nan)
+    # Previous day's high/low proximity
+    df["price_vs_prev_high"] = (df["close"] - df["high"].shift(1)) / df["high"].shift(1).replace(0, np.nan)
+    df["price_vs_prev_low"] = (df["close"] - df["low"].shift(1)) / df["low"].shift(1).replace(0, np.nan)
+    # Distance from nearest $50 round number (psychological level)
+    round_50 = (df["close"] / 50).round() * 50
+    df["dist_from_round_50"] = (df["close"] - round_50) / round_50.replace(0, np.nan)
+
+    # --- Trend persistence & breakout features ---
+    # Consecutive up/down days
+    up_day = (df["close"] > df["close"].shift(1)).astype(int)
+    down_day = (df["close"] < df["close"].shift(1)).astype(int)
+    up_streak = up_day.groupby((up_day != up_day.shift()).cumsum()).cumcount() + 1
+    df["consecutive_up_days"] = up_streak.where(up_day == 1, 0)
+    down_streak = down_day.groupby((down_day != down_day.shift()).cumsum()).cumcount() + 1
+    df["consecutive_down_days"] = down_streak.where(down_day == 1, 0)
+    # 20-day Donchian breakout/breakdown (close vs prior day's channel)
+    don_high_20 = df["high"].rolling(20, min_periods=20).max().shift(1)
+    don_low_20 = df["low"].rolling(20, min_periods=20).min().shift(1)
+    df["breakout_20d"] = (df["high"] > don_high_20).astype(int)
+    df["breakdown_20d"] = (df["low"] < don_low_20).astype(int)
+
     # Max pain distance (if available)
     df["max_pain_distance"] = (df["close"] - df["max_pain"]) / df["close"]
     df["gex_normalized"] = df["gex"] / df["close"]
@@ -1001,6 +1028,12 @@ def get_feature_columns() -> list[str]:
         "return_1d", "return_2d", "return_3d", "momentum_20d",
         "overnight_gap", "intraday_return", "daily_range_pct", "close_position",
         "rsi_roc", "volume_spike", "vix_mean_reversion",
+        # Price level features
+        "pct_from_52w_high", "pct_from_52w_low",
+        "price_vs_prev_high", "price_vs_prev_low", "dist_from_round_50",
+        # Trend persistence & breakout
+        "consecutive_up_days", "consecutive_down_days",
+        "breakout_20d", "breakdown_20d",
         # Calendar / event features (P1)
         "days_to_fomc", "is_fomc_week", "is_fomc_day",
         "days_to_cpi", "days_to_nfp", "days_to_opex",
