@@ -177,6 +177,8 @@ def init_db(config: dict = None) -> str:
         router = DbRouter(config)
         if router.using_postgres:
             logger.info("PostgreSQL connection verified")
+            # Enable TimescaleDB if available
+            _init_timescaledb(router)
             # Ensure strategy_rules table exists in PostgreSQL
             try:
                 router.execute("""
@@ -274,6 +276,137 @@ def init_db(config: dict = None) -> str:
         logger.debug(f"PostgreSQL not available (non-fatal): {e}")
 
     return db_path
+
+
+def _init_timescaledb(router):
+    """Enable TimescaleDB extension and convert tables to hypertables if available.
+
+    Safe to call multiple times — all operations use IF NOT EXISTS.
+    Falls back silently if TimescaleDB is not installed.
+    """
+    if not router.using_postgres:
+        return
+
+    conn = router.get_pg()
+    cur = conn.cursor()
+
+    # Check if TimescaleDB is available
+    try:
+        cur.execute("SELECT default_version FROM pg_available_extensions WHERE name = 'timescaledb'")
+        row = cur.fetchone()
+        if not row:
+            logger.debug("TimescaleDB not available, using regular PostgreSQL")
+            cur.close()
+            return
+    except Exception:
+        cur.close()
+        return
+
+    # Install extension
+    try:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE")
+        logger.info("TimescaleDB extension enabled")
+    except Exception as e:
+        logger.debug(f"TimescaleDB extension install skipped: {e}")
+        cur.close()
+        return
+
+    # Convert time-series tables to hypertables
+    # (table, time_col, chunk_interval, extra_unique_cols)
+    hypertables = [
+        ("prices",            "date", "1 month",  []),
+        ("technicals",        "date", "1 month",  []),
+        ("macro",             "date", "1 month",  []),
+        ("daily_sentiment",   "date", "1 month",  []),
+        ("options_analytics", "date", "1 month",  []),
+        ("intraday_features", "date", "1 month",  []),
+        ("market_breadth",    "date", "3 months", []),
+        ("predictions",       "date", "3 months", []),
+        ("performance",       "date", "3 months", []),
+        ("backtest_results",  "date", "3 months", []),
+        ("intraday_bars",     "timestamp", "1 week", ["ticker"]),
+        ("options_chain",     "date", "1 month",  ["contract_symbol"]),
+    ]
+
+    for table, time_col, chunk_interval, extra_cols in hypertables:
+        try:
+            # Check if already a hypertable
+            cur.execute(
+                "SELECT COUNT(*) FROM timescaledb_information.hypertables "
+                "WHERE hypertable_name = %s", (table,)
+            )
+            if cur.fetchone()[0] > 0:
+                continue  # Already a hypertable
+
+            # Check if table exists
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema = 'public' AND table_name = %s", (table,)
+            )
+            if cur.fetchone()[0] == 0:
+                continue  # Table doesn't exist yet
+
+            # Convert TEXT date columns to DATE type (required by TimescaleDB)
+            if time_col == "date":
+                cur.execute("""
+                    SELECT data_type FROM information_schema.columns
+                    WHERE table_name = %s AND column_name = 'date'
+                """, (table,))
+                dtype_row = cur.fetchone()
+                if dtype_row and dtype_row[0] in ('text', 'character varying'):
+                    cur.execute(f"ALTER TABLE {table} "
+                                f"ALTER COLUMN date TYPE DATE USING date::DATE")
+
+            # Convert intraday_bars timestamp from TEXT to TIMESTAMPTZ if needed
+            if table == "intraday_bars":
+                cur.execute("""
+                    SELECT data_type FROM information_schema.columns
+                    WHERE table_name = %s AND column_name = 'timestamp'
+                """, (table,))
+                dtype_row = cur.fetchone()
+                if dtype_row and dtype_row[0] in ('text', 'character varying'):
+                    cur.execute(f"""
+                        ALTER TABLE {table}
+                        ALTER COLUMN timestamp TYPE TIMESTAMPTZ
+                        USING timestamp::TIMESTAMPTZ
+                    """)
+
+            # Drop PK constraint (TimescaleDB needs time col in unique constraints)
+            cur.execute("""
+                SELECT constraint_name FROM information_schema.table_constraints
+                WHERE table_name = %s AND constraint_type = 'PRIMARY KEY'
+            """, (table,))
+            pk_row = cur.fetchone()
+            if pk_row:
+                cur.execute(f"ALTER TABLE {table} DROP CONSTRAINT {pk_row[0]}")
+
+            # Add UNIQUE constraint
+            unique_cols = [time_col] + extra_cols
+            cols_str = ", ".join(unique_cols)
+            uq_name = f"uq_{table}_{'_'.join(unique_cols)}"
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD CONSTRAINT {uq_name} "
+                            f"UNIQUE ({cols_str})")
+            except Exception:
+                pass  # May already exist
+
+            # Create hypertable
+            cur.execute(
+                f"SELECT create_hypertable('{table}', '{time_col}', "
+                f"chunk_time_interval => INTERVAL '{chunk_interval}', "
+                f"if_not_exists => TRUE, migrate_data => TRUE)"
+            )
+            logger.info(f"Converted {table} to hypertable (chunk={chunk_interval})")
+
+        except Exception as e:
+            logger.debug(f"Hypertable conversion skipped for {table}: {e}")
+            try:
+                conn.rollback()
+                conn.autocommit = True
+            except Exception:
+                pass
+
+    cur.close()
 
 
 def _migrate_schema(conn: sqlite3.Connection):

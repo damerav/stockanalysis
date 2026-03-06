@@ -499,7 +499,7 @@ def page_performance():
             opacity=0.3,
         ), secondary_y=True)
 
-        _bt_layout = {k: v for k, v in layout.items() if k not in ("legend", "yaxis")}
+        _bt_layout = {k: v for k, v in layout.items() if k not in ("legend", "yaxis", "margin")}
         fig_bt.update_layout(**_bt_layout, height=420, xaxis_rangeslider_visible=False,
                              legend=dict(orientation="h", yanchor="bottom", y=1.02,
                                          xanchor="right", x=1))
@@ -508,6 +508,51 @@ def page_performance():
         fig_bt.update_yaxes(title_text="Daily Return", tickformat=".1%",
                             secondary_y=True)
         st.plotly_chart(fig_bt, use_container_width=True, key="perf_backtest_trend")
+
+        # ── Direction Accuracy Summary ────────────────────────────────
+        st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
+                    f'font-size:0.95rem;">Direction Prediction Summary</p>',
+                    unsafe_allow_html=True)
+
+        # Compute per-direction stats
+        _bull_mask = bt_df["actual_direction"] == "BULLISH"
+        _bear_mask = bt_df["actual_direction"] == "BEARISH"
+        _neut_mask = bt_df["actual_direction"] == "NEUTRAL"
+        _bull_pred = bt_df["predicted_direction"].str.contains("BULLISH", na=False)
+        _bear_pred = bt_df["predicted_direction"].str.contains("BEARISH", na=False)
+
+        bull_days = _bull_mask.sum()
+        bear_days = _bear_mask.sum()
+        neut_days = _neut_mask.sum()
+        bull_acc = bt_df.loc[_bull_mask, "correct"].mean() if bull_days > 0 else 0
+        bear_acc = bt_df.loc[_bear_mask, "correct"].mean() if bear_days > 0 else 0
+        neut_acc = bt_df.loc[_neut_mask, "correct"].mean() if neut_days > 0 else 0
+
+        # Bias: how often model predicts bull vs bear
+        bull_pred_pct = _bull_pred.mean()
+        bear_pred_pct = _bear_pred.mean()
+
+        # Miss count
+        miss_count = (bt_df["correct"] == 0).sum()
+        miss_pct = miss_count / bt_total if bt_total > 0 else 0
+
+        dc1, dc2, dc3, dc4, dc5 = st.columns(5)
+        dc1.markdown(metric_card("Bull Day Acc", f"{bull_acc:.0%} ({bull_days}d)",
+                                 color="green" if bull_acc > 0.5 else "red"),
+                     unsafe_allow_html=True)
+        dc2.markdown(metric_card("Bear Day Acc", f"{bear_acc:.0%} ({bear_days}d)",
+                                 color="green" if bear_acc > 0.5 else "red"),
+                     unsafe_allow_html=True)
+        dc3.markdown(metric_card("Neutral Day Acc", f"{neut_acc:.0%} ({neut_days}d)",
+                                 color="green" if neut_acc > 0.4 else "red"),
+                     unsafe_allow_html=True)
+        dc4.markdown(metric_card("Bullish Bias", f"{bull_pred_pct:.0%}",
+                                 color="yellow" if bull_pred_pct > 0.6 else "green"),
+                     unsafe_allow_html=True)
+        dc5.markdown(metric_card("Total Misses", f"{miss_count} ({miss_pct:.0%})"),
+                     unsafe_allow_html=True)
+
+        st.markdown("")
 
         # Predicted vs Actual direction scatter
         st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
@@ -548,6 +593,161 @@ def page_performance():
                                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                                             xanchor="right", x=1))
         st.plotly_chart(fig_bt_pv, use_container_width=True, key="perf_backtest_pv")
+
+        # ── Miss Analysis — Why Predictions Went Wrong ───────────────
+        misses_df = bt_df[bt_df["correct"] == 0].copy()
+        if not misses_df.empty and len(misses_df) >= 3:
+            st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
+                        f'font-size:0.95rem;">🔍 Miss Analysis — Why Predictions Went Wrong</p>',
+                        unsafe_allow_html=True)
+
+            ma1, ma2, ma3 = st.columns(3)
+
+            # 1) Miss Type Breakdown: what did the model predict vs what happened
+            with ma1:
+                misses_df["miss_type"] = (
+                    misses_df["predicted_direction"].str.replace("WEAK_", "", regex=False)
+                    .str.replace("STRONG_", "", regex=False)
+                    + " → " + misses_df["actual_direction"]
+                )
+                miss_types = misses_df["miss_type"].value_counts().head(6)
+                if not miss_types.empty:
+                    fig_mt = go.Figure(go.Bar(
+                        x=miss_types.values, y=miss_types.index,
+                        orientation="h", marker_color=colors["red"],
+                        text=miss_types.values, textposition="outside",
+                    ))
+                    fig_mt.update_layout(**_bt_layout, height=280,
+                                         title=dict(text="Miss Types (Predicted → Actual)",
+                                                    font=get_title_font()),
+                                         xaxis_title="Count", margin=dict(l=140))
+                    st.plotly_chart(fig_mt, use_container_width=True, key="miss_types")
+
+            # 2) Miss by Confidence: are high-confidence misses common?
+            with ma2:
+                misses_df["conf_bucket"] = pd.cut(
+                    misses_df["predicted_confidence"],
+                    bins=[0, 40, 45, 50, 55, 60, 100],
+                    labels=["<40%", "40-45%", "45-50%", "50-55%", "55-60%", ">60%"]
+                )
+                miss_by_conf = misses_df["conf_bucket"].value_counts().sort_index()
+                # Also compute miss rate per bucket from full data
+                bt_df["_conf_bkt"] = pd.cut(
+                    bt_df["predicted_confidence"],
+                    bins=[0, 40, 45, 50, 55, 60, 100],
+                    labels=["<40%", "40-45%", "45-50%", "50-55%", "55-60%", ">60%"]
+                )
+                miss_rate_by_conf = bt_df.groupby("_conf_bkt", observed=True).apply(
+                    lambda g: (g["correct"] == 0).mean(), include_groups=False
+                )
+                if not miss_rate_by_conf.empty:
+                    fig_mc = go.Figure()
+                    fig_mc.add_trace(go.Bar(
+                        x=miss_rate_by_conf.index.astype(str),
+                        y=miss_rate_by_conf.values,
+                        marker_color=[colors["red"] if v > 0.6 else
+                                      colors["orange"] if v > 0.5 else colors["blue"]
+                                      for v in miss_rate_by_conf.values],
+                        text=[f"{v:.0%}" for v in miss_rate_by_conf.values],
+                        textposition="outside",
+                    ))
+                    fig_mc.update_layout(**_bt_layout, height=280,
+                                         title=dict(text="Miss Rate by Confidence",
+                                                    font=get_title_font()),
+                                         yaxis_tickformat=".0%",
+                                         yaxis_range=[0, min(1.0, miss_rate_by_conf.max() + 0.15)])
+                    st.plotly_chart(fig_mc, use_container_width=True, key="miss_by_conf")
+
+            # 3) Return magnitude on miss days: small or large moves?
+            with ma3:
+                miss_returns = misses_df["actual_return"].dropna() * 100  # to pct
+                if len(miss_returns) > 3:
+                    fig_mr = go.Figure(go.Histogram(
+                        x=miss_returns, nbinsx=20,
+                        marker_color=colors["red"], opacity=0.7,
+                    ))
+                    avg_miss_ret = miss_returns.mean()
+                    fig_mr.add_vline(x=avg_miss_ret, line_dash="dash",
+                                     line_color=colors["text_heading"],
+                                     annotation_text=f"Avg: {avg_miss_ret:.2f}%",
+                                     annotation_position="top right")
+                    fig_mr.update_layout(**_bt_layout, height=280,
+                                         title=dict(text="Return on Miss Days",
+                                                    font=get_title_font()),
+                                         xaxis_title="Actual Return (%)",
+                                         yaxis_title="Count")
+                    st.plotly_chart(fig_mr, use_container_width=True, key="miss_returns")
+
+            # Detailed miss insights text
+            with st.expander("📋 Detailed Miss Insights", expanded=False):
+                # Worst misses: high confidence + wrong direction
+                high_conf_misses = misses_df[misses_df["predicted_confidence"] >= 50]
+                hc_count = len(high_conf_misses)
+
+                # Directional bias in misses
+                bull_misses = misses_df[misses_df["predicted_direction"].str.contains("BULLISH", na=False)]
+                bear_misses = misses_df[misses_df["predicted_direction"].str.contains("BEARISH", na=False)]
+
+                # Large move misses (>1% actual return)
+                large_misses = misses_df[misses_df["actual_return"].abs() > 0.01]
+
+                insights = []
+                if hc_count > 0:
+                    insights.append(f"⚠️ **High-confidence misses** (≥50%): {hc_count} "
+                                    f"({hc_count/len(misses_df):.0%} of all misses). "
+                                    f"Avg confidence on these: "
+                                    f"{high_conf_misses['predicted_confidence'].mean():.1f}%")
+
+                if len(bull_misses) > len(bear_misses) * 1.5:
+                    insights.append(f"📈 **Bullish bias in misses**: {len(bull_misses)} bullish "
+                                    f"misses vs {len(bear_misses)} bearish misses. "
+                                    f"Model over-predicts up days.")
+                elif len(bear_misses) > len(bull_misses) * 1.5:
+                    insights.append(f"📉 **Bearish bias in misses**: {len(bear_misses)} bearish "
+                                    f"misses vs {len(bull_misses)} bullish misses. "
+                                    f"Model over-predicts down days.")
+
+                if len(large_misses) > 0:
+                    avg_large = large_misses["actual_return"].abs().mean() * 100
+                    insights.append(f"💥 **Large-move misses** (>1%): {len(large_misses)} days. "
+                                    f"Avg magnitude: {avg_large:.2f}%. "
+                                    f"These are the costliest errors.")
+
+                # Streak analysis: longest consecutive miss streak
+                miss_streak = 0
+                max_streak = 0
+                for c in bt_df["correct"]:
+                    if c == 0:
+                        miss_streak += 1
+                        max_streak = max(max_streak, miss_streak)
+                    else:
+                        miss_streak = 0
+                if max_streak >= 3:
+                    insights.append(f"🔴 **Longest miss streak**: {max_streak} consecutive days. "
+                                    f"Consider regime-aware confidence dampening.")
+
+                # Neutral confusion
+                neut_misses = misses_df[misses_df["actual_direction"] == "NEUTRAL"]
+                if len(neut_misses) > len(misses_df) * 0.3:
+                    insights.append(f"⚖️ **Neutral day confusion**: {len(neut_misses)} misses "
+                                    f"({len(neut_misses)/len(misses_df):.0%}) were on neutral days "
+                                    f"(|return| < 0.3%). Model struggles with flat markets.")
+
+                if insights:
+                    for ins in insights:
+                        st.markdown(ins)
+                else:
+                    st.info("No significant miss patterns detected.")
+
+                # Recent misses table
+                st.markdown("")
+                st.caption("Most recent misses:")
+                recent_misses = misses_df.tail(15).iloc[::-1]
+                display_cols = ["date", "predicted_direction", "predicted_confidence",
+                                "actual_direction", "actual_return", "regime"]
+                display_cols = [c for c in display_cols if c in recent_misses.columns]
+                st.dataframe(recent_misses[display_cols], use_container_width=True,
+                             hide_index=True)
 
         # Regime-stratified backtest accuracy
         st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'

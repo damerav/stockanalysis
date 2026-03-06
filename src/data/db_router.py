@@ -1,6 +1,8 @@
 """Database Router - Routes queries to PostgreSQL (primary) with SQLite fallback.
 
 PostgreSQL is the primary database with pgvector support for semantic search.
+TimescaleDB extension provides hypertables, continuous aggregates, and compression
+for time-series tables when available. Falls back to regular PostgreSQL seamlessly.
 SQLite is kept as a fallback for environments without PostgreSQL.
 Uses SQLAlchemy engine for pandas read_sql_query to avoid psycopg2 warnings.
 """
@@ -162,9 +164,28 @@ class DbRouter:
         backend = "PostgreSQL" if self._pg_conn else "SQLite"
         logger.info(f"DbRouter ready: primary={backend}")
 
+        # Detect TimescaleDB
+        self._has_timescaledb = False
+        if self._pg_conn:
+            try:
+                cur = self._pg_conn.cursor()
+                cur.execute("SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'")
+                row = cur.fetchone()
+                if row:
+                    self._has_timescaledb = True
+                    logger.info(f"DbRouter: TimescaleDB {row[0]} detected")
+                cur.close()
+            except Exception:
+                pass
+
     @property
     def using_postgres(self) -> bool:
         return self._pg_conn is not None
+
+    @property
+    def has_timescaledb(self) -> bool:
+        """True if TimescaleDB extension is installed."""
+        return self._has_timescaledb
 
     def get_pg(self):
         return self._pg_conn
@@ -372,6 +393,152 @@ class DbRouter:
             except Exception:
                 pass
         logger.info("DbRouter connections closed")
+
+    # ── TimescaleDB helpers ──────────────────────────────────────
+
+    def query_time_bucket(self, table: str, time_col: str, bucket: str,
+                          agg_cols: dict, where: str = "",
+                          params: tuple = None) -> pd.DataFrame:
+        """Query with time_bucket if TimescaleDB is available, else manual GROUP BY.
+
+        Args:
+            table: Table name
+            time_col: Time column name (e.g. 'date', 'timestamp')
+            bucket: Bucket size (e.g. '1 week', '1 month')
+            agg_cols: Dict of {alias: sql_expr} e.g. {"avg_close": "AVG(close)"}
+            where: Optional WHERE clause (without 'WHERE' keyword)
+            params: Optional query params
+        """
+        agg_str = ", ".join(f"{expr} AS {alias}" for alias, expr in agg_cols.items())
+        where_clause = f"WHERE {where}" if where else ""
+
+        if self._has_timescaledb and self._pg_engine:
+            sql = (f"SELECT time_bucket('{bucket}', {time_col}) AS bucket, "
+                   f"{agg_str} FROM {table} {where_clause} "
+                   f"GROUP BY bucket ORDER BY bucket")
+        else:
+            # Fallback: use date_trunc for PostgreSQL, strftime for SQLite
+            if self._pg_engine:
+                # Map bucket to date_trunc precision
+                trunc_map = {"1 week": "week", "1 month": "month",
+                             "1 day": "day", "1 hour": "hour"}
+                precision = trunc_map.get(bucket, "day")
+                sql = (f"SELECT date_trunc('{precision}', {time_col}::timestamp) AS bucket, "
+                       f"{agg_str} FROM {table} {where_clause} "
+                       f"GROUP BY bucket ORDER BY bucket")
+            else:
+                # SQLite fallback
+                fmt_map = {"1 week": "%Y-%W", "1 month": "%Y-%m",
+                           "1 day": "%Y-%m-%d", "1 hour": "%Y-%m-%d %H"}
+                fmt = fmt_map.get(bucket, "%Y-%m-%d")
+                sql = (f"SELECT strftime('{fmt}', {time_col}) AS bucket, "
+                       f"{agg_str} FROM {table} {where_clause} "
+                       f"GROUP BY bucket ORDER BY bucket")
+
+        return self.query(sql, params)
+
+    def query_continuous_aggregate(self, view_name: str, fallback_sql: str,
+                                   params: tuple = None) -> pd.DataFrame:
+        """Query a continuous aggregate view, falling back to raw SQL if unavailable.
+
+        Args:
+            view_name: TimescaleDB continuous aggregate name (e.g. 'cagg_prices_weekly')
+            fallback_sql: SQL to run if the view doesn't exist
+            params: Optional query params
+        """
+        if self._has_timescaledb and self._pg_engine:
+            try:
+                # Check if the view exists
+                check_sql = ("SELECT COUNT(*) FROM information_schema.views "
+                             "WHERE table_name = %s")
+                cur = self._pg_conn.cursor()
+                cur.execute(check_sql, (view_name,))
+                exists = cur.fetchone()[0] > 0
+                cur.close()
+
+                if not exists:
+                    # Also check materialized views
+                    cur = self._pg_conn.cursor()
+                    cur.execute(
+                        "SELECT COUNT(*) FROM pg_matviews WHERE matviewname = %s",
+                        (view_name,)
+                    )
+                    exists = cur.fetchone()[0] > 0
+                    cur.close()
+
+                if exists:
+                    return self.query(f"SELECT * FROM {view_name} ORDER BY 1", params)
+            except Exception as e:
+                logger.debug(f"Continuous aggregate {view_name} query failed: {e}")
+
+        # Fallback to raw SQL
+        return self.query(fallback_sql, params)
+
+    def get_weekly_prices(self) -> pd.DataFrame:
+        """Get weekly OHLCV data — uses continuous aggregate if available."""
+        return self.query_continuous_aggregate(
+            "cagg_prices_weekly",
+            "SELECT date_trunc('week', date::timestamp) AS week, "
+            "MIN(open) AS open, MAX(high) AS high, MIN(low) AS low, "
+            "(array_agg(close ORDER BY date DESC))[1] AS close, "
+            "SUM(volume) AS volume, AVG(close) AS avg_close "
+            "FROM prices GROUP BY week ORDER BY week"
+            if self._pg_engine else
+            "SELECT strftime('%Y-%W', date) AS week, "
+            "MIN(open) AS open, MAX(high) AS high, MIN(low) AS low, "
+            "close AS close, SUM(volume) AS volume, AVG(close) AS avg_close "
+            "FROM prices GROUP BY week ORDER BY week"
+        )
+
+    def get_monthly_prices(self) -> pd.DataFrame:
+        """Get monthly OHLCV data — uses continuous aggregate if available."""
+        return self.query_continuous_aggregate(
+            "cagg_prices_monthly",
+            "SELECT date_trunc('month', date::timestamp) AS month, "
+            "MIN(open) AS open, MAX(high) AS high, MIN(low) AS low, "
+            "(array_agg(close ORDER BY date DESC))[1] AS close, "
+            "SUM(volume) AS volume, AVG(close) AS avg_close "
+            "FROM prices GROUP BY month ORDER BY month"
+            if self._pg_engine else
+            "SELECT strftime('%Y-%m', date) AS month, "
+            "MIN(open) AS open, MAX(high) AS high, MIN(low) AS low, "
+            "close AS close, SUM(volume) AS volume, AVG(close) AS avg_close "
+            "FROM prices GROUP BY month ORDER BY month"
+        )
+
+    def get_intraday_daily_summary(self, ticker: str = "SPY") -> pd.DataFrame:
+        """Get daily OHLCV from intraday bars — uses continuous aggregate if available."""
+        if self._has_timescaledb:
+            df = self.query_continuous_aggregate(
+                "cagg_intraday_daily",
+                ""  # fallback below
+            )
+            if not df.empty:
+                if "ticker" in df.columns:
+                    df = df[df["ticker"] == ticker]
+                return df
+
+        # Fallback: manual aggregation
+        if self._pg_engine:
+            sql = (
+                "SELECT date_trunc('day', timestamp::timestamp) AS date, "
+                "ticker, "
+                "MIN(open) AS open, MAX(high) AS high, MIN(low) AS low, "
+                "(array_agg(close ORDER BY timestamp DESC))[1] AS close, "
+                "SUM(volume) AS volume "
+                "FROM intraday_bars WHERE ticker = %s "
+                "GROUP BY date_trunc('day', timestamp::timestamp), ticker "
+                "ORDER BY date"
+            )
+        else:
+            sql = (
+                "SELECT substr(timestamp, 1, 10) AS date, ticker, "
+                "MIN(open) AS open, MAX(high) AS high, MIN(low) AS low, "
+                "close AS close, SUM(volume) AS volume "
+                "FROM intraday_bars WHERE ticker = ? "
+                "GROUP BY substr(timestamp, 1, 10), ticker ORDER BY date"
+            )
+        return self.query(sql, (ticker,))
 
 
 _router_instance: Optional[DbRouter] = None

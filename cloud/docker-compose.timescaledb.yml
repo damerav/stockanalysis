@@ -1,3 +1,18 @@
+# TimescaleDB + pgvector — drop-in replacement for postgres:16-alpine
+# Usage:
+#   docker compose -f cloud/docker-compose.timescaledb.yml up -d
+#
+# Migration from existing postgres container:
+#   1. pg_dump the existing database
+#   2. Stop old container
+#   3. Start this container (fresh volume)
+#   4. pg_restore into the new container
+#   5. Run: python -m src.data.migrate_to_timescaledb
+#
+# Or for in-place extension install (if using pgvector/pgvector:pg16):
+#   Just run: python -m src.data.migrate_to_timescaledb
+#   It will install the extension and convert tables.
+
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
@@ -25,6 +40,7 @@ services:
       - "max_connections=50"
       - "-c"
       - "random_page_cost=1.1"
+      # TimescaleDB tuning
       - "-c"
       - "timescaledb.max_background_workers=4"
     restart: unless-stopped
