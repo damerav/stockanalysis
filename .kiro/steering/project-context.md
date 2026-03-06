@@ -6,13 +6,13 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.9.0 (UI Restructuring + Market Overview + Fear&Greed/TRIN + CUDA Training)
+- **Current version**: v2.9.1 (Extended Features + Live-Tunable Prediction Rules + Retrain)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
 ## Architecture
 
-- **206 model features** available across price, technicals (40+ via pandas-ta), macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, market breadth/fundamentals, valuation (CAPE, Buffett), multi-timeframe (weekly/monthly RSI/momentum), social sentiment (StockTwits), and sector rotation (13 ETFs) — **32 kept after aggressive feature selection** (feature selection will expand with retrain)
+- **229 model features** available across price, technicals (40+ via pandas-ta), macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, market breadth/fundamentals, valuation (CAPE, Buffett), multi-timeframe (weekly/monthly RSI/momentum), social sentiment (StockTwits), sector rotation (13 ETFs), calendar/holiday effects (NYSE calendar), price level analysis (52-week proximity, round numbers), and trend persistence (consecutive days, Donchian breakouts) — **35 kept after aggressive feature selection** (feature selection expands with each retrain)
 - **18+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged). Includes `inverted_strangle_positions` (27 columns) and `inverted_strangle_adjustments` (11 columns) for options strategy tracking.
 - **16-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch) and market breadth computation
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
@@ -24,7 +24,7 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
   - Sample quality weighting — z-score anomaly detection + VIX-based penalty + label-flip detection
   - Entropy-weighted self-distillation refit — up-weights hard/uncertain samples (focal-loss-like)
   - Knowledge distillation validation — trains student models on soft targets, only adopts if accuracy improves
-- **Current model accuracy**: 3-class val=48.9%, test=47.8%, binary directional=54.2%
+- **Current model accuracy**: 3-class test=56.5%, 35 features selected from 229 available
 
 ## Infrastructure
 
@@ -100,7 +100,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/dashboard/system_management_app.py` — Split from Admin: System Status + Users + Configuration + Logs tabs. Imports `_admin_status_tab`, `_admin_users_tab`, `_admin_config_tab`, `_admin_logs_tab` from app.py.
 - `src/dashboard/performance_app.py` — Performance analytics dashboard: accuracy trends, confidence calibration, regime-stratified metrics, model comparison charts
 - `src/dashboard/tuning_app.py` — Model tuning & backtest UI: hyperparameter grid, champion/challenger comparison, backtest runner
-- `src/dashboard/rules_app.py` — Strategy Rules management page: 9 tabbed groups (spread, sizing, tp_low/med/high, risk, session, regime, rl), live edit + save + reset, revert button + change history expander per group, Rules What-If backtest section, hot-reload flag for runner
+- `src/dashboard/rules_app.py` — Strategy Rules management page: 13 tabbed groups (spread, sizing, entry, tp_low/med/high, risk, session, indicators, regime, ai, rl, prediction), live edit + save + reset, revert button + change history expander per group, Rules What-If backtest section, hot-reload flag for runner
 - `src/dashboard/theme.py` — Theme system: CSS token-based design with DARK + LIGHT palettes (TradingView-inspired), dynamic CSS injection, `get_plotly_layout()`, `themed_metric_card()`, `get_theme()` helpers
 - `src/dashboard/monitoring.py` — Native Plotly monitoring (6 tabs: SPY, ES, System Health, Confidence API, Pipeline, Data Sources). Uses thread-safe fresh DB connections per query (PostgreSQL primary, SQLite fallback) — no singleton router.
 - `src/dashboard/single_stock_app.py` — Individual stock analysis with technical indicators
@@ -113,12 +113,12 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `src/dashboard/strangle_app.py` — Inverted Strangle with Defined Risk (6 tabs). Imported in `app.py` via `from src.dashboard.strangle_app import page_strangle`. Includes Predictive & Risk Mitigation Engine (IV Rank, VIX term structure, SKEW, spike probability). Live spot price via yfinance.
 
 ### Core Modules
-- `src/data/` — Data fetching, features (206 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar, drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, encrypted secrets management, StockTwits social sentiment (`social_fetcher.py`)
-- `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation), registry (champion/challenger framework with promote/rollback), ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
+- `src/data/` — Data fetching, features (229 available), DB routing (PostgreSQL primary + SQLite fallback via `db_router.py`), backfill, calendar (NYSE holiday calendar via `pandas_market_calendars`), drift monitoring, geopolitical risk features, news fetching (44 categorized RSS feeds across 13 finance categories), FinBERT sentiment caching, encrypted secrets management, StockTwits social sentiment (`social_fetcher.py`)
+- `src/model/` — Trainer (with P3 label smoothing, sample quality weighting, entropy-weighted self-distillation, knowledge distillation; reads prediction params from `strategy_rules` DB), registry (champion/challenger framework with promote/rollback), ensemble, BiLSTM, conformal, regime, adaptive window, purged CV, LSTM predictor, news predictor
 - `src/es_strategy/` — ES futures engine (loads all params from `strategy_rules` DB table via `rules_store`), `apply_overrides()` for in-memory rule patching (What-If backtest), indicators, position management, RL trailing, labeling, AI entry gate + CNN exit controller
-- `src/strategy/` — `rules_store.py` DB-backed strategy parameter store (get/set/reset/revert rules via DbRouter). 24 rules across 9 groups currently seeded (spread, sizing, tp_low/med/high, risk, session, regime, rl). `strategy_rules_history` table tracks all changes with `get_history()`, `revert_rule()`, `revert_group()` for rollback.
+- `src/strategy/` — `rules_store.py` DB-backed strategy parameter store (get/set/reset/revert rules via DbRouter). 44 rules across 13 groups currently seeded (spread, sizing, entry, tp_low/med/high, risk, session, indicators, regime, ai, rl, prediction). `strategy_rules_history` table tracks all changes with `get_history()`, `revert_rule()`, `revert_group()` for rollback.
 - `src/llm/` — LLM analyzer and reporter (DeepSeek R1 via Ollama), Quant Agent with multi-model routing (14B fast + 70B deep) and tool-based architecture
-- `src/pipeline/` — Daily pipeline orchestration (fully thread-safe — all DB ops via `_db_execute`/`_db_query`/`_db_fetchone` router helpers), alerts, news pipeline runner, and event-driven vigilance monitor
+- `src/pipeline/` — Daily pipeline orchestration (fully thread-safe — all DB ops via `_db_execute`/`_db_query`/`_db_fetchone` router helpers), alerts, news pipeline runner, event-driven vigilance monitor, hot-reload flag support for live rule changes
 - `src/launcher.py` — System launcher with background scheduler (pipeline + intraday updates + vigilance monitoring every 5 min), process manager, health monitoring
 - `src/api/` — Confidence API server, Prometheus metrics exporter
 - `src/auth/` — Google OAuth + local auth with bcrypt, server-side session files
@@ -326,3 +326,23 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Pipeline fixes**: Step 11 predict fixed for feature alignment. ISM PMI FRED series updated from retired `NAPM` to `ISM/MAN_PMI`. HMM regime detection robustness improvements.
 - **`page_admin()` removed**: Live Ticker Settings moved into `_admin_status_tab()`. Admin tab functions (`_admin_*`) remain in `app.py` for import by Data/System Management pages.
 - **`render_theme_toggle()` safety**: Catches `Exception` to handle duplicate key errors gracefully when `app.py` is imported as module.
+
+### v2.9.1 Changes (Extended Features + Live-Tunable Prediction Rules + Retrain)
+
+- **23 new features added** across 4 categories, bringing total from 206 to 229:
+  - **Day-of-week & expiry calendar** (`src/data/calendar.py`): `is_monday` through `is_friday` (one-hot), `is_0dte_day` (Mon/Wed/Fri 0DTE expiry), `is_month_end`, `is_quarter_end_week`
+  - **Holiday & long weekend effects** (`src/data/calendar.py`): `is_pre_holiday`, `is_post_holiday`, `is_long_weekend_start`, `is_long_weekend_end` — uses NYSE holiday calendar via `pandas_market_calendars` (cached at module level)
+  - **Price level analysis** (`src/data/features.py`): `pct_from_52w_high`, `pct_from_52w_low`, `price_vs_prev_high`, `price_vs_prev_low`, `dist_from_round_50` (proximity to nearest $50 round number)
+  - **Trend persistence & breakouts** (`src/data/features.py`): `consecutive_up_days`, `consecutive_down_days`, `breakout_20d`, `breakdown_20d` (20-day Donchian channel)
+- **NYSE holiday calendar**: `daily_pull.py` now uses `pandas_market_calendars` NYSE calendar instead of `pd.bdate_range` for accurate trading day detection. `pandas_market_calendars>=4.0` added to `requirements.txt`.
+- **Live-tunable SPY prediction parameters**: 3 new rules in `prediction` group in `strategy_rules` DB table:
+  - `neutral_threshold` (0.004) — neutral band width for target labeling, passed to `get_target()` in pipeline
+  - `lookback_days` (252) — training window size
+  - `confidence_dampening_factor` (0.85) — multiplier applied to confidence in `high_vol_choppy` and `bear_trend` regimes
+- **SPYPredictor reads from rules_store**: `__init__()` reads `neutral_threshold`, `lookback_days`, `confidence_dampening_factor` from `strategy_rules` DB via `rules_store.get_rule()`, with `config.yaml` fallback. Prediction params now tunable from Strategy Rules dashboard page without code changes.
+- **Regime-aware confidence dampening**: `SPYPredictor.predict()` applies `confidence_dampening_factor` when current regime (from `spy_state.json`) is `high_vol_choppy` or `bear_trend`. Reduces overconfident predictions in volatile markets.
+- **Pipeline hot-reload**: `DailyPipeline.run()` checks for `data/.reload_rules` flag file before each run (mirrors ES engine pattern). Allows live rule changes from dashboard to take effect on next pipeline execution.
+- **Pipeline neutral_threshold wiring**: `_step10_retrain()` and `_step11_predict()` auto-retrain path both pass `self.predictor.neutral_threshold` to `get_target()` for consistent labeling with the live rule value.
+- **Model retrained**: Full retrain with 229 features on DGX (CUDA). Feature selection kept 35 features (up from 32). Test accuracy improved to 56.5%.
+- **FinBERT cache fixes** (from prior session): `db_router.py` PK mapping for `finbert_cache`, geopolitical date filtering fix, news_features FinBERT scoring fix.
+- **Strategy rules total**: 44 rules across 13 groups (spread, sizing, entry, tp_low/med/high, risk, session, indicators, regime, ai, rl, prediction). All entry/indicators/ai groups now seeded.
