@@ -1795,6 +1795,54 @@ def _admin_status_tab():
         except Exception:
             st.error("Ollama offline")
 
+    # ── FinBERT Cache Health ──
+    st.divider()
+    st.subheader("🧠 FinBERT Cache Health")
+    try:
+        config = _load_config()
+        router = get_router(config)
+        # Total cached articles
+        total_df = router.read_analytics("SELECT COUNT(*) as cnt FROM finbert_cache")
+        total_cached = int(total_df.iloc[0]["cnt"]) if not total_df.empty else 0
+
+        # Scored today / this week (PostgreSQL vs SQLite compatible)
+        if router.using_postgres:
+            today_q = "SELECT COUNT(*) as cnt FROM finbert_cache WHERE scored_at >= CURRENT_DATE::text"
+            week_q = "SELECT COUNT(*) as cnt FROM finbert_cache WHERE scored_at >= (CURRENT_DATE - INTERVAL '7 days')::text"
+            avg_q = "SELECT AVG(fb_score) as avg_score FROM finbert_cache"
+            range_q = "SELECT MIN(scored_at) as earliest, MAX(scored_at) as latest FROM finbert_cache"
+        else:
+            today_q = "SELECT COUNT(*) as cnt FROM finbert_cache WHERE scored_at >= date('now')"
+            week_q = "SELECT COUNT(*) as cnt FROM finbert_cache WHERE scored_at >= date('now', '-7 days')"
+            avg_q = "SELECT AVG(fb_score) as avg_score FROM finbert_cache"
+            range_q = "SELECT MIN(scored_at) as earliest, MAX(scored_at) as latest FROM finbert_cache"
+
+        today_df = router.read_analytics(today_q)
+        scored_today = int(today_df.iloc[0]["cnt"]) if not today_df.empty else 0
+
+        week_df = router.read_analytics(week_q)
+        scored_week = int(week_df.iloc[0]["cnt"]) if not week_df.empty else 0
+
+        avg_df = router.read_analytics(avg_q)
+        avg_score = float(avg_df.iloc[0]["avg_score"]) if not avg_df.empty and avg_df.iloc[0]["avg_score"] is not None else 0.0
+
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        fc1.metric("Total Cached", f"{total_cached:,}")
+        fc2.metric("Scored Today", f"{scored_today:,}")
+        fc3.metric("Scored This Week", f"{scored_week:,}")
+        fc4.metric("Avg Sentiment", f"{avg_score:+.3f}")
+
+        # Date range caption
+        range_df = router.read_analytics(range_q)
+        if not range_df.empty and range_df.iloc[0]["earliest"]:
+            earliest = str(range_df.iloc[0]["earliest"])[:10]
+            latest = str(range_df.iloc[0]["latest"])[:10]
+            st.caption(f"Cache date range: {earliest} → {latest}")
+        elif total_cached == 0:
+            st.caption("Cache is empty — will populate on next pipeline run")
+    except Exception as e:
+        st.info(f"FinBERT cache not available yet ({e})")
+
 
 # --- Users Tab ---
 

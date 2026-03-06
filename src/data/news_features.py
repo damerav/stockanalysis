@@ -88,15 +88,21 @@ class NewsFeatureProcessor:
             "neutral": 1.0 - abs(compound),
         }
 
-    def process_articles(self, articles: list[dict] = None) -> pd.DataFrame:
+    def process_articles(self, articles: list[dict] = None, limit: int = 10000) -> pd.DataFrame:
         """Process raw articles into feature DataFrame.
+
+        Uses FinBERT scores from cache if available, falling back to VADER.
+
+        Args:
+            articles: Pre-fetched article dicts. If None, queries raw_articles.
+            limit: Max articles to load when querying DB (default 10000).
 
         Returns DataFrame with columns: date, ticker, headline, sentiment_compound,
         sentiment_positive, sentiment_negative, clean_text
         """
         if articles is None:
             df = self.router.query(
-                "SELECT * FROM raw_articles ORDER BY published_at DESC"
+                f"SELECT * FROM raw_articles ORDER BY id DESC LIMIT {limit}"
             )
             if df.empty:
                 articles = []
@@ -106,13 +112,70 @@ class NewsFeatureProcessor:
         if not articles:
             return pd.DataFrame()
 
+        # Check FinBERT cache for all articles
+        from src.data.finbert_cache_utils import _make_url_hash, get_cached_scores
+        hashes = [_make_url_hash(a.get("headline", ""), a.get("summary", "")) for a in articles]
+        cached_scores = get_cached_scores(self.router, hashes)
+        cache_hits = sum(1 for h in hashes if h in cached_scores)
+        cache_misses = len(hashes) - cache_hits
+        logger.info(f"Processing {len(articles)} articles for news features …")
+        if cache_misses > 0:
+            logger.info(f"FinBERT cache: {cache_hits} hits, {cache_misses} misses — "
+                         f"running FinBERT on {cache_misses} articles")
+            # Score uncached articles with FinBERT and write to cache
+            try:
+                from src.data.finbert_cache_utils import score_articles_with_cache
+                from transformers import pipeline as hf_pipeline
+                finbert_pipe = hf_pipeline(
+                    "sentiment-analysis",
+                    model="ProsusAI/finbert",
+                    tokenizer="ProsusAI/finbert",
+                    device=-1,
+                    truncation=True,
+                    max_length=512,
+                )
+                scored = score_articles_with_cache(
+                    router=self.router,
+                    articles=articles,
+                    finbert_pipeline=finbert_pipe,
+                    batch_size=32,
+                )
+                # Update cached_scores with newly scored articles
+                for i, s in enumerate(scored):
+                    h = hashes[i]
+                    if h not in cached_scores:
+                        cached_scores[h] = {
+                            "fb_positive": s["fb_positive"],
+                            "fb_negative": s["fb_negative"],
+                            "fb_neutral": s["fb_neutral"],
+                            "fb_score": s["fb_score"],
+                        }
+                logger.info(f"FinBERT scoring complete: {cache_misses} articles scored")
+            except Exception as e:
+                logger.warning(f"FinBERT scoring failed, using VADER fallback: {e}")
+        else:
+            logger.info(f"FinBERT cache: {cache_hits} hits, 0 misses — all cached!")
+
         records = []
-        for a in articles:
+        for i, a in enumerate(articles):
             text = (a.get("headline", "") + " " + a.get("summary", "")).strip()
             clean = self._clean_text(text)
-            sent = self._get_sentiment(text)
             pub = a.get("published_at", "")
             date_str = pub[:10] if pub else datetime.now().strftime("%Y-%m-%d")
+
+            # Use FinBERT score if cached, else VADER
+            h = hashes[i]
+            if h in cached_scores:
+                fb = cached_scores[h]
+                sent = {
+                    "compound": fb["fb_score"],
+                    "positive": fb["fb_positive"],
+                    "negative": fb["fb_negative"],
+                    "neutral": fb["fb_neutral"],
+                }
+            else:
+                sent = self._get_sentiment(text)  # VADER fallback
+
             records.append({
                 "date": date_str,
                 "ticker": a.get("ticker", "MARKET"),

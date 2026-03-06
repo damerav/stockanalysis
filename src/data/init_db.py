@@ -296,6 +296,36 @@ def init_db(config: dict = None) -> str:
                     except Exception:
                         _pg_conn.rollback()
 
+                # v2.9.2: finbert_cache table (PostgreSQL — url_hash keyed)
+                try:
+                    _pg_conn.cursor().execute("""
+                        CREATE TABLE IF NOT EXISTS finbert_cache (
+                            url_hash TEXT PRIMARY KEY,
+                            article_id INTEGER,
+                            fb_positive REAL NOT NULL,
+                            fb_negative REAL NOT NULL,
+                            fb_neutral REAL NOT NULL,
+                            fb_label TEXT,
+                            fb_score REAL,
+                            scored_at TEXT NOT NULL
+                        )
+                    """)
+                    _pg_conn.commit()
+                    logger.info("finbert_cache table ready in PostgreSQL")
+                except Exception:
+                    _pg_conn.rollback()
+                # Add new columns if old schema exists
+                for col, ctype in [
+                    ("url_hash", "TEXT"), ("fb_label", "TEXT"),
+                    ("fb_score", "REAL"), ("scored_at", "TEXT"),
+                ]:
+                    try:
+                        _pg_conn.cursor().execute(
+                            f"ALTER TABLE finbert_cache ADD COLUMN {col} {ctype}")
+                        _pg_conn.commit()
+                    except Exception:
+                        _pg_conn.rollback()
+
             except Exception as e:
                 logger.warning(f"strategy_rules PostgreSQL setup failed: {e}")
         router.close()
@@ -666,6 +696,29 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("enhanced_cumulative_accuracy", "REAL"),
     ]
     _add_columns_if_missing(conn, "performance", enhanced_perf_cols)
+
+    # v2.9.2: finbert_cache — migrate from integer-keyed to url_hash-keyed schema
+    try:
+        old_schema = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='finbert_cache'"
+        ).fetchone()
+        if old_schema and "url_hash" not in (old_schema[0] or ""):
+            conn.execute("DROP TABLE IF EXISTS finbert_cache")
+            logger.info("finbert_cache: dropped old integer-keyed table")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS finbert_cache (
+                url_hash TEXT PRIMARY KEY,
+                article_id INTEGER,
+                fb_positive REAL NOT NULL,
+                fb_negative REAL NOT NULL,
+                fb_neutral REAL NOT NULL,
+                fb_label TEXT,
+                fb_score REAL,
+                scored_at TEXT NOT NULL
+            )
+        """)
+    except Exception as e:
+        logger.warning(f"finbert_cache migration: {e}")
 
     conn.commit()
     seed_strategy_rules(conn)

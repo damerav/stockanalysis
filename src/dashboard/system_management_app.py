@@ -23,6 +23,38 @@ def page_system_management():
     with tab_status:
         from src.dashboard.app import _admin_status_tab
         _admin_status_tab()
+        # FinBERT Cache Health
+        st.markdown("#### FinBERT Cache Health")
+        try:
+            from src.data.db_router import get_router
+            import yaml
+            with open("config.yaml") as _f:
+                _cfg = yaml.safe_load(_f) or {}
+            _router = get_router(_cfg)
+            cache_df = _router.query(
+                "SELECT COUNT(*) as total_cached, "
+                "AVG(fb_score) as avg_score, "
+                "MIN(scored_at) as oldest, "
+                "MAX(scored_at) as newest "
+                "FROM finbert_cache"
+            )
+            if not cache_df.empty and cache_df.iloc[0]["total_cached"]:
+                row = cache_df.iloc[0]
+                cc1, cc2, cc3 = st.columns(3)
+                with cc1:
+                    st.metric("Total Cached", f"{int(row['total_cached'] or 0):,}")
+                with cc2:
+                    avg = float(row["avg_score"] or 0)
+                    st.metric("Avg Sentiment", f"{avg:+.3f}")
+                with cc3:
+                    st.caption(
+                        f"Range: {(row.get('oldest') or 'N/A')[:19]} → "
+                        f"{(row.get('newest') or 'N/A')[:19]}"
+                    )
+            else:
+                st.info("finbert_cache is empty — will populate on next pipeline run")
+        except Exception as e:
+            st.warning(f"Could not read finbert_cache: {e}")
 
     with tab_users:
         from src.dashboard.app import _admin_users_tab

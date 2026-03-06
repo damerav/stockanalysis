@@ -345,7 +345,83 @@ class NewsFetcher:
         total += self.fetch_finnhub_company_news()
         total += self.fetch_alpha_vantage_news()
         total += self.fetch_rss()
+        # Pre-warm FinBERT cache for newly fetched articles
+        try:
+            self._score_new_articles_finbert(limit=200)
+        except Exception as e:
+            logger.warning(f"FinBERT pre-warm failed (non-fatal): {e}")
         return total
+
+    def _score_new_articles_finbert(self, limit: int = 200) -> int:
+        """Score recently fetched, uncached articles with FinBERT.
+
+        Called at the end of fetch_all() to pre-warm the cache.
+        Only processes articles not yet in finbert_cache.
+        Limits to `limit` articles per call to avoid blocking the fetch step.
+
+        Returns count of articles scored.
+        """
+        from src.data.finbert_cache_utils import (
+            _make_url_hash, get_cached_scores, score_articles_with_cache,
+        )
+
+        # Fetch recent articles and check which are uncached (Python-side hash check)
+        try:
+            recent_df = self.router.query(
+                "SELECT id, headline, summary FROM raw_articles "
+                "ORDER BY fetched_at DESC LIMIT 500"
+            )
+        except Exception as e:
+            logger.warning(f"FinBERT pre-warm query failed: {e}")
+            return 0
+
+        if recent_df.empty:
+            return 0
+
+        hashes = [
+            _make_url_hash(row["headline"] or "", row["summary"] or "")
+            for _, row in recent_df.iterrows()
+        ]
+        cached_set = set(get_cached_scores(self.router, hashes).keys())
+        uncached_rows = [
+            (idx, row) for (idx, row), h in zip(recent_df.iterrows(), hashes)
+            if h not in cached_set
+        ][:limit]
+
+        if not uncached_rows:
+            logger.info(f"FinBERT pre-warm: 0 articles — nothing to do")
+            return 0
+
+        logger.info(f"Pre-warming FinBERT cache for {len(uncached_rows)} new articles …")
+
+        # Load FinBERT
+        try:
+            from transformers import pipeline as hf_pipeline
+            pipe = hf_pipeline(
+                "sentiment-analysis",
+                model="ProsusAI/finbert",
+                tokenizer="ProsusAI/finbert",
+                device=-1,
+                truncation=True,
+                max_length=512,
+            )
+        except Exception as e:
+            logger.warning(f"FinBERT pre-warm: model load failed ({e}), skipping")
+            return 0
+
+        articles = [
+            {"id": row["id"], "headline": row["headline"] or "", "summary": row["summary"] or ""}
+            for _, row in uncached_rows
+        ]
+        scored = score_articles_with_cache(
+            router=self.router,
+            articles=articles,
+            finbert_pipeline=pipe,
+            batch_size=32,
+        )
+        new_count = sum(1 for s in scored if not s["from_cache"])
+        logger.info(f"FinBERT pre-warm: {new_count} articles scored and cached")
+        return len(scored)
 
     def fetch_finnhub_company_news(self, days_back: int = 3) -> int:
         """Fetch company-specific news from Finnhub for top tickers."""

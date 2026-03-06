@@ -38,6 +38,20 @@ class LLMAnalyzer:
         self.finbert = None
         self.finbert_available = False
         self._init_finbert()
+        # Cache-aware FinBERT: initialize router for cache reads/writes
+        self._router = None
+        try:
+            from src.data.db_router import get_router
+            self._router = get_router(config)
+        except Exception:
+            pass  # Router unavailable — will fall back to uncached scoring
+        # Cache-aware FinBERT: initialize router for cache reads/writes
+        self._router = None
+        try:
+            from src.data.db_router import get_router
+            self._router = get_router(config)
+        except Exception:
+            pass  # Router unavailable — will fall back to uncached scoring
 
     # --- P1: FinBERT fast-path ---
 
@@ -269,29 +283,50 @@ class LLMAnalyzer:
     # --- Sentiment Analysis (used by Phase 3/7 pipeline) ---
 
     def analyze_sentiment(self, articles: list[dict]) -> list[dict]:
-        """Analyze sentiment using two-tier pipeline (P1):
-        1. Fast path: FinBERT on ALL articles (seconds)
-        2. Deep path: DeepSeek on top 5 highest-impact articles (minutes)
+        """Analyze sentiment using two-tier pipeline with FinBERT cache (P1 enhanced):
+        1. Fast path: FinBERT on articles NOT in cache (cache-hit articles are free)
+        2. Deep path: DeepSeek on top 5 highest-impact articles
 
         Falls back to LLM-only or FinBERT-only if either is unavailable.
+        Cache key: SHA-256 of (headline + summary[:300]) — works across both
+        raw_articles and news tables.
         """
         if not self.finbert_available and not self.llm_available:
             logger.info("No sentiment models available, returning neutral")
             return [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
 
-        # --- Fast path: FinBERT on all articles ---
+        # --- Fast path: FinBERT with cache ---
         fast_results = []
         if self.finbert_available:
-            logger.info(f"FinBERT fast-path: scoring {len(articles)} articles...")
-            for a in articles:
-                text = f"{a.get('headline', '')} {a.get('summary', '')[:300]}"
-                fb = self._finbert_score(text)
-                fast_results.append({
-                    "score": fb["score"],
-                    "confidence": fb["confidence"],
-                    "topics": [],
-                })
-            logger.info("FinBERT fast-path complete")
+            if self._router is not None:
+                # Cache-aware path: only run inference on uncached articles
+                from src.data.finbert_cache_utils import score_articles_with_cache
+                fb_results = score_articles_with_cache(
+                    router=self._router,
+                    articles=articles,
+                    finbert_pipeline=self.finbert,
+                    batch_size=32,
+                )
+                for r in fb_results:
+                    raw_score = r["fb_score"]
+                    conf = int(max(r["fb_positive"], r["fb_negative"], r["fb_neutral"]) * 100)
+                    fast_results.append({
+                        "score": round(raw_score, 4),
+                        "confidence": conf,
+                        "topics": [],
+                    })
+            else:
+                # Fallback: no router available, run uncached (original behavior)
+                logger.info(f"FinBERT fast-path (uncached): scoring {len(articles)} articles...")
+                for a in articles:
+                    text = f"{a.get('headline', '')} {a.get('summary', '')[:300]}"
+                    fb = self._finbert_score(text)
+                    fast_results.append({
+                        "score": fb["score"],
+                        "confidence": fb["confidence"],
+                        "topics": [],
+                    })
+                logger.info("FinBERT fast-path complete")
         else:
             fast_results = [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
 

@@ -216,64 +216,99 @@ def compute_finbert_sentiment(texts: list[str], batch_size: int = 32) -> list[di
 def compute_daily_finbert_features(config: dict = None, days_back: int = 7) -> pd.DataFrame:
     """Compute daily FinBERT sentiment features from recent news articles.
 
-    Uses PostgreSQL (primary) with SQLite news.db fallback.
-    Uses a cache table (finbert_cache) to avoid re-scoring articles.
+    Uses the shared finbert_cache_utils for cache-aware scoring.
+    Cache key is url_hash (SHA-256 of headline+summary[:300]) — works for
+    both raw_articles and news tables.
+
     Returns DataFrame with: date, finbert_positive, finbert_negative,
     finbert_neutral, finbert_score (positive - negative)
     """
-    cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    cutoff_dt = datetime.now() - timedelta(days=days_back)
+    cutoff_iso = cutoff_dt.strftime("%Y-%m-%d")
 
     from src.data.db_router import get_router
+    from src.data.finbert_cache_utils import score_articles_with_cache
     router = get_router(config)
 
-    # Ensure cache table exists
+    logger.info(f"Computing daily FinBERT features for {cutoff_iso} …")
+
+    # Fetch recent articles — use ISO-format filter + ORDER BY id DESC with LIMIT
+    # to avoid pulling the entire table. The published_at column has mixed formats
+    # (ISO + RFC 2822), so we also filter in Python after parsing.
     try:
-        router.execute("""
-            CREATE TABLE IF NOT EXISTS finbert_cache (
-                article_id INTEGER PRIMARY KEY,
-                fb_positive REAL,
-                fb_negative REAL,
-                fb_neutral REAL
-            )
-        """)
-    except Exception:
-        pass
-
-    # Get uncached articles
-    uncached_df = router.query(
-        "SELECT a.id, a.published_at, a.headline, a.summary "
-        "FROM raw_articles a LEFT JOIN finbert_cache c ON a.id = c.article_id "
-        f"WHERE c.article_id IS NULL AND a.published_at >= '{cutoff}' "
-        "ORDER BY a.published_at"
-    )
-    if not uncached_df.empty:
-        logger.info(f"FinBERT: scoring {len(uncached_df)} uncached articles...")
-        texts = [(row.headline or "") + " " + (row.summary or "")
-                 for row in uncached_df.itertuples()]
-        texts = [t.strip() or "neutral" for t in texts]
-        sentiments = compute_finbert_sentiment(texts)
-        for (_, row), sent in zip(uncached_df.iterrows(), sentiments):
-            router.execute(
-                "INSERT OR REPLACE INTO finbert_cache (article_id, fb_positive, fb_negative, fb_neutral) "
-                "VALUES (?, ?, ?, ?)",
-                (int(row["id"]), sent["positive"], sent["negative"], sent["neutral"]),
-            )
-        logger.info(f"FinBERT: cached {len(uncached_df)} scores")
-
-    # Read all cached scores with dates
-    result_df = router.query(
-        "SELECT a.published_at, c.fb_positive, c.fb_negative, c.fb_neutral "
-        "FROM raw_articles a JOIN finbert_cache c ON a.id = c.article_id "
-        f"WHERE a.published_at >= '{cutoff}' ORDER BY a.published_at"
-    )
-    if result_df.empty:
+        articles_df = router.query(
+            "SELECT id, published_at, headline, summary "
+            "FROM raw_articles "
+            f"WHERE published_at >= '{cutoff_iso}' "
+            "ORDER BY id DESC "
+            "LIMIT 5000"
+        )
+    except Exception as e:
+        logger.warning(f"raw_articles query failed: {e}")
         return pd.DataFrame()
 
-    result_df["date"] = result_df["published_at"].apply(_parse_date_str)
-    result_df = result_df[result_df["date"] != ""]
-    if result_df.empty:
+    if articles_df.empty:
         return pd.DataFrame()
 
+    # Python-side date filter to handle RFC 2822 dates that slipped through SQL
+    articles = []
+    for _, row in articles_df.iterrows():
+        date_str = _parse_date_str(row["published_at"] or "")
+        if not date_str:
+            continue
+        # Only keep articles within the actual date range
+        if date_str < cutoff_iso:
+            continue
+        articles.append({
+            "id": row["id"],
+            "headline": row["headline"] or "",
+            "summary": row["summary"] or "",
+            "published_at": row["published_at"],
+            "_date": date_str,
+        })
+
+    if not articles:
+        return pd.DataFrame()
+
+    logger.info(f"FinBERT geopolitical: {len(articles)} articles in last {days_back} days")
+
+    # Load FinBERT pipeline
+    finbert_pipe = None
+    try:
+        from transformers import pipeline as hf_pipeline
+        finbert_pipe = hf_pipeline(
+            "sentiment-analysis",
+            model="ProsusAI/finbert",
+            tokenizer="ProsusAI/finbert",
+            device=-1,  # CPU; change to 0 for GPU
+            truncation=True,
+            max_length=512,
+        )
+    except Exception as e:
+        logger.warning(f"FinBERT load failed in geopolitical_features: {e}")
+
+    # Score with cache — only uncached articles will hit the model
+    scored = score_articles_with_cache(
+        router=router,
+        articles=articles,
+        finbert_pipeline=finbert_pipe,
+        batch_size=32,
+    )
+
+    # Reconstruct DataFrame with dates
+    records = []
+    for article, score in zip(articles, scored):
+        records.append({
+            "date": article["_date"],
+            "fb_positive": score["fb_positive"],
+            "fb_negative": score["fb_negative"],
+            "fb_neutral": score["fb_neutral"],
+        })
+
+    if not records:
+        return pd.DataFrame()
+
+    result_df = pd.DataFrame(records)
     daily = result_df.groupby("date").agg(
         finbert_positive=("fb_positive", "mean"),
         finbert_negative=("fb_negative", "mean"),
@@ -281,6 +316,7 @@ def compute_daily_finbert_features(config: dict = None, days_back: int = 7) -> p
     ).reset_index()
     daily["finbert_score"] = daily["finbert_positive"] - daily["finbert_negative"]
     return daily
+
 
 
 def compute_oil_shock_features(df: pd.DataFrame) -> pd.DataFrame:

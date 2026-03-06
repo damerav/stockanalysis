@@ -25,7 +25,7 @@ _TABLE_PKS = {
     "intraday_features": "date", "performance": "date", "feature_cache": "date",
     "earnings_calendar": "date, ticker", "fed_communications": "date",
     "users": "username", "news": "id", "raw_articles": "id",
-    "finbert_cache": "article_id", "model_registry": "id",
+    "finbert_cache": "url_hash", "model_registry": "id",
     "news_features": "date", "feature_store_meta": "key",
     "strategy_rules": "rule_group, rule_key",
     "market_breadth": "date",
