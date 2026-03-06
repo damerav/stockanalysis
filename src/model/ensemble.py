@@ -56,8 +56,10 @@ class StackingEnsemble:
                 test = xgb.XGBClassifier(tree_method="hist", device="cuda",
                                          n_estimators=1, verbosity=0)
                 test.fit(X_base_train[:10], y_base_train[:10])
+                logger.info("XGBoost ensemble using GPU (CUDA)")
             except Exception:
                 device = "cpu"
+                logger.info("XGBoost ensemble using CPU")
 
             self.xgb_model = xgb.XGBClassifier(
                 objective="multi:softprob", num_class=3,
@@ -77,8 +79,18 @@ class StackingEnsemble:
         # --- Base learner 2: LightGBM ---
         try:
             import lightgbm as lgb
+            lgb_device = "cpu"
+            if use_gpu:
+                try:
+                    test_lgb = lgb.LGBMClassifier(device="gpu", n_estimators=2, verbose=-1)
+                    test_lgb.fit(X_base_train[:10], y_base_train[:10])
+                    lgb_device = "gpu"
+                    logger.info("LightGBM using GPU")
+                except Exception:
+                    logger.info("LightGBM GPU not available, using CPU")
             self.lgbm_model = lgb.LGBMClassifier(
                 objective="multiclass", num_class=3,
+                device=lgb_device,
                 num_leaves=63, learning_rate=0.05, n_estimators=300,
                 subsample=0.8, colsample_bytree=0.8, verbose=-1,
             )

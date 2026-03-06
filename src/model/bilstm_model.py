@@ -58,6 +58,9 @@ class BiLSTMClassifier:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
+        logger.info(f"BiLSTM device: {self.device} "
+                     f"(CUDA available: {torch.cuda.is_available()}"
+                     f"{', ' + torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''})")
 
     def _build_sequences(self, X: np.ndarray) -> np.ndarray:
         """Convert flat feature matrix to overlapping sequences.

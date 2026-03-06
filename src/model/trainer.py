@@ -279,9 +279,9 @@ class SPYPredictor:
                 test_model.fit(X_train[:10], y_train[:10])
                 tree_method = "hist"
                 device = "cuda"
-                logger.info("Using GPU (CUDA) for training")
-            except Exception:
-                logger.info("GPU not available, using CPU")
+                logger.info("XGBoost using GPU (CUDA)")
+            except Exception as e:
+                logger.warning(f"GPU not available ({e}), using CPU")
 
         # Train XGBoost — tune for dataset size
         n_samples = len(X_train)
