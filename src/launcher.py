@@ -313,13 +313,18 @@ class SystemLauncher:
             logger.warning("LLM unavailable — continuing without it")
 
     def _start_dashboards(self, spy_only: bool = False, es_only: bool = False):
-        """Start the unified Streamlit dashboard."""
+        """Start the unified Streamlit dashboard and Confidence API."""
         self.pm.start("dashboard", [
             sys.executable, "-m", "streamlit", "run",
             "src/dashboard/app.py",
             "--server.port", "8501",
             "--server.headless", "true",
             "--server.address", "0.0.0.0",
+        ])
+
+        # Confidence API (port 8100) — used by ES Strategy AI layer
+        self.pm.start("confidence_api", [
+            sys.executable, "-m", "src.api.confidence_server",
         ])
 
     def _monitor(self):
