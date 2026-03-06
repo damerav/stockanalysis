@@ -229,7 +229,9 @@ def init_db(config: dict = None) -> str:
                         vix_at_open     REAL,
                         position_delta  REAL,
                         entry_iv_rank   REAL,
-                        entry_vix_term_structure REAL
+                        entry_vix_term_structure REAL,
+                        cost_to_close   REAL,
+                        c2c_updated_at  TEXT
                     )
                 """)
                 router.execute("""
@@ -325,6 +327,13 @@ def _migrate_schema(conn: sqlite3.Connection):
     except Exception:
         pass  # may fail if duplicates already exist
 
+    # Inverted strangle: guardrails columns
+    strangle_new_cols = [
+        ("cost_to_close", "REAL"),
+        ("c2c_updated_at", "TEXT"),
+    ]
+    _add_columns_if_missing(conn, "inverted_strangle_positions", strangle_new_cols)
+
     # Users table (bcrypt-hashed passwords)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -390,7 +399,9 @@ def _migrate_schema(conn: sqlite3.Connection):
             vix_at_open     REAL,
             position_delta  REAL,
             entry_iv_rank   REAL,
-            entry_vix_term_structure REAL
+            entry_vix_term_structure REAL,
+            cost_to_close   REAL,
+            c2c_updated_at  TEXT
         )
     """)
 

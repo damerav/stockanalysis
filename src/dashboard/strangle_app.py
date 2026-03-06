@@ -669,9 +669,10 @@ def _run_adjustment_alerts(open_pos: pd.DataFrame) -> list[dict]:
 def page_strangle():
     _header("🕷️ Inverted Strangle — Defined Risk")
 
-    tab_open, tab_new, tab_predict, tab_history, tab_tracker, tab_guide = st.tabs([
+    tab_open, tab_new, tab_predict, tab_history, tab_tracker, tab_guardrails, tab_whatif, tab_guide = st.tabs([
         "📋 Open Positions", "➕ New Trade", "🔮 Prediction & Risk",
-        "📊 History & Performance", "📈 Tracker", "📖 Strategy Guide",
+        "📊 History & Performance", "📈 Tracker", "🛡️ Guardrails & C2C",
+        "🤔 What-If Engine", "📖 Strategy Guide",
     ])
 
     # ── Tab 1: Open Positions ─────────────────────────────────────────────────
@@ -1138,7 +1139,314 @@ def page_strangle():
             else:
                 st.info("No positions match the selected time period.")
 
-    # ── Tab 6: Strategy Guide ─────────────────────────────────────────────────
+    # ── Tab 6: Guardrails & C2C ──────────────────────────────────────────────
+    with tab_guardrails:
+        st.subheader("🛡️ Position Guardrails & Cost-to-Close Monitoring")
+        open_pos = _load_positions("OPEN")
+
+        if open_pos.empty:
+            st.info("No open positions to monitor.")
+        else:
+            if st.button("🔄 Refresh C2C for All Positions", key="refresh_c2c"):
+                with st.spinner("Computing cost-to-close..."):
+                    for _, pos in open_pos.iterrows():
+                        pos_id = int(pos["id"])
+                        spot_now = _live_spot(pos["underlying"].replace("[PAPER] ", ""))
+                        expiry_str = str(pos["expiry_date"])
+                        try:
+                            expiry_dt = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+                            dte_now = max((expiry_dt - datetime.now().date()).days, 1)
+                        except Exception:
+                            dte_now = 30
+
+                        # Try Polygon first, fall back to theoretical
+                        c2c = None
+                        try:
+                            chain = _fetch_chain_for_strike(
+                                pos["underlying"].replace("[PAPER] ", ""), expiry_str,
+                                [pos["short_put"], pos["short_call"], pos["long_put"], pos["long_call"]],
+                                ["put", "call"])
+                            if not chain.empty:
+                                spread = _price_spread(chain, float(pos["short_put"]), float(pos["short_call"]),
+                                                       float(pos["long_put"]), float(pos["long_call"]))
+                                c2c = spread["net_credit"]
+                        except Exception:
+                            pass
+
+                        if c2c is None:
+                            # Theoretical fallback
+                            try:
+                                ts = _fetch_vix_term_structure()
+                                vix_now = ts.get("vix") or 20.0
+                            except Exception:
+                                vix_now = 20.0
+                            theo = _theoretical_spread_price(
+                                spot_now, float(pos["short_put"]), float(pos["short_call"]),
+                                float(pos["long_put"]), float(pos["long_call"]), dte_now, vix_now)
+                            c2c = theo["net_credit"]
+
+                        r = _router()
+                        r.execute(
+                            "UPDATE inverted_strangle_positions SET cost_to_close=?, c2c_updated_at=? WHERE id=?",
+                            (c2c, datetime.now().strftime("%Y-%m-%d %H:%M"), pos_id))
+                        r.close()
+                    st.rerun()
+
+            # Display guardrails for each position
+            for _, pos in open_pos.iterrows():
+                pos_id = int(pos["id"])
+                initial_credit = float(pos["initial_credit"])
+                inversion_pts = float(pos["inversion_pts"])
+                c2c = float(pos["cost_to_close"]) if pos.get("cost_to_close") is not None and pd.notna(pos.get("cost_to_close")) else None
+
+                with st.expander(
+                    f"**Position #{pos_id}** — {pos['underlying']} @ ${pos['spot_at_open']:.2f} | "
+                    f"Credit ${initial_credit:.2f} | Expiry {pos['expiry_date']}",
+                    expanded=True,
+                ):
+                    c1, c2_col, c3 = st.columns(3)
+
+                    with c1:
+                        if c2c is not None:
+                            st.metric("Cost to Close (C2C)", f"${c2c:.2f}")
+                        else:
+                            st.metric("Cost to Close (C2C)", "—")
+                            st.caption("Click Refresh C2C above")
+
+                    with c2_col:
+                        loss_limit = round(initial_credit * 2, 2)
+                        if c2c is not None:
+                            breached = c2c > loss_limit
+                            delta_val = round(c2c - loss_limit, 2)
+                            st.metric("2:1 Loss Rule", f"${loss_limit:.2f}",
+                                      delta=f"${delta_val:+.2f}",
+                                      delta_color="inverse" if breached else "normal")
+                            if breached:
+                                st.error("🚨 2:1 LOSS RULE BREACHED — close position!")
+                        else:
+                            st.metric("2:1 Loss Rule", f"${loss_limit:.2f}")
+
+                    with c3:
+                        # Credit vs Inversion Width: if credit < inversion width, guaranteed loss at expiry
+                        inversion_width = inversion_pts * 2  # total inversion width in dollars
+                        credit_vs_width = round(initial_credit - inversion_width, 2)
+                        st.metric("Credit vs. Inversion Width", f"${credit_vs_width:+.2f}",
+                                  help="Negative = guaranteed loss if underlying stays between short strikes at expiry")
+                        if credit_vs_width < 0:
+                            st.warning("⚠️ Credit < inversion width — guaranteed loss at expiry if untested.")
+
+                    # P&L status bar
+                    if c2c is not None:
+                        pnl_now = round(initial_credit - c2c, 2)
+                        pct_of_credit = round(pnl_now / initial_credit * 100, 1) if initial_credit > 0 else 0
+                        p1, p2, p3 = st.columns(3)
+                        with p1:
+                            st.metric("Unrealized P&L", f"${pnl_now:+.2f}")
+                        with p2:
+                            st.metric("% of Credit", f"{pct_of_credit:+.1f}%")
+                        with p3:
+                            updated = pos.get("c2c_updated_at", "—")
+                            st.caption(f"Last updated: {updated}")
+
+                    st.markdown("---")
+
+    # ── Tab 7: What-If Engine ─────────────────────────────────────────────────
+    with tab_whatif:
+        st.subheader("🤔 Defensive Adjustment What-If Engine")
+        open_pos = _load_positions("OPEN")
+
+        if open_pos.empty:
+            st.info("No open positions to simulate adjustments on.")
+        else:
+            pos_options = {int(p["id"]): f"#{p['id']} — {p['underlying']} @ ${p['spot_at_open']:.2f} (Expiry {p['expiry_date']})"
+                          for _, p in open_pos.iterrows()}
+            selected_id = st.selectbox("Select Position", list(pos_options.keys()),
+                                       format_func=lambda x: pos_options[x], key="whatif_pos")
+            pos = open_pos[open_pos["id"] == selected_id].iloc[0]
+
+            inv_pts = float(pos["inversion_pts"])
+            wing_pts = float(pos["wing_pts"])
+            orig_credit = float(pos["initial_credit"])
+
+            # Current position summary
+            st.markdown("**Current Position:**")
+            cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+            cc1.metric("Long Put", f"${pos['long_put']:.2f}")
+            cc2.metric("Short Put", f"${pos['short_put']:.2f}")
+            cc3.metric("Short Call", f"${pos['short_call']:.2f}")
+            cc4.metric("Long Call", f"${pos['long_call']:.2f}")
+            cc5.metric("Credit", f"${orig_credit:.2f}")
+
+            st.markdown("---")
+
+            scenario = st.radio("Scenario", ["Roll to New Spot", "Adjust Wing Width", "Un-invert (go OTM)"],
+                                horizontal=True, key="whatif_scenario")
+
+            # Get current VIX for theoretical pricing
+            try:
+                ts_data = _fetch_vix_term_structure()
+                vix_now = ts_data.get("vix") or 20.0
+            except Exception:
+                vix_now = 20.0
+
+            if scenario == "Roll to New Spot":
+                with st.form("whatif_roll"):
+                    st.markdown("Simulate rolling the entire position to a new spot price.")
+                    live_price = _live_spot(pos["underlying"].replace("[PAPER] ", ""))
+                    new_spot = st.number_input("New Spot Price", 100.0, 1000.0, live_price, 0.01, key="wi_spot")
+                    new_dte = st.slider("New DTE", 25, 60, 45, key="wi_dte")
+                    run_roll = st.form_submit_button("▶️ Simulate Roll")
+
+                if run_roll:
+                    new_sp = round(new_spot + inv_pts, 2)
+                    new_sc = round(new_spot - inv_pts, 2)
+                    new_lp = round(new_sp - wing_pts, 2)
+                    new_lc = round(new_sc + wing_pts, 2)
+
+                    new_spread = _theoretical_spread_price(new_spot, new_sp, new_sc, new_lp, new_lc, new_dte, vix_now)
+                    new_credit = new_spread["net_credit"]
+
+                    # Estimate cost to close current (theoretical)
+                    try:
+                        expiry_dt = datetime.strptime(str(pos["expiry_date"]), "%Y-%m-%d").date()
+                        dte_remaining = max((expiry_dt - datetime.now().date()).days, 1)
+                    except Exception:
+                        dte_remaining = 30
+                    old_spread = _theoretical_spread_price(
+                        new_spot, float(pos["short_put"]), float(pos["short_call"]),
+                        float(pos["long_put"]), float(pos["long_call"]), dte_remaining, vix_now)
+                    close_cost = old_spread["net_credit"]
+                    net_roll = round(new_credit - close_cost, 2)
+
+                    st.markdown("### Roll Simulation Results")
+                    r1, r2, r3 = st.columns(3)
+                    r1.metric("New Credit", f"${new_credit:.2f}")
+                    r2.metric("Close Cost (current)", f"${close_cost:.2f}")
+                    r3.metric("Net Roll Credit/Debit", f"${net_roll:+.2f}",
+                              delta="Credit" if net_roll > 0 else "Debit",
+                              delta_color="normal" if net_roll > 0 else "inverse")
+
+                    st.markdown("**New Strikes:**")
+                    n1, n2, n3, n4 = st.columns(4)
+                    n1.metric("Long Put", f"${new_lp:.2f}")
+                    n2.metric("Short Put", f"${new_sp:.2f}")
+                    n3.metric("Short Call", f"${new_sc:.2f}")
+                    n4.metric("Long Call", f"${new_lc:.2f}")
+
+                    preview = pd.Series({
+                        "long_put": new_lp, "short_put": new_sp,
+                        "short_call": new_sc, "long_call": new_lc,
+                        "initial_credit": new_credit,
+                        "profit_target": round(new_credit * 0.9, 2),
+                    })
+                    st.plotly_chart(_pnl_curve(preview), use_container_width=True, key="whatif_pnl_roll")
+                    st.caption(f"Theoretical pricing @ VIX={vix_now:.1f}")
+
+            elif scenario == "Adjust Wing Width":
+                with st.form("whatif_wing"):
+                    st.markdown("Simulate widening or narrowing the protective wings.")
+                    new_wing = st.number_input("New Wing Width ($)", 10.0, 60.0, wing_pts, 1.0, key="wi_wing")
+                    run_wing = st.form_submit_button("▶️ Simulate Wing Adjustment")
+
+                if run_wing:
+                    sp = float(pos["short_put"])
+                    sc = float(pos["short_call"])
+                    new_lp = round(sp - new_wing, 2)
+                    new_lc = round(sc + new_wing, 2)
+
+                    try:
+                        expiry_dt = datetime.strptime(str(pos["expiry_date"]), "%Y-%m-%d").date()
+                        dte_remaining = max((expiry_dt - datetime.now().date()).days, 1)
+                    except Exception:
+                        dte_remaining = 30
+
+                    spot_now = _live_spot(pos["underlying"].replace("[PAPER] ", ""))
+                    new_spread = _theoretical_spread_price(spot_now, sp, sc, new_lp, new_lc, dte_remaining, vix_now)
+                    old_spread = _theoretical_spread_price(
+                        spot_now, sp, sc, float(pos["long_put"]), float(pos["long_call"]), dte_remaining, vix_now)
+
+                    st.markdown("### Wing Adjustment Results")
+                    w1, w2, w3 = st.columns(3)
+                    w1.metric("Original Wing", f"${wing_pts:.0f}", help=f"LP ${pos['long_put']:.2f} / LC ${pos['long_call']:.2f}")
+                    w2.metric("New Wing", f"${new_wing:.0f}", help=f"LP ${new_lp:.2f} / LC ${new_lc:.2f}")
+                    credit_diff = round(new_spread["net_credit"] - old_spread["net_credit"], 2)
+                    w3.metric("Credit Change", f"${credit_diff:+.2f}",
+                              help="Wider wings = more credit but more risk")
+
+                    max_risk_old = round(wing_pts - orig_credit, 2)
+                    max_risk_new = round(new_wing - new_spread["net_credit"], 2)
+                    rr1, rr2 = st.columns(2)
+                    rr1.metric("Max Risk (current)", f"${max_risk_old:.2f}")
+                    rr2.metric("Max Risk (new)", f"${max_risk_new:.2f}")
+
+                    preview = pd.Series({
+                        "long_put": new_lp, "short_put": sp,
+                        "short_call": sc, "long_call": new_lc,
+                        "initial_credit": new_spread["net_credit"],
+                        "profit_target": round(new_spread["net_credit"] * 0.9, 2),
+                    })
+                    st.plotly_chart(_pnl_curve(preview), use_container_width=True, key="whatif_pnl_wing")
+
+            elif scenario == "Un-invert (go OTM)":
+                with st.form("whatif_uninvert"):
+                    st.markdown(
+                        "Simulate closing the inverted (ITM) short strikes and selling a new OTM strangle. "
+                        "This restores extrinsic value and reduces assignment risk."
+                    )
+                    otm_offset = st.number_input("OTM Offset from Spot ($)", 5.0, 50.0, 20.0, 1.0, key="wi_otm",
+                                                 help="New short strikes will be Spot ± this value (OTM)")
+                    new_dte = st.slider("New Strangle DTE", 25, 60, 45, key="wi_uninvert_dte")
+                    run_uninvert = st.form_submit_button("▶️ Simulate Un-inversion")
+
+                if run_uninvert:
+                    spot_now = _live_spot(pos["underlying"].replace("[PAPER] ", ""))
+                    new_sp_otm = round(spot_now - otm_offset, 2)  # OTM put below spot
+                    new_sc_otm = round(spot_now + otm_offset, 2)  # OTM call above spot
+
+                    # Cost to close current inverted position
+                    try:
+                        expiry_dt = datetime.strptime(str(pos["expiry_date"]), "%Y-%m-%d").date()
+                        dte_remaining = max((expiry_dt - datetime.now().date()).days, 1)
+                    except Exception:
+                        dte_remaining = 30
+                    close_spread = _theoretical_spread_price(
+                        spot_now, float(pos["short_put"]), float(pos["short_call"]),
+                        float(pos["long_put"]), float(pos["long_call"]), dte_remaining, vix_now)
+                    close_cost = close_spread["net_credit"]
+
+                    # New OTM strangle credit (no wings — naked or with wide wings)
+                    new_lp_otm = round(new_sp_otm - wing_pts, 2)
+                    new_lc_otm = round(new_sc_otm + wing_pts, 2)
+                    new_spread = _theoretical_spread_price(
+                        spot_now, new_sp_otm, new_sc_otm, new_lp_otm, new_lc_otm, new_dte, vix_now)
+                    new_credit = new_spread["net_credit"]
+                    net_cost = round(close_cost - new_credit, 2)
+
+                    st.markdown("### Un-inversion Results")
+                    u1, u2, u3 = st.columns(3)
+                    u1.metric("Close Current (debit)", f"${close_cost:.2f}")
+                    u2.metric("New OTM Credit", f"${new_credit:.2f}")
+                    u3.metric("Net Cost", f"${net_cost:+.2f}",
+                              delta="Debit" if net_cost > 0 else "Credit",
+                              delta_color="inverse" if net_cost > 0 else "normal")
+
+                    st.markdown("**New OTM Strikes:**")
+                    o1, o2, o3, o4 = st.columns(4)
+                    o1.metric("Long Put", f"${new_lp_otm:.2f}")
+                    o2.metric("Short Put (OTM)", f"${new_sp_otm:.2f}")
+                    o3.metric("Short Call (OTM)", f"${new_sc_otm:.2f}")
+                    o4.metric("Long Call", f"${new_lc_otm:.2f}")
+
+                    preview = pd.Series({
+                        "long_put": new_lp_otm, "short_put": new_sp_otm,
+                        "short_call": new_sc_otm, "long_call": new_lc_otm,
+                        "initial_credit": new_credit,
+                        "profit_target": round(new_credit * 0.9, 2),
+                    })
+                    st.plotly_chart(_pnl_curve(preview), use_container_width=True, key="whatif_pnl_uninvert")
+                    st.caption(f"Theoretical pricing @ VIX={vix_now:.1f}")
+
+    # ── Tab 8: Strategy Guide ─────────────────────────────────────────────────
     with tab_guide:
         st.markdown("""
 ## Inverted Strangle with Defined Risk — Quick Reference
@@ -1178,4 +1486,25 @@ Default parameters: Inversion = $5 | Wing = $25 | DTE = 30-45 | Profit Target = 
 Max Loss = Wing Width - Net Credit (e.g. $25 - $12.50 = $12.50/share = $1,250/contract)
 
 Max Profit = Full net credit (underlying expires between short strikes)
+
+---
+
+## Guardrails & Risk Rules
+
+### 2:1 Loss Rule
+If the cost to close (C2C) exceeds 2× the initial credit received, close the position immediately. This caps your maximum realized loss at 2× credit.
+
+### Credit vs. Inversion Width
+At entry, compare your net credit to the inversion width (2 × inversion points). If credit < inversion width, the position has a guaranteed loss if the underlying stays between the short strikes at expiration. This is acceptable only if you expect the underlying to move beyond one of the short strikes.
+
+### Cost-to-Close (C2C) Monitoring
+C2C = current market price to buy back all four legs. Track this daily:
+- C2C < 90% of credit → take profit (10% capture target)
+- C2C > 150% of credit → consider rolling or adjusting
+- C2C > 200% of credit → 2:1 loss rule triggered, close immediately
+
+### Defensive Adjustments
+1. **Roll**: Close current position, re-open at new spot with same inversion/wing parameters
+2. **Wing Adjustment**: Widen wings for more protection (costs credit) or narrow for more credit (more risk)
+3. **Un-invert**: Close the ITM inverted strikes, sell new OTM strangle — restores extrinsic value, reduces assignment risk
         """)
