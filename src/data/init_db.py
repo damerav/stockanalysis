@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     factors TEXT,  -- JSON blob of factor scores
     report_text TEXT,
     predicted_at TEXT,
+    regime TEXT,   -- HMM regime (bull_trend, bear_trend, high_vol_choppy, low_vol_range)
     -- Enhanced Prediction: model + institutional flow fusion
     enhanced_direction TEXT,
     enhanced_score REAL,
@@ -282,6 +283,7 @@ def init_db(config: dict = None) -> str:
                 # v2.9.1: Enhanced prediction columns (PostgreSQL ALTER TABLE)
                 _pg_conn = router._pg_conn
                 for tbl, col, ctype in [
+                    ("predictions", "regime", "TEXT"),
                     ("predictions", "enhanced_direction", "TEXT"),
                     ("predictions", "enhanced_score", "REAL"),
                     ("predictions", "flow_score", "REAL"),
@@ -679,6 +681,9 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("qqq", "REAL"), ("iwm", "REAL"), ("dia", "REAL"),
     ]
     _add_columns_if_missing(conn, "macro", sector_etf_cols)
+
+    # v2.9.2: HMM regime column on predictions table
+    _add_columns_if_missing(conn, "predictions", [("regime", "TEXT")])
 
     # v2.9.1: Enhanced prediction columns on predictions table
     enhanced_pred_cols = [

@@ -885,11 +885,12 @@ class DailyPipeline:
         # Store prediction
         self._db_execute(
             """INSERT OR REPLACE INTO predictions
-               (date, direction, confidence, factors, predicted_at)
-               VALUES (?,?,?,?,?)""",
+               (date, direction, confidence, factors, predicted_at, regime)
+               VALUES (?,?,?,?,?,?)""",
             (self.today, prediction["scale_label"], prediction["confidence"],
              json.dumps(prediction["probabilities"]),
-             datetime.now().isoformat()),
+             datetime.now().isoformat(),
+             prediction.get("regime", "unknown")),
         )
 
         # Update dashboard state
