@@ -782,6 +782,10 @@ _STRATEGY_RULE_DEFAULTS = [
     ("rl", "rl_gamma", "0.95", "float", "0.5", "0.999", "Discount factor"),
     ("rl", "rl_epsilon", "0.1", "float", "0.0", "0.5", "Exploration rate"),
     ("rl", "rl_lambda_dd", "0.5", "float", "0.0", "2.0", "Drawdown penalty weight"),
+    # SPY prediction model parameters
+    ("prediction", "neutral_threshold", "0.004", "float", "0.001", "0.01", "Neutral band width for target labeling"),
+    ("prediction", "lookback_days", "252", "int", "100", "1260", "Training window size in days"),
+    ("prediction", "confidence_dampening_factor", "0.85", "float", "0.5", "1.0", "Confidence multiplier for choppy/bear regimes"),
 ]
 
 

@@ -8,6 +8,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -121,6 +122,15 @@ class DailyPipeline:
 
         Returns dict with step results and overall status.
         """
+        # --- Hot-reload check (mirrors ES engine pattern) ---
+        _reload_flag = os.path.join("data", ".reload_rules")
+        if os.path.exists(_reload_flag):
+            try:
+                os.remove(_reload_flag)
+                logger.info("Hot-reload triggered — re-initializing pipeline components")
+            except Exception as e:
+                logger.warning(f"Pipeline hot-reload flag cleanup failed: {e}")
+
         self.skip_llm = skip_llm
         start = time.time()
         logger.info(f"{'='*50}")
@@ -804,7 +814,7 @@ class DailyPipeline:
 
         available = [c for c in feature_cols if c in fv.columns]
         X = fv[available]
-        y = get_target(fv)
+        y = get_target(fv, threshold=self.predictor.neutral_threshold)
 
         metrics = self.predictor.train(X, y, use_gpu=True, feature_names=available)
         metrics["regime"] = regime
@@ -834,7 +844,7 @@ class DailyPipeline:
             full_fv = build_feature_vector(self._get_conn(), config=self.config)
             if full_fv is not None and not full_fv.empty:
                 train_cols = [c for c in feature_cols if c in full_fv.columns]
-                target = get_target(full_fv)
+                target = get_target(full_fv, threshold=self.predictor.neutral_threshold)
                 result = self.predictor.train(full_fv[train_cols], target,
                                               feature_names=train_cols, force_save=False)
                 if result.get("error"):

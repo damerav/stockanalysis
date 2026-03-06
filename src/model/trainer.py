@@ -114,11 +114,20 @@ class SPYPredictor:
         config = config or {}
         xgb_cfg = config.get("xgboost", {})
         self.config = config
-        self.lookback_days = xgb_cfg.get("lookback_days", 252)
+        # Read prediction params from strategy rules DB (live-tunable),
+        # falling back to config.yaml, then hardcoded defaults.
+        try:
+            from src.strategy.rules_store import get_rule
+            self.lookback_days = get_rule("prediction", "lookback_days", xgb_cfg.get("lookback_days", 252))
+            self.neutral_threshold = get_rule("prediction", "neutral_threshold", xgb_cfg.get("neutral_threshold", 0.004))
+            self.confidence_dampening_factor = get_rule("prediction", "confidence_dampening_factor", 0.85)
+        except Exception:
+            self.lookback_days = xgb_cfg.get("lookback_days", 252)
+            self.neutral_threshold = xgb_cfg.get("neutral_threshold", 0.004)
+            self.confidence_dampening_factor = 0.85
         self.max_depth = xgb_cfg.get("max_depth", 6)
         self.learning_rate = xgb_cfg.get("learning_rate", 0.05)
         self.n_estimators = xgb_cfg.get("n_estimators", 500)
-        self.neutral_threshold = xgb_cfg.get("neutral_threshold", 0.003)
         self.model = None
         self.calibrator = None  # P1: isotonic calibration
         self.feature_importances = None
@@ -925,6 +934,22 @@ class SPYPredictor:
                 break
 
         scale_label = f"{strength}_{direction}".strip("_") if strength else direction
+
+        # --- Regime-aware confidence dampening ---
+        # In choppy or bear regimes, model confidence tends to be overfit.
+        # Apply dampening factor to reduce false conviction.
+        dampened = False
+        if hasattr(self, 'confidence_dampening_factor') and self.confidence_dampening_factor < 1.0:
+            try:
+                from src.realtime.dashboard_bridge import read_state
+                state = read_state("spy_state.json")
+                regime = state.get("regime", "")
+                if regime in ("high_vol_choppy", "bear_trend"):
+                    confidence *= self.confidence_dampening_factor
+                    dampened = True
+                    logger.debug(f"Confidence dampened by {self.confidence_dampening_factor} for regime={regime}")
+            except Exception:
+                pass  # No state file or regime info — skip dampening
 
         result = {
             "direction": direction,
