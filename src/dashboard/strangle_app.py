@@ -45,6 +45,12 @@ def _polygon():
     except Exception:
         cfg = {}
     api_key = cfg.get("polygon", {}).get("api_key", "")
+    if not api_key or api_key in ("YOUR_POLYGON_KEY", "FROM_ENCRYPTED_DB"):
+        try:
+            from src.data.secrets_manager import get_secret
+            api_key = get_secret("polygon_api_key", fallback=api_key or "")
+        except Exception:
+            pass
     return PolygonFetcher(api_key)
 
 

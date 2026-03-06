@@ -1,5 +1,5 @@
 polygon:
-  api_key: "YOUR_POLYGON_KEY"
+  api_key: "FROM_ENCRYPTED_DB"
   ws_stocks_url: "wss://socket.polygon.io/stocks"
   ws_options_url: "wss://socket.polygon.io/options"
 

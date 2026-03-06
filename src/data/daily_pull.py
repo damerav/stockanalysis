@@ -122,7 +122,13 @@ def run_daily_pull(config: dict = None):
 
     router = get_router(config)
     api_key = config.get("polygon", {}).get("api_key", "")
-    polygon = PolygonFetcher(api_key) if api_key and api_key != "YOUR_POLYGON_KEY" else None
+    if not api_key or api_key in ("YOUR_POLYGON_KEY", "FROM_ENCRYPTED_DB"):
+        try:
+            from src.data.secrets_manager import get_secret
+            api_key = get_secret("polygon_api_key", fallback="")
+        except Exception:
+            pass
+    polygon = PolygonFetcher(api_key) if api_key else None
     fallback = FallbackFetcher(config=config)
     # Find and fill price gaps
     price_gaps = find_gaps(None, "prices", config=config)

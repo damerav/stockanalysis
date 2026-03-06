@@ -42,7 +42,13 @@ def bulk_load(days: int = 252, config: dict = None):
         use_duck = False
 
     api_key = config.get("polygon", {}).get("api_key", "")
-    has_polygon = api_key and api_key != "YOUR_POLYGON_KEY"
+    if not api_key or api_key in ("YOUR_POLYGON_KEY", "FROM_ENCRYPTED_DB"):
+        try:
+            from src.data.secrets_manager import get_secret
+            api_key = get_secret("polygon_api_key", fallback="")
+        except Exception:
+            pass
+    has_polygon = bool(api_key)
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=int(days * 1.5))).strftime("%Y-%m-%d")
