@@ -708,6 +708,41 @@ def load_es_state() -> dict:
         return _load_es_state_cached()
 
 
+@st.cache_data(ttl=60)
+def _es_chart_from_db():
+    """Load latest intraday bars from DB, resample to 1-min candles with RSI."""
+    try:
+        from src.data.db_router import get_router
+        router = get_router()
+        df = router.query(
+            "SELECT timestamp, open, high, low, close, volume, vwap "
+            "FROM intraday_bars WHERE ticker='SPY' "
+            "ORDER BY timestamp DESC LIMIT 5000"
+        )
+        router.close()
+        if df is None or df.empty:
+            return None
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.sort_values("timestamp")
+        # Resample 5s bars to 1-min candles
+        df = df.set_index("timestamp")
+        ohlcv = df.resample("1min").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum", "vwap": "mean"
+        }).dropna(subset=["close"])
+        ohlcv = ohlcv.reset_index()
+        # Compute RSI(14)
+        if len(ohlcv) >= 15:
+            delta = ohlcv["close"].diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean()
+            rs = gain / loss.replace(0, 1e-10)
+            ohlcv["rsi"] = 100 - (100 / (1 + rs))
+        return ohlcv
+    except Exception:
+        return None
+
+
 def page_es():
     c = get_colors()
     state = load_es_state()
@@ -849,9 +884,43 @@ def page_es():
             fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
             st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("⚠️ No chart data available. This typically means the intraday data pipeline "
-                   "(Polygon.io) is not running or the API key is not configured. "
-                   "Check Admin → System Status → Data Sources for connection status.")
+        # Fallback: load intraday bars from DB and resample to 1-min candles
+        _db_bars = _es_chart_from_db()
+        if _db_bars is not None and not _db_bars.empty:
+            fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                row_heights=[0.75, 0.25], vertical_spacing=0.05)
+            fig.add_trace(go.Candlestick(
+                x=_db_bars["timestamp"], open=_db_bars["open"], high=_db_bars["high"],
+                low=_db_bars["low"], close=_db_bars["close"], name="SPY",
+            ), row=1, col=1)
+            if "vwap" in _db_bars.columns:
+                fig.add_trace(go.Scatter(
+                    x=_db_bars["timestamp"], y=_db_bars["vwap"], mode="lines",
+                    line=dict(color="orange", dash="dot", width=1), name="VWAP",
+                ), row=1, col=1)
+            if "rsi" in _db_bars.columns:
+                fig.add_trace(go.Scatter(
+                    x=_db_bars["timestamp"], y=_db_bars["rsi"], mode="lines",
+                    line=dict(color="purple", width=1), name="RSI(14)",
+                ), row=2, col=1)
+                fig.add_hline(y=70, line_dash="dot", line_color="red", opacity=0.3, row=2, col=1)
+                fig.add_hline(y=30, line_dash="dot", line_color="green", opacity=0.3, row=2, col=1)
+            _bg = "rgba(0,0,0,0)" if is_dark() else c["surface"]
+            fig.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20),
+                              xaxis_rangeslider_visible=False, showlegend=True,
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=_bg,
+                              font=dict(color=c["text"], size=11))
+            fig.update_xaxes(gridcolor=c["grid"])
+            fig.update_yaxes(gridcolor=c["grid"])
+            fig.update_yaxes(title_text="Price", row=1, col=1)
+            fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
+            st.plotly_chart(fig, use_container_width=True, key="es_db_chart")
+            st.caption("📡 Showing latest intraday data from database (1-min candles)")
+        else:
+            st.warning("⚠️ No chart data available. The ES runner is not active and no "
+                       "intraday bars found in the database. Run the daily pipeline or "
+                       "check Polygon.io connectivity in Admin → Data Sources.")
 
     # Signal Feed + Status
     col1, col2 = st.columns([3, 2])

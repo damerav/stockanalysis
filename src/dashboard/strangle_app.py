@@ -37,7 +37,12 @@ def _router():
     return DbRouter(cfg)
 
 
+_polygon_instance = None
+
 def _polygon():
+    global _polygon_instance
+    if _polygon_instance is not None:
+        return _polygon_instance
     from src.data.polygon_fetcher import PolygonFetcher
     try:
         with open("config.yaml") as f:
@@ -51,7 +56,8 @@ def _polygon():
             api_key = get_secret("polygon_api_key", fallback=api_key or "")
         except Exception:
             pass
-    return PolygonFetcher(api_key)
+    _polygon_instance = PolygonFetcher(api_key)
+    return _polygon_instance
 
 
 # ── Theme helpers ─────────────────────────────────────────────────────────────
@@ -87,18 +93,6 @@ def _header(title: str):
         page_header(title)
     except Exception:
         st.markdown(f"## {title}")
-
-
-@st.cache_data(ttl=15)
-def _live_spot(ticker: str = "SPY") -> float:
-    """Fetch live spot price via yfinance with 15s cache."""
-    try:
-        import yfinance as yf
-        t = yf.Ticker(ticker)
-        price = t.fast_info.get("lastPrice") or t.fast_info.get("previousClose")
-        return round(float(price), 2) if price else 540.0
-    except Exception:
-        return 540.0
 
 
 def _bs_price(S: float, K: float, T: float, r: float, sigma: float, opt_type: str) -> float:
@@ -167,6 +161,121 @@ def _live_spot(ticker: str = "SPY") -> float:
     except Exception:
         return 540.0
 
+
+@st.cache_data(ttl=30)
+def _yf_options_chain(ticker: str, expiry: str) -> pd.DataFrame:
+    """Fetch options chain from yfinance for a specific expiry.
+
+    Returns DataFrame with columns: strike, option_type, bid, ask, lastPrice,
+    volume, openInterest, impliedVolatility.
+    """
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        avail = t.options
+        if not avail:
+            return pd.DataFrame()
+        # Find closest expiry to requested
+        target = datetime.strptime(expiry, "%Y-%m-%d").date()
+        best = min(avail, key=lambda e: abs((datetime.strptime(e, "%Y-%m-%d").date() - target).days))
+        chain = t.option_chain(best)
+        calls = chain.calls.copy()
+        calls["option_type"] = "call"
+        puts = chain.puts.copy()
+        puts["option_type"] = "put"
+        df = pd.concat([calls, puts], ignore_index=True)
+        # Normalize column names
+        df = df.rename(columns={"impliedVolatility": "iv"})
+        return df
+    except Exception as e:
+        logger.warning("yfinance options chain failed: %s", e)
+        return pd.DataFrame()
+
+
+def _yf_price_spread(ticker: str, expiry: str, short_put: float, short_call: float,
+                     long_put: float, long_call: float) -> dict | None:
+    """Price the 4-leg spread using live yfinance bid/ask mid-prices.
+
+    Returns same dict format as _price_spread() or None if chain unavailable.
+    """
+    chain = _yf_options_chain(ticker, expiry)
+    if chain.empty:
+        return None
+
+    def _mid(strike, opt_type):
+        row = chain[(chain["strike"] == strike) & (chain["option_type"] == opt_type)]
+        if row.empty:
+            # Try nearest strike within $1
+            nearby = chain[(chain["option_type"] == opt_type) &
+                           (chain["strike"].between(strike - 1, strike + 1))]
+            if nearby.empty:
+                return None
+            row = nearby.iloc[[nearby["strike"].sub(strike).abs().argmin()]]
+        r = row.iloc[0]
+        bid = float(r.get("bid", 0) or 0)
+        ask = float(r.get("ask", 0) or 0)
+        if bid > 0 and ask > 0:
+            return round((bid + ask) / 2, 2)
+        last = float(r.get("lastPrice", 0) or 0)
+        return round(last, 2) if last > 0 else None
+
+    sp_price = _mid(short_put, "put")
+    sc_price = _mid(short_call, "call")
+    lp_price = _mid(long_put, "put")
+    lc_price = _mid(long_call, "call")
+
+    if any(p is None for p in [sp_price, sc_price, lp_price, lc_price]):
+        return None
+
+    net_credit = round((sp_price + sc_price) - (lp_price + lc_price), 2)
+    leg_str = (
+        f"Short Put ${sp_price} | Short Call ${sc_price} | "
+        f"Long Put ${lp_price} | Long Call ${lc_price} (yfinance live mid)"
+    )
+    return {
+        "short_put_price": sp_price, "short_call_price": sc_price,
+        "long_put_price": lp_price, "long_call_price": lc_price,
+        "net_credit": net_credit, "credit_per_leg_str": leg_str,
+    }
+
+
+def _yf_refresh_position_pnl(pos: pd.Series) -> float | None:
+    """Re-price an open position using live yfinance quotes.
+
+    Returns current spread value (what it would cost to close) or None.
+    """
+    underlying = str(pos["underlying"]).replace("[PAPER] ", "")
+    expiry = str(pos["expiry_date"])
+    chain = _yf_options_chain(underlying, expiry)
+    if chain.empty:
+        return None
+
+    def _mid(strike, opt_type):
+        row = chain[(chain["strike"] == strike) & (chain["option_type"] == opt_type)]
+        if row.empty:
+            nearby = chain[(chain["option_type"] == opt_type) &
+                           (chain["strike"].between(strike - 1, strike + 1))]
+            if nearby.empty:
+                return None
+            row = nearby.iloc[[nearby["strike"].sub(strike).abs().argmin()]]
+        r = row.iloc[0]
+        bid = float(r.get("bid", 0) or 0)
+        ask = float(r.get("ask", 0) or 0)
+        if bid > 0 and ask > 0:
+            return round((bid + ask) / 2, 2)
+        last = float(r.get("lastPrice", 0) or 0)
+        return round(last, 2) if last > 0 else None
+
+    sp = _mid(float(pos["short_put"]), "put")
+    sc = _mid(float(pos["short_call"]), "call")
+    lp = _mid(float(pos["long_put"]), "put")
+    lc = _mid(float(pos["long_call"]), "call")
+
+    if any(p is None for p in [sp, sc, lp, lc]):
+        return None
+
+    # Current value = what you'd pay to close (buy back shorts, sell longs)
+    return round((sp + sc) - (lp + lc), 2)
 
 
 # ── Database helpers ──────────────────────────────────────────────────────────
@@ -445,7 +554,7 @@ def _streak_chart(df):
 
 # ── Predictive & Risk helpers ─────────────────────────────────────────────────
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def _fetch_iv_rank(underlying: str = "SPY") -> dict:
     """Compute IV Rank and IV Percentile using VIX history as proxy.
 
@@ -475,7 +584,7 @@ def _fetch_iv_rank(underlying: str = "SPY") -> dict:
         return {"iv_rank": None, "iv_percentile": None, "current_iv": None}
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def _fetch_vix_term_structure() -> dict:
     """Fetch VIX term structure: VIX vs VIX3M for contango/backwardation."""
     try:
@@ -494,13 +603,16 @@ def _fetch_vix_term_structure() -> dict:
         return {"term_structure_pct": None, "vix": None, "vix3m": None, "state": "Unknown"}
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def _fetch_market_skew() -> dict:
-    """Fetch CBOE SKEW index and compute put/call ratio.
+    """Fetch CBOE SKEW index and put/call ratio.
 
-    PCR: tries Polygon first, falls back to yfinance SPY options chain.
+    PCR: DB options_analytics first (instant), Polygon API fallback, yfinance last resort.
+    SKEW: yfinance ^SKEW ticker.
     """
     result = {"skew_index": None, "pcr": None}
+
+    # SKEW index from yfinance (lightweight — just price history)
     try:
         import yfinance as yf
         skew = yf.Ticker("^SKEW").history(period="5d")
@@ -509,24 +621,39 @@ def _fetch_market_skew() -> dict:
     except Exception:
         pass
 
-    # PCR: try Polygon first
+    # PCR: Try DB first (instant — populated by validation/pipeline)
     try:
-        poly = _polygon()
-        analytics = poly.get_options_analytics("SPY")
-        pcr = analytics.get("put_call_ratio")
-        if pcr:
-            result["pcr"] = round(pcr, 3)
+        from src.data.db_router import get_router
+        router = get_router()
+        df = router.query(
+            "SELECT put_call_ratio FROM options_analytics ORDER BY date DESC LIMIT 1"
+        )
+        router.close()
+        if df is not None and not df.empty and df.iloc[0]["put_call_ratio"] is not None:
+            result["pcr"] = round(float(df.iloc[0]["put_call_ratio"]), 3)
+            return result
     except Exception:
         pass
 
-    # PCR fallback: compute from yfinance SPY options chain
-    if result["pcr"] is None or result["pcr"] == 0:
+    # PCR fallback: Polygon API (fetches full chain — slower)
+    try:
+        poly = _polygon()
+        if poly and poly.api_key:
+            analytics = poly.get_options_analytics("SPY")
+            pcr = analytics.get("put_call_ratio")
+            if pcr:
+                result["pcr"] = round(pcr, 3)
+                return result
+    except Exception:
+        pass
+
+    # PCR last resort: yfinance SPY options chain (slowest)
+    if result["pcr"] is None:
         try:
             import yfinance as yf
             spy = yf.Ticker("SPY")
             expirations = spy.options
             if expirations:
-                # Use nearest expiry for most liquid PCR
                 chain = spy.option_chain(expirations[0])
                 put_vol = chain.puts["volume"].sum()
                 call_vol = chain.calls["volume"].sum()
@@ -538,16 +665,20 @@ def _fetch_market_skew() -> dict:
     return result
 
 
-def _estimate_vix_spike_prob() -> dict:
+def _estimate_vix_spike_prob(iv_data: dict = None, ts_data: dict = None,
+                             skew_data: dict = None) -> dict:
     """Heuristic VIX spike probability based on current conditions.
 
-    Uses a weighted score from: VIX level, term structure, SKEW, and VIX velocity.
-    Not an ML model — a rules-based approximation that captures the same signals.
+    Accepts pre-fetched data to avoid redundant API calls.
+    Uses a weighted score from: VIX level, term structure, SKEW, and IV Rank.
     """
     try:
-        iv_data = _fetch_iv_rank()
-        ts_data = _fetch_vix_term_structure()
-        skew_data = _fetch_market_skew()
+        if iv_data is None:
+            iv_data = _fetch_iv_rank()
+        if ts_data is None:
+            ts_data = _fetch_vix_term_structure()
+        if skew_data is None:
+            skew_data = _fetch_market_skew()
 
         score = 0.0  # 0-100 probability estimate
         factors = []
@@ -698,6 +829,27 @@ def page_strangle():
         if open_pos.empty:
             st.info("No open positions. Use the **New Trade** tab to enter a position.")
         else:
+            # Bulk live P&L refresh
+            if st.button("📡 Refresh All P&L (Live Quotes)", key="bulk_refresh_pnl"):
+                updated = 0
+                with st.spinner("Fetching live quotes for all positions..."):
+                    for _, p in open_pos.iterrows():
+                        new_val = _yf_refresh_position_pnl(p)
+                        if new_val is not None:
+                            pid = int(p["id"])
+                            new_pnl = round(float(p["initial_credit"]) - new_val, 2)
+                            r = _router()
+                            r.execute(
+                                "UPDATE inverted_strangle_positions SET current_value=?, current_pnl=? WHERE id=?",
+                                (new_val, new_pnl, pid))
+                            r.close()
+                            updated += 1
+                if updated:
+                    st.success(f"Updated {updated}/{len(open_pos)} position(s) with live quotes.")
+                    st.rerun()
+                else:
+                    st.warning("Could not fetch live quotes (market may be closed).")
+
             st.caption(f"{len(open_pos)} open position(s)")
             for _, pos in open_pos.iterrows():
                 pos_id = int(pos["id"])
@@ -734,11 +886,12 @@ def page_strangle():
 
                     st.plotly_chart(_pnl_curve(pos), use_container_width=True, key=f"pnl_{pos_id}")
 
-                    with st.expander("📐 Live Greeks (fetches from Polygon)", expanded=False):
+                    with st.expander("📐 Live Greeks", expanded=False):
                         if st.button("Refresh Greeks", key=f"greeks_{pos_id}"):
                             with st.spinner("Fetching options chain..."):
+                                _ul = str(pos["underlying"]).replace("[PAPER] ", "")
                                 chain = _fetch_chain_for_strike(
-                                    pos["underlying"], pos["expiry_date"],
+                                    _ul, pos["expiry_date"],
                                     [pos["short_put"], pos["short_call"], pos["long_put"], pos["long_call"]],
                                     ["put", "call"],
                                 )
@@ -828,7 +981,7 @@ def page_strangle():
                 with st.spinner("Fetching market conditions..."):
                     iv_data = _fetch_iv_rank()
                     ts_data = _fetch_vix_term_structure()
-                    spike_data = _estimate_vix_spike_prob()
+                    spike_data = _estimate_vix_spike_prob(iv_data, ts_data)
 
                     checks = []
                     iv_rank = iv_data.get("iv_rank")
@@ -861,10 +1014,10 @@ def page_strangle():
                         st.warning("Some checks failed. Consider waiting for better conditions or adjusting parameters.")
 
         # Mode toggle (outside form so it persists)
-        sim_mode = st.toggle("🧪 Simulation Mode (theoretical pricing, no Polygon needed)",
+        sim_mode = st.toggle("🧪 Paper Trading Mode (live yfinance quotes, no real execution)",
                              value=True, key="sim_mode_toggle")
         if sim_mode:
-            st.caption("Using Black-Scholes theoretical pricing with VIX as IV proxy. Trades are paper/simulated.")
+            st.caption("Uses live yfinance bid/ask mid-prices for realistic paper trades. Falls back to Black-Scholes when market is closed.")
 
         with st.form("new_trade_form"):
             c1, c2 = st.columns(2)
@@ -903,14 +1056,19 @@ def page_strangle():
             if manual_credit > 0:
                 credit_info = {"net_credit": manual_credit, "credit_per_leg_str": "Manual override"}
             elif sim_mode:
-                # Simulation mode: use Black-Scholes theoretical pricing
-                try:
-                    ts_data = _fetch_vix_term_structure()
-                    vix_now = ts_data.get("vix") or 20.0
-                except Exception:
-                    vix_now = 20.0
-                credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
-                st.info(f"🧪 Theoretical pricing @ VIX={vix_now:.1f} (simulation mode)")
+                # Paper trading: yfinance live quotes → Black-Scholes fallback
+                with st.spinner("Fetching live options quotes..."):
+                    credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
+                if credit_info:
+                    st.info("📡 Live yfinance mid-prices (paper trade)")
+                else:
+                    try:
+                        ts_data = _fetch_vix_term_structure()
+                        vix_now = ts_data.get("vix") or 20.0
+                    except Exception:
+                        vix_now = 20.0
+                    credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
+                    st.info(f"🧪 Theoretical pricing @ VIX={vix_now:.1f} (market closed or chain unavailable)")
             else:
                 with st.spinner("Fetching options chain from Polygon..."):
                     chain = _fetch_chain_for_strike(underlying, expiry,
@@ -918,14 +1076,18 @@ def page_strangle():
                     if not chain.empty:
                         credit_info = _price_spread(chain, short_put, short_call, long_put, long_call)
                     else:
-                        # Auto-fallback to theoretical pricing
-                        st.warning("Polygon chain unavailable — falling back to theoretical pricing.")
-                        try:
-                            ts_data = _fetch_vix_term_structure()
-                            vix_now = ts_data.get("vix") or 20.0
-                        except Exception:
-                            vix_now = 20.0
-                        credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
+                        # Auto-fallback to yfinance then theoretical
+                        credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
+                        if credit_info:
+                            st.warning("Polygon unavailable — using yfinance live quotes.")
+                        else:
+                            st.warning("No live quotes available — using theoretical pricing.")
+                            try:
+                                ts_data = _fetch_vix_term_structure()
+                                vix_now = ts_data.get("vix") or 20.0
+                            except Exception:
+                                vix_now = 20.0
+                            credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
 
             if credit_info:
                 net_credit = credit_info["net_credit"]
@@ -990,7 +1152,7 @@ def page_strangle():
             iv_data = _fetch_iv_rank()
             ts_data = _fetch_vix_term_structure()
             skew_data = _fetch_market_skew()
-            spike_data = _estimate_vix_spike_prob()
+            spike_data = _estimate_vix_spike_prob(iv_data, ts_data, skew_data)
 
         # Row 1: Gauges
         g1, g2 = st.columns(2)

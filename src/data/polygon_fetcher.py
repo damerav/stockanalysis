@@ -165,10 +165,14 @@ class PolygonFetcher:
         # P3: 0DTE put/call ratio
         zero_dte_pcr = self._calc_zero_dte_pcr(chain)
 
-        return {"put_call_ratio": pc_ratio, "max_pain": max_pain,
-                "iv_skew": iv_skew, "gex": gex,
-                "vanna_exposure": vanna, "charm_exposure": charm,
-                "zero_dte_pcr": zero_dte_pcr}
+        # Cast numpy types to native Python for PostgreSQL compatibility
+        def _native(v):
+            return float(v) if v is not None and hasattr(v, 'item') else v
+
+        return {"put_call_ratio": _native(pc_ratio), "max_pain": _native(max_pain),
+                "iv_skew": _native(iv_skew), "gex": _native(gex),
+                "vanna_exposure": _native(vanna), "charm_exposure": _native(charm),
+                "zero_dte_pcr": _native(zero_dte_pcr)}
 
     def _calc_max_pain(self, chain: pd.DataFrame) -> Optional[float]:
         """Calculate max pain strike."""
