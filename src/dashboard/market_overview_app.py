@@ -206,7 +206,7 @@ def page_market_overview():
     # SECTION 3: SYSTEM HEALTH (compact, non-collapsible)
     # ══════════════════════════════════════════════════════════════════
     st.markdown(f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.85rem;margin-top:16px;margin-bottom:4px;">SYSTEM HEALTH</p>', unsafe_allow_html=True)
-    h1, h2, h3, h4 = st.columns(4)
+    h1, h2, h3, h4, h5 = st.columns(5)
 
     with h1:
         try:
@@ -241,6 +241,24 @@ def page_market_overview():
             st.markdown(metric_card("Scheduler", "⚪ Unknown", "white"), unsafe_allow_html=True)
 
     with h4:
+        try:
+            import json as _json
+            with open("./data/streamer_state.json") as _sf:
+                _ss = _json.load(_sf)
+            stocks_ok = _ss.get("is_stocks_alive", False)
+            opts_ok = _ss.get("is_options_alive", False)
+            if stocks_ok and opts_ok:
+                st.markdown(metric_card("Streamer", "🟢 Both OK", "green"), unsafe_allow_html=True)
+            elif stocks_ok:
+                st.markdown(metric_card("Streamer", "🟡 Stocks Only", "yellow"), unsafe_allow_html=True)
+            elif opts_ok:
+                st.markdown(metric_card("Streamer", "🟡 Options Only", "yellow"), unsafe_allow_html=True)
+            else:
+                st.markdown(metric_card("Streamer", "🔴 Disconnected", "red"), unsafe_allow_html=True)
+        except Exception:
+            st.markdown(metric_card("Streamer", "⚪ Inactive", "white"), unsafe_allow_html=True)
+
+    with h5:
         try:
             import yfinance as yf
             spy = yf.Ticker("SPY").fast_info

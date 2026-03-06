@@ -21,6 +21,10 @@ from datetime import datetime
 
 import yaml
 
+from src.realtime.streamer import PolygonStreamer
+from src.realtime.dashboard_bridge import read_state
+from src.data.db_router import DbRouter
+
 logger = logging.getLogger(__name__)
 
 # Pipeline schedule: 4:30 PM ET (16:30), Mon-Fri
@@ -244,6 +248,7 @@ class SystemLauncher:
         self.config = config
         self.pm = ProcessManager()
         self.scheduler = Scheduler(config)
+        self.streamer: PolygonStreamer | None = None
         self._running = False
 
     def start_all(self):
@@ -313,7 +318,9 @@ class SystemLauncher:
             logger.warning("LLM unavailable — continuing without it")
 
     def _start_dashboards(self, spy_only: bool = False, es_only: bool = False):
-        """Start the unified Streamlit dashboard and Confidence API."""
+        """Start the unified Streamlit dashboard, Confidence API, and Streamer."""
+        self._start_streamer()
+
         self.pm.start("dashboard", [
             sys.executable, "-m", "streamlit", "run",
             "src/dashboard/app.py",
@@ -327,12 +334,96 @@ class SystemLauncher:
             sys.executable, "-m", "src.api.confidence_server",
         ])
 
+    def _start_streamer(self):
+        """Start the Polygon.io WebSocket streamer if API key is available."""
+        api_key = self.config.get("polygon", {}).get("api_key", "")
+        if not api_key or api_key in ("YOUR_POLYGON_KEY", "FROM_ENCRYPTED_DB"):
+            try:
+                from src.data.secrets_manager import get_secret
+                api_key = get_secret("polygon_api_key", fallback="")
+            except Exception:
+                api_key = ""
+
+        if not api_key:
+            logger.warning("Polygon API key not found — WebSocket streamer disabled")
+            return
+
+        try:
+            self.streamer = PolygonStreamer(api_key, self.config)
+            db_router = DbRouter(self.config)
+
+            def on_bar_handler(bar: dict):
+                """Write 5-second bars to the database."""
+                try:
+                    db_router.execute(
+                        "INSERT INTO intraday_bars "
+                        "(timestamp, ticker, open, high, low, close, volume, vwap) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT (timestamp, ticker) DO UPDATE SET "
+                        "close = EXCLUDED.close, "
+                        "high = GREATEST(intraday_bars.high, EXCLUDED.high), "
+                        "low = LEAST(intraday_bars.low, EXCLUDED.low), "
+                        "volume = intraday_bars.volume + EXCLUDED.volume, "
+                        "vwap = EXCLUDED.vwap",
+                        (bar["timestamp"], "SPY", bar["open"], bar["high"],
+                         bar["low"], bar["close"], bar["volume"], bar.get("vwap", 0))
+                    )
+                except Exception as e:
+                    logger.error(f"on_bar DB write failed: {e}")
+
+            def on_flow_alert_handler(alert: dict):
+                """Update spy_state.json with new flow alerts."""
+                try:
+                    import json
+                    state_path = "./data/spy_state.json"
+                    current = read_state("spy_state.json")
+                    alerts = current.get("flow_alerts", [])
+                    alerts.append(alert)
+                    current["flow_alerts"] = alerts[-20:]
+                    current["updated_at"] = datetime.now().isoformat()
+                    # Atomic write
+                    import tempfile
+                    fd, tmp = tempfile.mkstemp(dir="./data", suffix=".tmp")
+                    with os.fdopen(fd, "w") as f:
+                        json.dump(current, f, default=str)
+                    os.replace(tmp, state_path)
+                except Exception as e:
+                    logger.error(f"on_flow_alert failed: {e}")
+
+            self.streamer.set_callbacks(on_bar=on_bar_handler,
+                                        on_flow_alert=on_flow_alert_handler)
+            self.streamer.start()
+            logger.info("Polygon WebSocket streamer started")
+        except Exception as e:
+            logger.warning(f"Streamer failed to start: {e}")
+            self.streamer = None
+
+    def _update_streamer_state(self):
+        """Write streamer health to a JSON file for dashboard consumption."""
+        if not self.streamer:
+            return
+        import json
+        state = {
+            "updated_at": datetime.now().isoformat(),
+            "is_stocks_alive": self.streamer.is_stocks_alive(),
+            "is_options_alive": self.streamer.is_options_alive(),
+        }
+        try:
+            import tempfile
+            fd, tmp = tempfile.mkstemp(dir="./data", suffix=".tmp")
+            with os.fdopen(fd, "w") as f:
+                json.dump(state, f, default=str)
+            os.replace(tmp, "./data/streamer_state.json")
+        except Exception as e:
+            logger.debug(f"Failed to write streamer state: {e}")
+
     def _monitor(self):
         """Health monitoring loop — watches processes, restarts crashes."""
         logger.info("System running. Press Ctrl+C to stop.")
         try:
             while self._running:
                 time.sleep(30)
+                self._update_streamer_state()
                 status = self.pm.health_check()
                 crashed = [n for n, s in status.items() if "exited" in s]
                 if crashed:
@@ -347,6 +438,12 @@ class SystemLauncher:
         """Graceful shutdown of all components."""
         self._running = False
         self.scheduler.stop()
+        if self.streamer:
+            try:
+                self.streamer.stop()
+                logger.info("Polygon streamer stopped")
+            except Exception as e:
+                logger.debug(f"Streamer stop error: {e}")
         self.pm.stop_all()
         logger.info("System shutdown complete")
 

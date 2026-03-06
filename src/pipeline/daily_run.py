@@ -623,18 +623,42 @@ class DailyPipeline:
 
     def _step9_intraday(self) -> dict:
         """Step 9: Build intraday features."""
-        # Check if we have intraday bars for today
+        # ── Polygon 5s bar backfill for today ─────────────────────────
+        if self.polygon:
+            try:
+                logger.info(f"Checking for 5s bars for {self.today}...")
+                bars_df = self.polygon.get_5s_bars("SPY", self.today)
+                if not bars_df.empty:
+                    logger.info(f"Fetched {len(bars_df)} 5s bars from Polygon REST API")
+                    for _, row in bars_df.iterrows():
+                        self._db_execute(
+                            "INSERT INTO intraday_bars "
+                            "(timestamp, ticker, open, high, low, close, volume, vwap) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT (timestamp, ticker) DO NOTHING",
+                            (row["timestamp"], row["ticker"],
+                             float(row["open"]), float(row["high"]),
+                             float(row["low"]), float(row["close"]),
+                             int(row["volume"]),
+                             float(row["vwap"]) if pd.notna(row.get("vwap")) else None)
+                        )
+            except Exception as e:
+                logger.warning(f"Polygon 5s bar backfill failed: {e}")
+
+        # ── Count today's bars (TIMESTAMPTZ-safe range query) ─────────
         bar_count = 0
         if self.router:
             df_cnt = self.router.read_analytics(
-                "SELECT COUNT(*) as cnt FROM intraday_bars WHERE timestamp LIKE ?",
-                (f"{self.today}%",),
+                "SELECT COUNT(*) as cnt FROM intraday_bars "
+                "WHERE timestamp >= ? AND timestamp < ?",
+                (f"{self.today} 00:00:00", f"{self.today} 23:59:59"),
             )
             bar_count = int(df_cnt.iloc[0]["cnt"]) if not df_cnt.empty else 0
         else:
             row = self._db_fetchone(
-                "SELECT COUNT(*) FROM intraday_bars WHERE timestamp LIKE ?",
-                (f"{self.today}%",),
+                "SELECT COUNT(*) FROM intraday_bars "
+                "WHERE timestamp >= ? AND timestamp < ?",
+                (f"{self.today} 00:00:00", f"{self.today} 23:59:59"),
             )
             bar_count = row[0] if row else 0
 
@@ -648,16 +672,18 @@ class DailyPipeline:
             )
             return {"bars": 0, "features": "default"}
 
-        # Compute from intraday bars
+        # Compute from intraday bars (TIMESTAMPTZ-safe range query)
         if self.router:
             bars = self.router.read_analytics(
-                "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
-                (f"{self.today}%",),
+                "SELECT * FROM intraday_bars "
+                "WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp",
+                (f"{self.today} 00:00:00", f"{self.today} 23:59:59"),
             )
         else:
             bars = self._db_query(
-                "SELECT * FROM intraday_bars WHERE timestamp LIKE ? ORDER BY timestamp",
-                (f"{self.today}%",),
+                "SELECT * FROM intraday_bars "
+                "WHERE timestamp >= ? AND timestamp < ? ORDER BY timestamp",
+                (f"{self.today} 00:00:00", f"{self.today} 23:59:59"),
             )
         if bars.empty:
             return {"bars": 0}

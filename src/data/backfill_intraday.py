@@ -1,109 +1,108 @@
-"""Backfill 5-minute intraday bars from yfinance (last 60 days).
+"""Backfill 5-second intraday bars from Polygon.io.
 
-yfinance provides free 5-min data for the last 60 trading days.
-This populates the intraday_bars table so compute_intraday_microstructure
-can generate the 8 microstructure features.
-
-Note: The microstructure function was written for 5-second bars.
-We adapt by also updating the function's bar-count assumptions,
-OR we resample to match. Since 5-min is the finest free data,
-we store 5-min bars and adjust the microstructure computation.
+Replaces the legacy yfinance 5-minute backfill with high-fidelity
+5-second bars from Polygon REST API. Uses DbRouter for PostgreSQL
+primary with SQLite fallback.
 
 Usage:
     python -m src.data.backfill_intraday
+    python -m src.data.backfill_intraday --days 30
 """
 
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
-import numpy as np
 import pandas as pd
 
-from src.data.init_db import init_db, get_connection, load_config
+from src.data.init_db import load_config
+from src.data.db_router import DbRouter
+from src.data.polygon_fetcher import PolygonFetcher
 
 logger = logging.getLogger(__name__)
 
 
-def backfill_intraday(config: dict = None):
-    """Download 60 days of 5-min SPY bars from yfinance and store them."""
+def backfill_intraday(config: dict = None, days_to_backfill: int = 60):
+    """Download N days of 5-second SPY bars from Polygon and store them."""
     if config is None:
         config = load_config()
 
-    conn = get_connection(config)
+    router = DbRouter(config)
 
-    logger.info("Fetching 60 days of 5-min SPY bars from yfinance...")
+    # Resolve Polygon API key
+    api_key = config.get("polygon", {}).get("api_key", "")
+    if not api_key or api_key in ("YOUR_POLYGON_KEY", "FROM_ENCRYPTED_DB"):
+        try:
+            from src.data.secrets_manager import get_secret
+            api_key = get_secret("polygon_api_key", fallback="")
+        except Exception:
+            api_key = ""
+
+    if not api_key:
+        logger.error("Polygon API key not found — cannot backfill intraday data")
+        return
+
+    polygon = PolygonFetcher(api_key)
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=days_to_backfill)
+
+    logger.info(f"Fetching {days_to_backfill} days of 5-second SPY bars from Polygon...")
+    all_bars = []
+    for day in pd.date_range(start_date, end_date):
+        date_str = day.strftime("%Y-%m-%d")
+        try:
+            df = polygon.get_5s_bars("SPY", date_str)
+            if not df.empty:
+                all_bars.append(df)
+                logger.info(f"  {date_str}: {len(df)} bars")
+        except Exception as e:
+            logger.warning(f"  {date_str}: failed — {e}")
+
+    if not all_bars:
+        logger.info("No new bars fetched")
+        return
+
+    full_df = pd.concat(all_bars, ignore_index=True)
+    logger.info(f"Total: {len(full_df)} 5s bars across {len(all_bars)} days")
+
+    inserted = 0
+    for _, row in full_df.iterrows():
+        try:
+            router.execute(
+                "INSERT INTO intraday_bars "
+                "(timestamp, ticker, open, high, low, close, volume, vwap) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (timestamp, ticker) DO NOTHING",
+                (row["timestamp"], "SPY",
+                 float(row["open"]), float(row["high"]),
+                 float(row["low"]), float(row["close"]),
+                 int(row["volume"]),
+                 float(row["vwap"]) if pd.notna(row.get("vwap")) else None)
+            )
+            inserted += 1
+        except Exception as e:
+            logger.debug(f"Insert failed for {row['timestamp']}: {e}")
+
+    logger.info(f"Inserted {inserted} intraday bars")
+
+    # Verify
     try:
-        import yfinance as yf
-        # yfinance max for 5m interval is 60 days
-        data = yf.download("SPY", period="60d", interval="5m", progress=False)
-        if data.empty:
-            logger.error("yfinance returned no intraday data")
-            conn.close()
-            return
+        count_df = router.read_analytics("SELECT COUNT(*) as cnt FROM intraday_bars")
+        total = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+        logger.info(f"Total intraday_bars in DB: {total}")
+    except Exception:
+        pass
 
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-
-        df = data.reset_index()
-        # Column is "Datetime" for intraday
-        dt_col = "Datetime" if "Datetime" in df.columns else "Date"
-        df["timestamp"] = pd.to_datetime(df[dt_col]).dt.strftime("%Y-%m-%d %H:%M:%S")
-        df["date"] = pd.to_datetime(df[dt_col]).dt.strftime("%Y-%m-%d")
-        df = df.rename(columns={"Open": "open", "High": "high", "Low": "low",
-                                "Close": "close", "Volume": "volume"})
-
-        # Compute VWAP per day
-        df["typical_price"] = (df["high"] + df["low"] + df["close"]) / 3
-        df["tp_vol"] = df["typical_price"] * df["volume"]
-        df["cum_tp_vol"] = df.groupby("date")["tp_vol"].cumsum()
-        df["cum_vol"] = df.groupby("date")["volume"].cumsum()
-        df["vwap"] = df["cum_tp_vol"] / df["cum_vol"].replace(0, np.nan)
-
-        logger.info(f"Got {len(df)} 5-min bars across {df['date'].nunique()} days")
-
-        # Insert into intraday_bars
-        inserted = 0
-        for _, row in df.iterrows():
-            try:
-                conn.execute(
-                    """INSERT OR REPLACE INTO intraday_bars
-                       (timestamp, ticker, open, high, low, close, volume, vwap)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (row["timestamp"], "SPY",
-                     float(row["open"]), float(row["high"]),
-                     float(row["low"]), float(row["close"]),
-                     int(row["volume"]), float(row["vwap"]) if pd.notna(row["vwap"]) else None)
-                )
-                inserted += 1
-            except Exception as e:
-                logger.debug(f"Insert failed for {row['timestamp']}: {e}")
-
-        conn.commit()
-        logger.info(f"Inserted {inserted} intraday bars")
-
-        # Verify
-        count = conn.execute("SELECT COUNT(*) FROM intraday_bars").fetchone()[0]
-        dates = conn.execute(
-            "SELECT COUNT(DISTINCT substr(timestamp, 1, 10)) FROM intraday_bars"
-        ).fetchone()[0]
-        logger.info(f"Total intraday_bars: {count} rows, {dates} unique days")
-
-    except Exception as e:
-        logger.error(f"Intraday backfill failed: {e}")
-        import traceback
-        traceback.print_exc()
-
-    conn.close()
     logger.info("Done.")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    parser = argparse.ArgumentParser(description="Backfill 5-min intraday bars")
+    parser = argparse.ArgumentParser(description="Backfill 5-second intraday bars from Polygon")
     parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument("--days", type=int, default=60, help="Number of past days to backfill")
     args = parser.parse_args()
 
     config = load_config(args.config)
-    backfill_intraday(config=config)
+    backfill_intraday(config=config, days_to_backfill=args.days)
