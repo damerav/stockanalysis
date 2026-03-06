@@ -67,7 +67,12 @@ CREATE TABLE IF NOT EXISTS predictions (
     direction TEXT, confidence REAL,
     factors TEXT,  -- JSON blob of factor scores
     report_text TEXT,
-    predicted_at TEXT
+    predicted_at TEXT,
+    -- Enhanced Prediction: model + institutional flow fusion
+    enhanced_direction TEXT,
+    enhanced_score REAL,
+    flow_score REAL,
+    flow_alert_count INTEGER
 );
 
 -- Intraday 5-second bars
@@ -113,7 +118,11 @@ CREATE TABLE IF NOT EXISTS performance (
     confidence_tier TEXT,       -- 'high' (>=70), 'medium' (50-70), 'low' (<50)
     vix_regime TEXT,            -- 'low' (<15), 'normal' (15-25), 'high' (>25)
     day_of_week INTEGER,       -- 0=Mon..4=Fri
-    event_proximity INTEGER    -- 1 if within 2 days of FOMC/CPI/NFP
+    event_proximity INTEGER,   -- 1 if within 2 days of FOMC/CPI/NFP
+    -- Enhanced prediction tracking
+    enhanced_predicted TEXT,
+    enhanced_correct INTEGER,
+    enhanced_cumulative_accuracy REAL
 );
 
 -- Historical backtest results (model predictions vs actuals)
@@ -269,6 +278,24 @@ def init_db(config: dict = None) -> str:
                     )
                 """)
                 logger.info("strategy_rules table ready in PostgreSQL")
+
+                # v2.9.1: Enhanced prediction columns (PostgreSQL ALTER TABLE)
+                _pg_conn = router._pg_conn
+                for tbl, col, ctype in [
+                    ("predictions", "enhanced_direction", "TEXT"),
+                    ("predictions", "enhanced_score", "REAL"),
+                    ("predictions", "flow_score", "REAL"),
+                    ("predictions", "flow_alert_count", "INTEGER"),
+                    ("performance", "enhanced_predicted", "TEXT"),
+                    ("performance", "enhanced_correct", "INTEGER"),
+                    ("performance", "enhanced_cumulative_accuracy", "REAL"),
+                ]:
+                    try:
+                        _pg_conn.cursor().execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ctype}")
+                        _pg_conn.commit()
+                    except Exception:
+                        _pg_conn.rollback()
+
             except Exception as e:
                 logger.warning(f"strategy_rules PostgreSQL setup failed: {e}")
         router.close()
@@ -622,6 +649,23 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("qqq", "REAL"), ("iwm", "REAL"), ("dia", "REAL"),
     ]
     _add_columns_if_missing(conn, "macro", sector_etf_cols)
+
+    # v2.9.1: Enhanced prediction columns on predictions table
+    enhanced_pred_cols = [
+        ("enhanced_direction", "TEXT"),
+        ("enhanced_score", "REAL"),
+        ("flow_score", "REAL"),
+        ("flow_alert_count", "INTEGER"),
+    ]
+    _add_columns_if_missing(conn, "predictions", enhanced_pred_cols)
+
+    # v2.9.1: Enhanced prediction tracking on performance table
+    enhanced_perf_cols = [
+        ("enhanced_predicted", "TEXT"),
+        ("enhanced_correct", "INTEGER"),
+        ("enhanced_cumulative_accuracy", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "performance", enhanced_perf_cols)
 
     conn.commit()
     seed_strategy_rules(conn)

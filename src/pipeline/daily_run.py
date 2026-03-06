@@ -27,7 +27,7 @@ from src.data.features import (
 from src.llm.analyzer import LLMAnalyzer
 from src.llm.reporter import DailyReporter
 from src.model.trainer import SPYPredictor, evaluate_past_prediction
-from src.realtime.dashboard_bridge import write_spy_state
+from src.realtime.dashboard_bridge import write_spy_state, compute_enhanced_prediction
 from src.data.feature_store import FeatureStore
 from src.model.regime import HMMRegimeDetector
 from src.data.earnings_calendar import fetch_earnings_yf, store_earnings
@@ -905,10 +905,35 @@ class DailyPipeline:
                               "sma_20": tech_row[2], "sma_50": tech_row[3]}
         indicators["vix"] = macro.get("vix")
 
-        write_spy_state(prediction=prediction, indicators=indicators)
-        logger.info(f"Prediction: {prediction['scale_label']} "
-                    f"({prediction['confidence']:.0f}%)"
-                    f"{' [LOW CONVICTION]' if prediction.get('is_low_conviction') else ''}")
+        # Compute enhanced prediction (model + institutional flow fusion)
+        from src.realtime.dashboard_bridge import read_state
+        current_state = {}
+        try:
+            current_state = read_state("spy_state.json")
+        except Exception:
+            pass
+        flow_alerts = current_state.get("flow_alerts", [])
+        enhanced = compute_enhanced_prediction(prediction, flow_alerts)
+
+        # Store enhanced prediction columns in predictions table
+        self._db_execute(
+            """UPDATE predictions SET
+               enhanced_direction = ?, enhanced_score = ?,
+               flow_score = ?, flow_alert_count = ?
+               WHERE date = ?""",
+            (enhanced["enhanced_direction"], enhanced["enhanced_score"],
+             enhanced["flow_score"], enhanced["flow_alert_count"],
+             self.today),
+        )
+
+        write_spy_state(prediction=prediction, indicators=indicators,
+                        flow_alerts=flow_alerts, enhanced_prediction=enhanced)
+        logger.info(
+            f"Prediction: {prediction['scale_label']} ({prediction['confidence']:.0f}%) | "
+            f"Enhanced: {enhanced['enhanced_direction']} (score={enhanced['enhanced_score']:+.1f}, "
+            f"flow={enhanced['flow_score']:+.1f}, alerts={enhanced['flow_alert_count']})"
+            f"{' [LOW CONVICTION]' if prediction.get('is_low_conviction') else ''}"
+        )
         return prediction
 
     def _step12_report(self) -> dict:

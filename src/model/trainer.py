@@ -1227,12 +1227,13 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
 
     if router:
         pred_df = router.query(
-            "SELECT direction, confidence FROM predictions WHERE date = ?", (date_str,)
+            "SELECT direction, confidence, enhanced_direction FROM predictions WHERE date = ?", (date_str,)
         )
         if pred_df.empty:
             return None
         predicted = pred_df.iloc[0]["direction"]
         pred_confidence = pred_df.iloc[0]["confidence"] or 0
+        enhanced_predicted = pred_df.iloc[0].get("enhanced_direction") if "enhanced_direction" in pred_df.columns else None
 
         prices_df = router.query(
             "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date_str,)
@@ -1242,12 +1243,13 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
         actual_return = (prices_df.iloc[1]["close"] - prices_df.iloc[0]["close"]) / prices_df.iloc[0]["close"]
     else:
         row = conn_or_router.execute(
-            "SELECT direction, confidence FROM predictions WHERE date = ?", (date_str,)
+            "SELECT direction, confidence, enhanced_direction FROM predictions WHERE date = ?", (date_str,)
         ).fetchone()
         if not row:
             return None
         predicted = row[0]
         pred_confidence = row[1] or 0
+        enhanced_predicted = row[2] if len(row) > 2 else None
         prices = conn_or_router.execute(
             "SELECT close FROM prices WHERE date >= ? ORDER BY date LIMIT 2", (date_str,)
         ).fetchall()
@@ -1310,32 +1312,63 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
 
     # Update cumulative accuracy
     if router:
-        perf_df = router.query("SELECT COUNT(*) as cnt, SUM(correct) as s FROM performance")
+        perf_df = router.query(
+            "SELECT COUNT(*) as cnt, SUM(correct) as s, "
+            "SUM(CASE WHEN enhanced_correct IS NOT NULL THEN enhanced_correct ELSE 0 END) as es, "
+            "COUNT(CASE WHEN enhanced_correct IS NOT NULL THEN 1 END) as ec "
+            "FROM performance"
+        )
         total = (int(perf_df.iloc[0]["cnt"]) if not perf_df.empty else 0) + 1
         correct_total = (int(perf_df.iloc[0]["s"] or 0) if not perf_df.empty else 0) + correct
+        enhanced_total = (int(perf_df.iloc[0]["ec"] or 0) if not perf_df.empty else 0)
+        enhanced_correct_total = (int(perf_df.iloc[0]["es"] or 0) if not perf_df.empty else 0)
     else:
-        perf_rows = conn_or_router.execute("SELECT COUNT(*), SUM(correct) FROM performance").fetchone()
+        perf_rows = conn_or_router.execute(
+            "SELECT COUNT(*), SUM(correct), "
+            "SUM(CASE WHEN enhanced_correct IS NOT NULL THEN enhanced_correct ELSE 0 END), "
+            "COUNT(CASE WHEN enhanced_correct IS NOT NULL THEN 1 END) "
+            "FROM performance"
+        ).fetchone()
         total = (perf_rows[0] or 0) + 1
         correct_total = (perf_rows[1] or 0) + correct
+        enhanced_total = (perf_rows[3] or 0)
+        enhanced_correct_total = (perf_rows[2] or 0)
     cum_accuracy = correct_total / total
+
+    # Enhanced accuracy computation
+    enhanced_correct_val = None
+    enhanced_cum_accuracy = None
+    if enhanced_predicted and enhanced_predicted not in ("CONFLICTED",):
+        enhanced_correct_val = 1 if (
+            ("BULLISH" in enhanced_predicted and actual == "BULLISH") or
+            ("BEARISH" in enhanced_predicted and actual == "BEARISH") or
+            (enhanced_predicted == "NEUTRAL" and actual == "NEUTRAL")
+        ) else 0
+        enhanced_total += 1
+        enhanced_correct_total += enhanced_correct_val
+        enhanced_cum_accuracy = enhanced_correct_total / enhanced_total
 
     if router:
         router.execute(
             """INSERT OR REPLACE INTO performance
                (date, predicted, actual, correct, cumulative_accuracy,
-                confidence_tier, vix_regime, day_of_week, event_proximity)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence_tier, vix_regime, day_of_week, event_proximity,
+                enhanced_predicted, enhanced_correct, enhanced_cumulative_accuracy)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date_str, predicted, actual, correct, cum_accuracy,
-             conf_tier, vix_regime, dow, event_prox)
+             conf_tier, vix_regime, dow, event_prox,
+             enhanced_predicted, enhanced_correct_val, enhanced_cum_accuracy)
         )
     else:
         conn_or_router.execute(
             """INSERT OR REPLACE INTO performance
                (date, predicted, actual, correct, cumulative_accuracy,
-                confidence_tier, vix_regime, day_of_week, event_proximity)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                confidence_tier, vix_regime, day_of_week, event_proximity,
+                enhanced_predicted, enhanced_correct, enhanced_cumulative_accuracy)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (date_str, predicted, actual, correct, cum_accuracy,
-             conf_tier, vix_regime, dow, event_prox)
+             conf_tier, vix_regime, dow, event_prox,
+             enhanced_predicted, enhanced_correct_val, enhanced_cum_accuracy)
         )
         conn_or_router.commit()
 
@@ -1343,6 +1376,9 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
         "date": date_str, "predicted": predicted, "actual": actual,
         "correct": bool(correct), "cumulative_accuracy": round(cum_accuracy, 3),
         "confidence_tier": conf_tier, "vix_regime": vix_regime,
+        "enhanced_predicted": enhanced_predicted,
+        "enhanced_correct": bool(enhanced_correct_val) if enhanced_correct_val is not None else None,
+        "enhanced_cumulative_accuracy": round(enhanced_cum_accuracy, 3) if enhanced_cum_accuracy else None,
     }
 
 

@@ -51,6 +51,7 @@ def page_market_overview():
     c = get_colors()
     state = _spy_state()
     prediction = state.get("prediction", {})
+    enhanced = state.get("enhanced_prediction", {})
 
     # ── Page header ────────────────────────────────────────────────────
     st.markdown(page_header("📊 Market Overview"), unsafe_allow_html=True)
@@ -164,7 +165,7 @@ def page_market_overview():
     except Exception:
         row = None
 
-    b1, b2, b3, b4 = st.columns(4)
+    b1, b2, b3, b4, b5 = st.columns(5)
     with b1:
         fg = row.get("fear_greed_index") if row is not None else None
         if fg is not None and pd.notna(fg):
@@ -201,6 +202,20 @@ def page_market_overview():
             st.caption(cape_label)
         else:
             st.metric("Shiller CAPE", "N/A")
+
+    with b5:
+        enh_dir = enhanced.get("enhanced_direction", "")
+        enh_score = enhanced.get("enhanced_score")
+        enh_color_map = {
+            "BULLISH": "normal", "LEAN BULLISH": "normal",
+            "BEARISH": "inverse", "LEAN BEARISH": "inverse",
+            "NEUTRAL": "off", "CONFLICTED": "off",
+        }
+        st.metric("Enhanced Signal", enh_dir if enh_dir else "N/A",
+                  delta=f"Score: {enh_score:+.0f}" if enh_score is not None else None,
+                  delta_color=enh_color_map.get(enh_dir, "off"),
+                  help="Prediction + Institutional Flow fusion signal. "
+                       "Model confidence (65%) + options flow direction (35%).")
 
     # ══════════════════════════════════════════════════════════════════
     # SECTION 3: SYSTEM HEALTH (compact, non-collapsible)

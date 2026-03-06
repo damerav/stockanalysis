@@ -251,7 +251,12 @@ def load_prediction_history(n: int = 30) -> pd.DataFrame:
         config = _load_config_cached()
         router = get_router(config)
         df = router.read_analytics(
-            f"SELECT date, direction, confidence FROM predictions ORDER BY date DESC LIMIT {n}"
+            "SELECT p.date, p.direction, p.confidence, "
+            "p.enhanced_direction, p.enhanced_score, p.flow_score, p.flow_alert_count, "
+            "perf.actual, perf.correct, perf.enhanced_correct, perf.enhanced_cumulative_accuracy, "
+            "perf.cumulative_accuracy "
+            "FROM predictions p LEFT JOIN performance perf ON p.date = perf.date "
+            f"ORDER BY p.date DESC LIMIT {n}"
         )
         return df.iloc[::-1] if not df.empty else df
     except Exception:
@@ -267,7 +272,8 @@ def load_performance() -> pd.DataFrame:
         router = get_router(config)
         df = router.read_analytics(
             "SELECT date, predicted, actual, correct, cumulative_accuracy, "
-            "confidence_tier, vix_regime, day_of_week, event_proximity "
+            "confidence_tier, vix_regime, day_of_week, event_proximity, "
+            "enhanced_predicted, enhanced_correct, enhanced_cumulative_accuracy "
             "FROM performance ORDER BY date DESC LIMIT 30"
         )
         return df
@@ -352,6 +358,81 @@ def page_spy():
         )
     else:
         st.info("Waiting for prediction data...")
+
+    # --- Enhanced Prediction card (model + institutional flow) ---
+    enhanced = state.get("enhanced_prediction", {})
+    enh_direction = enhanced.get("enhanced_direction", "")
+    enh_score = enhanced.get("enhanced_score")
+    enh_flow_score = enhanced.get("flow_score")
+    enh_model_score = enhanced.get("model_score")
+    enh_alert_count = enhanced.get("flow_alert_count", 0)
+    enh_alignment = enhanced.get("alignment", "")
+
+    enh_color_map = {
+        "BULLISH": c["green"], "LEAN BULLISH": c["green"],
+        "NEUTRAL": c["yellow"],
+        "LEAN BEARISH": c["red"], "BEARISH": c["red"],
+        "CONFLICTED": c["yellow"],
+    }
+    enh_color = enh_color_map.get(enh_direction, c["text_secondary"])
+
+    if enh_direction:
+        alignment_badge = {
+            "ALIGNED_BULLISH": ("✅ ALIGNED BULLISH", c["green"]),
+            "ALIGNED_BEARISH": ("✅ ALIGNED BEARISH", c["red"]),
+            "LEAN_BULLISH": ("↗ LEAN BULLISH", c["green"]),
+            "LEAN_BEARISH": ("↘ LEAN BEARISH", c["red"]),
+            "CONFLICTED": ("⚠️ CONFLICTED", c["yellow"]),
+            "NEUTRAL": ("◆ NEUTRAL", c["yellow"]),
+        }.get(enh_alignment, ("—", c["text_secondary"]))
+
+        st.markdown(
+            f"""<div style="border:2px solid {enh_color}44; border-radius:12px;
+                padding:16px 20px; margin-bottom:16px;
+                background: linear-gradient(135deg, {enh_color}11 0%, {enh_color}22 100%);">
+                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+                    <div>
+                        <div style="font-size:0.72rem; color:{c['text_secondary']}; text-transform:uppercase;
+                                    letter-spacing:0.12em; font-weight:600; margin-bottom:4px;">
+                            PREDICTION + INSTITUTIONAL FLOW
+                        </div>
+                        <div style="font-size:1.5rem; font-weight:800; color:{enh_color};">
+                            {enh_direction}
+                        </div>
+                        <div style="font-size:0.8rem; color:{alignment_badge[1]}; margin-top:2px; font-weight:600;">
+                            {alignment_badge[0]}
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:20px; flex-wrap:wrap;">
+                        <div style="text-align:center;">
+                            <div style="font-size:1.4rem; font-weight:800; color:{enh_color};">
+                                {f'{enh_score:+.0f}' if enh_score is not None else '—'}
+                            </div>
+                            <div style="font-size:0.68rem; color:{c['text_secondary']}; text-transform:uppercase;">
+                                Enhanced Score
+                            </div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:1.4rem; font-weight:700; color:{c['text']};">
+                                {f'{enh_model_score:+.0f}' if enh_model_score is not None else '—'}
+                            </div>
+                            <div style="font-size:0.68rem; color:{c['text_secondary']}; text-transform:uppercase;">
+                                Model (65%)
+                            </div>
+                        </div>
+                        <div style="text-align:center;">
+                            <div style="font-size:1.4rem; font-weight:700; color:{c['text']};">
+                                {f'{enh_flow_score:+.0f}' if enh_flow_score is not None else '—'}
+                            </div>
+                            <div style="font-size:0.68rem; color:{c['text_secondary']}; text-transform:uppercase;">
+                                Flow (35%) · {enh_alert_count} alerts
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
 
     # --- P3: Earnings + Fed + Options (compact row) ---
     try:
@@ -463,30 +544,78 @@ def page_spy():
                     unsafe_allow_html=True)
         hist_df = load_prediction_history(30)
         if not hist_df.empty:
-            colors = hist_df["direction"].map({
+            bar_colors = hist_df["direction"].map({
                 "BULLISH": c["green"], "STRONG_BULLISH": c["green"],
                 "BEARISH": c["red"], "STRONG_BEARISH": c["red"],
                 "NEUTRAL": c["text_secondary"],
             }).fillna(c["text_muted"])
             fig = go.Figure()
             fig.add_trace(go.Bar(
+                name="Model Prediction",
                 x=hist_df["date"], y=hist_df["confidence"],
-                marker_color=colors.tolist(),
-                text=hist_df["direction"], textposition="outside",
-                textfont=dict(color=c["text"], size=9),
-                hovertemplate="Date: %{x}<br>Direction: %{text}<br>Confidence: %{y:.0f}%",
+                marker_color=bar_colors.tolist(), opacity=0.55,
+                text=hist_df["direction"].str.replace("_", " "),
+                textposition="outside",
+                textfont=dict(color=c["text"], size=8),
+                hovertemplate="<b>%{x}</b><br>Model: %{text}<br>Confidence: %{y:.0f}%<extra></extra>",
             ))
+
+            # Enhanced prediction score line (secondary axis)
+            if "enhanced_score" in hist_df.columns and hist_df["enhanced_score"].notna().any():
+                fig.add_trace(go.Scatter(
+                    name="Enhanced Score",
+                    x=hist_df["date"], y=hist_df["enhanced_score"],
+                    mode="lines+markers", yaxis="y2",
+                    line=dict(color="#00bcd4", width=2, dash="dot"),
+                    marker=dict(size=6, color="#00bcd4"),
+                    hovertemplate="<b>%{x}</b><br>Enhanced: %{customdata}<br>Score: %{y:+.1f}<extra></extra>",
+                    customdata=hist_df["enhanced_direction"].fillna("N/A"),
+                ))
+
+            # Actual outcome markers
+            if "actual" in hist_df.columns and hist_df["actual"].notna().any():
+                actual_colors = hist_df["actual"].map({
+                    "BULLISH": c["green"], "BEARISH": c["red"], "NEUTRAL": c["yellow"],
+                }).fillna(c["text_secondary"])
+                actual_symbols = hist_df["actual"].map({
+                    "BULLISH": "triangle-up", "BEARISH": "triangle-down", "NEUTRAL": "diamond",
+                }).fillna("circle")
+                fig.add_trace(go.Scatter(
+                    name="Actual Outcome",
+                    x=hist_df["date"], y=[95] * len(hist_df),
+                    mode="markers",
+                    marker=dict(symbol=actual_symbols.tolist(), size=9,
+                                color=actual_colors.tolist(),
+                                line=dict(color=c["text"], width=1)),
+                    hovertemplate="<b>%{x}</b><br>Actual: %{customdata}<extra></extra>",
+                    customdata=hist_df["actual"].fillna("N/A"),
+                ))
+
             _hist_bg = "rgba(0,0,0,0)" if is_dark() else c["surface"]
             fig.update_layout(
-                height=220, margin=dict(l=10, r=10, t=5, b=25),
-                yaxis_title="Conf %", yaxis_range=[0, 100],
+                height=260, margin=dict(l=10, r=50, t=5, b=25),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor=_hist_bg,
                 font=dict(color=c["text_secondary"], size=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1, font=dict(size=9)),
                 xaxis=dict(gridcolor=c["grid"], tickfont=dict(size=9),
                            tickformat="%b %d", dtick="D1"),
-                yaxis=dict(gridcolor=c["grid"]),
+                yaxis=dict(title="Conf %", range=[0, 105], gridcolor=c["grid"]),
+                yaxis2=dict(title="Enhanced Score", overlaying="y", side="right",
+                            range=[-110, 110], showgrid=False,
+                            zeroline=True, zerolinecolor=c["grid"],
+                            tickfont=dict(size=9)),
+                barmode="overlay",
             )
             st.plotly_chart(fig, use_container_width=True)
+            st.markdown(
+                f'<p style="color:{c["text_secondary"]}; font-size:0.72rem; margin-top:-8px;">'
+                f'<span style="color:{c["green"]};">▌</span> Bullish · '
+                f'<span style="color:{c["red"]};">▌</span> Bearish = Model confidence · '
+                f'<span style="color:#00bcd4;">---</span> Enhanced score · '
+                f'▲▼◆ = Actual outcome</p>',
+                unsafe_allow_html=True,
+            )
         else:
             st.caption("No prediction history yet")
 
@@ -495,7 +624,23 @@ def page_spy():
         if not perf_df.empty:
             with st.expander("📊 Accuracy Tracking", expanded=False):
                 latest_acc = perf_df.iloc[0]["cumulative_accuracy"] if len(perf_df) > 0 else 0
-                st.metric("Cumulative Accuracy", f"{latest_acc:.1%}")
+                latest_enh_acc = None
+                if "enhanced_cumulative_accuracy" in perf_df.columns:
+                    enh_series = perf_df["enhanced_cumulative_accuracy"].dropna()
+                    if not enh_series.empty:
+                        latest_enh_acc = float(enh_series.iloc[0])
+
+                acc_col1, acc_col2 = st.columns(2)
+                with acc_col1:
+                    st.metric("Model Accuracy", f"{latest_acc:.1%}",
+                              help="Cumulative directional accuracy of the XGBoost model prediction.")
+                with acc_col2:
+                    st.metric("Enhanced Accuracy",
+                              f"{latest_enh_acc:.1%}" if latest_enh_acc is not None else "N/A",
+                              delta=f"{latest_enh_acc - latest_acc:+.1%}" if latest_enh_acc is not None else None,
+                              delta_color="normal",
+                              help="Cumulative accuracy of Enhanced Prediction (model + flow). "
+                                   "CONFLICTED days excluded.")
 
                 if "confidence_tier" in perf_df.columns:
                     st.caption("By Confidence Tier")
