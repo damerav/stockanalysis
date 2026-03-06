@@ -211,7 +211,20 @@ class DailyPipeline:
         return self.conn
 
     def _step1_evaluate(self) -> dict:
-        """Step 1: Evaluate yesterday's prediction accuracy."""
+        """Step 1: Evaluate yesterday's prediction accuracy + backfill any missed."""
+        # First, backfill any unevaluated predictions from missed pipeline runs
+        backfill_result = {}
+        try:
+            from src.model.trainer import backfill_evaluations
+            if self.router:
+                backfill_result = backfill_evaluations(self.router)
+                if backfill_result.get("evaluated", 0) > 0:
+                    logger.info(f"Backfilled {backfill_result['evaluated']} missed evaluations "
+                                f"(cumulative: {backfill_result.get('cumulative_accuracy', 0):.1%})")
+        except Exception as e:
+            logger.warning(f"Backfill evaluations failed (non-fatal): {e}")
+
+        # Then evaluate yesterday specifically (may already be covered by backfill)
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         result = evaluate_past_prediction(self._get_conn(), yesterday)
         if result:
@@ -221,7 +234,10 @@ class DailyPipeline:
                         f"(cumulative: {result['cumulative_accuracy']:.1%})")
         else:
             logger.info("No prediction to evaluate for yesterday")
-        return result or {"no_prediction": True}
+
+        combined = result or {"no_prediction": True}
+        combined["backfill"] = backfill_result
+        return combined
 
     def _step2_prices(self) -> dict:
         """Step 2: Fetch today's daily prices."""
