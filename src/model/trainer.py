@@ -1638,6 +1638,36 @@ def generate_historical_backtest(conn_or_router, config: dict = None) -> pd.Data
     if not df.empty:
         df["rolling_accuracy_20d"] = df["correct"].rolling(20, min_periods=5).mean()
         df["cumulative_accuracy"] = df["correct"].expanding().mean()
+
+        # Compute per-row regime using HMM detector on rolling price window
+        try:
+            from src.model.regime import HMMRegimeDetector
+            price_macro = router.query(
+                "SELECT p.date, p.close, p.volume, m.vix FROM prices p "
+                "LEFT JOIN macro m ON p.date = m.date ORDER BY p.date"
+            )
+            if not price_macro.empty and len(price_macro) > 60:
+                detector = HMMRegimeDetector()
+                detector.load()  # Use saved model if available
+                if detector.model is None:
+                    detector.fit(price_macro)
+
+                # Build date→regime map using rolling 60-day windows
+                pm_dates = price_macro["date"].astype(str).tolist()
+                regime_map = {}
+                for i in range(60, len(pm_dates)):
+                    window = price_macro.iloc[i - 60:i + 1].copy()
+                    try:
+                        regime_map[pm_dates[i]] = detector.predict(window)
+                    except Exception:
+                        regime_map[pm_dates[i]] = "unknown"
+                df["regime"] = df["date"].map(regime_map).fillna("unknown")
+            else:
+                df["regime"] = "unknown"
+        except Exception as e:
+            logger.warning(f"Regime detection for backtest failed: {e}")
+            df["regime"] = "unknown"
+
         total_correct = df["correct"].sum()
         total = len(df)
         logger.info(f"Historical backtest: {total} dates, "
@@ -1682,13 +1712,7 @@ def run_historical_backtest(config: dict = None) -> pd.DataFrame:
     inserted = 0
     for _, row in df.iterrows():
         try:
-            # Detect regime from HMM if available
-            regime = "unknown"
-            try:
-                from src.model.regime import detect_regime
-                regime = detect_regime(router) or "unknown"
-            except Exception:
-                pass
+            regime = row.get("regime", "unknown")
 
             router.execute(
                 """INSERT OR REPLACE INTO backtest_results
