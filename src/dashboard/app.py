@@ -690,25 +690,40 @@ def page_es():
     )
 
     # --- AI Confidence Overlay ---
+    _runner_active = "ai_enabled" in state  # runner writes this key when active
     ai_enabled = state.get("ai_enabled", False)
     trail_ai = state.get("trail_ai_enabled", False)
     ai_mults = state.get("ai_trail_mults") or {}
     ai_c1, ai_c2, ai_c3, ai_c4 = st.columns(4)
+    _na = "N/A"
+    _na_help = "ES runner is not active — start with --all or --es mode"
     with ai_c1:
-        _ai_icon = "🟢" if ai_enabled else "🔴"
-        st.metric("AI Layer", f"{_ai_icon} {'On' if ai_enabled else 'Off'}")
+        if _runner_active:
+            _ai_icon = "🟢" if ai_enabled else "🔴"
+            st.metric("AI Layer", f"{_ai_icon} {'On' if ai_enabled else 'Off'}")
+        else:
+            st.metric("AI Layer", f"⚪ {_na}", help=_na_help)
     with ai_c2:
-        _p_cont = ai_mults.get("p_cont_5", 0) if ai_mults else 0
-        st.metric("Continuation P", f"{_p_cont:.0%}" if _p_cont else "—",
-                  help="CNN-predicted probability the trend continues 5 bars")
+        if _runner_active:
+            _p_cont = ai_mults.get("p_cont_5", 0) if ai_mults else 0
+            st.metric("Continuation P", f"{_p_cont:.0%}" if _p_cont else "—",
+                      help="CNN-predicted probability the trend continues 5 bars")
+        else:
+            st.metric("Continuation P", _na, help=_na_help)
     with ai_c3:
         _tp2_m = ai_mults.get("tp2_trail") if ai_mults else None
-        _run_m = ai_mults.get("runner_trail") if ai_mults else None
-        st.metric("AI TP2 Trail", f"{_tp2_m:.2f}×" if _tp2_m else "—",
-                  help="CNN-adjusted TP2 trailing multiplier")
+        if _runner_active:
+            st.metric("AI TP2 Trail", f"{_tp2_m:.2f}×" if _tp2_m else "—",
+                      help="CNN-adjusted TP2 trailing multiplier")
+        else:
+            st.metric("AI TP2 Trail", _na, help=_na_help)
     with ai_c4:
-        st.metric("AI Runner Trail", f"{_run_m:.2f}×" if _run_m else "—",
-                  help="CNN-adjusted runner trailing multiplier")
+        _run_m = ai_mults.get("runner_trail") if ai_mults else None
+        if _runner_active:
+            st.metric("AI Runner Trail", f"{_run_m:.2f}×" if _run_m else "—",
+                      help="CNN-adjusted runner trailing multiplier")
+        else:
+            st.metric("AI Runner Trail", _na, help=_na_help)
 
     # Reload Rules button
     if st.button("🔄 Reload Rules", key="es_reload_rules",
