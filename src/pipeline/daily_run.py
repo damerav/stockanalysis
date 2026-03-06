@@ -162,7 +162,9 @@ class DailyPipeline:
                 logger.info(f"Step {step_num} complete ({elapsed:.1f}s)")
             except Exception as e:
                 elapsed = time.time() - step_start
+                import traceback
                 logger.error(f"Step {step_num} FAILED ({elapsed:.1f}s): {e}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 self.results[f"step_{step_num}"] = {
                     "status": "error", "elapsed": round(elapsed, 1), "error": str(e),
                 }
@@ -656,8 +658,8 @@ class DailyPipeline:
             """INSERT OR REPLACE INTO intraday_features
                (date, vwap_spread, intraday_momentum, intraday_range, volume_ratio)
                VALUES (?,?,?,?,?)""",
-            (self.today, round(vwap_spread, 6), round(momentum, 6),
-             round(intraday_range, 6), round(volume_ratio, 4)),
+            (self.today, float(round(vwap_spread, 6)), float(round(momentum, 6)),
+             float(round(intraday_range, 6)), float(round(volume_ratio, 4))),
         )
         return {"bars": bar_count, "features": "computed"}
 
@@ -728,6 +730,13 @@ class DailyPipeline:
             self.predictor.load_latest_model()
             return {"skipped": True, "reason": "insufficient data"}
 
+        # Ensure 'close' column exists for get_target() — feature store cache
+        # may not include raw price columns
+        if "close" not in fv.columns:
+            prices_df = self._db_query("SELECT date, close FROM prices ORDER BY date")
+            if not prices_df.empty:
+                fv = fv.merge(prices_df, on="date", how="left")
+
         # P2: HMM regime detection
         regime = "low_vol_range"
         regime_info = {}
@@ -767,7 +776,7 @@ class DailyPipeline:
                 return {"error": "no model available"}
 
         fv = build_feature_vector(self._get_conn(), date=self.today, config=self.config)
-        if fv is None or fv.empty:
+        if fv is None or (hasattr(fv, 'empty') and fv.empty):
             return {"error": "no features for today"}
 
         feature_cols = get_feature_columns()
@@ -799,23 +808,24 @@ class DailyPipeline:
         try:
             if self.router:
                 price_df = self.router.read_analytics(
-                    "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60"
-                )
-                macro_df = self.router.read_analytics(
-                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60"
+                    "SELECT p.date, p.close, p.volume, m.vix FROM prices p "
+                    "LEFT JOIN macro m ON p.date = m.date "
+                    "ORDER BY p.date DESC LIMIT 60"
                 )
             else:
                 price_df = self._db_query(
-                    "SELECT close, volume FROM prices ORDER BY date DESC LIMIT 60"
+                    "SELECT p.date, p.close, p.volume, m.vix FROM prices p "
+                    "LEFT JOIN macro m ON p.date = m.date "
+                    "ORDER BY p.date DESC LIMIT 60"
                 )
-                macro_df = self._db_query(
-                    "SELECT vix FROM macro ORDER BY date DESC LIMIT 60"
-                )
-            price_df["vix"] = macro_df.get("vix", 18.0)
+            # Regime detector expects chronological order
+            price_df = price_df.sort_values("date").reset_index(drop=True)
+            price_df["vix"] = price_df["vix"].fillna(18.0)
             regime = self.regime_detector.predict(price_df)
             prediction["regime"] = regime
-        except Exception:
-            prediction["regime"] = self.results.get("step_10", {}).get("result", {}).get("regime", "")
+        except Exception as e:
+            logger.warning(f"Regime prediction in step 11 failed: {e}")
+            prediction["regime"] = self.results.get("step_10", {}).get("result", {}).get("regime") or "low_vol_range"
 
         # P2: Flag if ensemble was used
         prediction["ensemble_used"] = self.predictor.ensemble is not None and self.predictor.use_ensemble
@@ -844,9 +854,13 @@ class DailyPipeline:
                 (self.today,),
             )
         indicators = {}
-        if tech_row:
-            indicators = {"rsi_14": tech_row[0], "macd": tech_row[1],
-                          "sma_20": tech_row[2], "sma_50": tech_row[3]}
+        if tech_row is not None:
+            if hasattr(tech_row, 'iloc'):
+                indicators = {"rsi_14": tech_row.iloc[0], "macd": tech_row.iloc[1],
+                              "sma_20": tech_row.iloc[2], "sma_50": tech_row.iloc[3]}
+            else:
+                indicators = {"rsi_14": tech_row[0], "macd": tech_row[1],
+                              "sma_20": tech_row[2], "sma_50": tech_row[3]}
         indicators["vix"] = macro.get("vix")
 
         write_spy_state(prediction=prediction, indicators=indicators)

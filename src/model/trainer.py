@@ -1066,7 +1066,17 @@ class SPYPredictor:
             model_path = os.path.join(self.model_dir, models[-1])
         self.model = xgb.XGBClassifier()
         self.model.load_model(model_path)
-        logger.info(f"Loaded model: {model_path}")
+        # Set predictor to CUDA for GPU-accelerated inference
+        try:
+            test_m = xgb.XGBClassifier(tree_method="hist", device="cuda",
+                                        n_estimators=1, verbosity=0)
+            test_m.fit(np.zeros((2, 1)), np.array([0, 1]))
+            self.model.set_params(device="cuda")
+            self._inference_device = "cuda"
+            logger.info(f"Loaded model: {model_path} (inference on CUDA)")
+        except Exception:
+            self._inference_device = "cpu"
+            logger.info(f"Loaded model: {model_path} (inference on CPU)")
 
         # Load feature metadata if available
         self.trained_feature_names = None
@@ -1110,7 +1120,9 @@ class SPYPredictor:
             try:
                 self.binary_up_model = xgb.XGBClassifier()
                 self.binary_up_model.load_model(up_path)
-                logger.info("Binary UP model loaded")
+                if getattr(self, '_inference_device', 'cpu') == "cuda":
+                    self.binary_up_model.set_params(device="cuda")
+                logger.info(f"Binary UP model loaded (device={getattr(self, '_inference_device', 'cpu')})")
             except Exception as e:
                 logger.warning(f"Failed to load binary UP model: {e}")
                 self.binary_up_model = None
@@ -1118,7 +1130,9 @@ class SPYPredictor:
             try:
                 self.binary_down_model = xgb.XGBClassifier()
                 self.binary_down_model.load_model(down_path)
-                logger.info("Binary DOWN model loaded")
+                if getattr(self, '_inference_device', 'cpu') == "cuda":
+                    self.binary_down_model.set_params(device="cuda")
+                logger.info(f"Binary DOWN model loaded (device={getattr(self, '_inference_device', 'cpu')})")
             except Exception as e:
                 logger.warning(f"Failed to load binary DOWN model: {e}")
                 self.binary_down_model = None
