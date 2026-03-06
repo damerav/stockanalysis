@@ -242,12 +242,28 @@ def compute_all_technicals(df: pd.DataFrame, config: dict = None) -> pd.DataFram
 def store_technicals(conn, tech_df: pd.DataFrame, config: dict = None):
     """Store computed technicals in the database.
     Routes to PostgreSQL via DbRouter. conn parameter kept for backward compat but ignored."""
-    cols = ("date", "sma_20", "sma_50", "rsi_14", "macd", "macd_signal", "macd_hist",
-            "bb_upper", "bb_lower", "bb_mid", "atr_14",
-            "obv", "garman_klass_vol", "stoch_k", "stoch_d")
+    base_cols = ("date", "sma_20", "sma_50", "rsi_14", "macd", "macd_signal", "macd_hist",
+                "bb_upper", "bb_lower", "bb_mid", "atr_14",
+                "obv", "garman_klass_vol", "stoch_k", "stoch_d")
+    # pandas-ta columns (v2.8+)
+    pta_cols = (
+        "adx_14", "cci_20", "aroon_up", "aroon_down",
+        "psar_long", "psar_short", "dpo_20", "trix_14",
+        "vortex_pos", "vortex_neg", "williams_r", "mfi_14",
+        "rsi_2", "rsi_9", "rsi_21", "cmo_14", "ppo",
+        "roc_5", "roc_21",
+        "kc_upper_20", "kc_lower_20", "atr_7", "atr_21",
+        "donchian_high", "donchian_low", "ulcer_14",
+        "cmf_20", "vwma_20", "eom_14",
+        "ema_9", "ema_21", "ema_200",
+        "hma_20", "wma_20", "dema_20", "tema_20", "kama_10",
+        "ichi_tenkan", "ichi_kijun", "ichi_senkou_a", "ichi_senkou_b",
+    )
     # Also store dynamic SMAs beyond 20/50 (e.g. sma_200)
     extra_sma_cols = [c for c in tech_df.columns if c.startswith("sma_") and c not in ("sma_20", "sma_50")]
-    all_cols = list(cols) + extra_sma_cols
+    # Only include pandas-ta cols that actually exist in the DataFrame
+    available_pta = [c for c in pta_cols if c in tech_df.columns]
+    all_cols = list(base_cols) + extra_sma_cols + available_pta
     placeholders = ",".join(["?"] * len(all_cols))
     col_names = ",".join(all_cols)
     sql = f"INSERT OR REPLACE INTO technicals ({col_names}) VALUES ({placeholders})"
@@ -583,10 +599,10 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
     micro_features = []
     fallback_micro = {
-        "opening_gap_pct": np.nan, "opening_range_breakout": np.nan,
-        "close_vs_high_pct": np.nan, "close_vs_low_pct": np.nan,
-        "afternoon_reversal": np.nan, "institutional_hour_vol": np.nan,
-        "tick_divergence": np.nan, "vwap_reclaim_count": np.nan,
+        "opening_gap_pct": 0.0, "opening_range_breakout": 0.0,
+        "close_vs_high_pct": 0.0, "close_vs_low_pct": 0.0,
+        "afternoon_reversal": 0.0, "institutional_hour_vol": 0.0,
+        "tick_divergence": 0.0, "vwap_reclaim_count": 0.0,
     }
     for _, row in df.iterrows():
         if row["date"] in bar_dates:
@@ -936,6 +952,12 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
     for col in v28_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
+
+    # ===== FINAL NaN KILLER — no NaN should ever reach the model =====
+    # Forward-fill then back-fill any remaining NaN in numeric columns,
+    # then fill any still-remaining NaN with 0.
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    df[numeric_cols] = df[numeric_cols].ffill().bfill().fillna(0)
 
     return df
 

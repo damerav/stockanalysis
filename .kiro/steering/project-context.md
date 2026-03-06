@@ -6,7 +6,7 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.8.1 (Inverted Strangle Dashboard + Predictive Risk Engine + Buffett Indicator Fix)
+- **Current version**: v2.9.0 (UI Restructuring + Market Overview + Fear&Greed/TRIN + CUDA Training)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
@@ -93,7 +93,11 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - `grafana/grafana.ini` — Grafana config (anonymous auth enabled, must be chmod 644 after Mutagen sync)
 
 ### Dashboard Source
-- `src/dashboard/app.py` — Main unified dashboard (~3300+ lines). Uses `st.navigation` with pages across Markets and Operations groups. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list. Contains Quant Agent chatbot page with 10 quick-action buttons in 3 rows (data-only, no LLM) + free-form LLM chat. Row 3 has Market Thesis and Vigilance Alerts (v2.6). ES Strategy page has AI Confidence overlay row (layer status, continuation probability, trail multipliers) + Reload Rules button (v2.7). Has INLINE copies of What-If page functions (does NOT import from `whatif_app.py`) — includes Rules What-If scenario (v2.7.3).
+- `src/dashboard/app.py` — Main unified dashboard (~3400+ lines). Uses `st.navigation` with 3 groups (Dashboards, Analysis, Administration). All module-level UI code (set_page_config, CSS, auth, sidebar, navigation, ticker) wrapped in `_IS_MAIN_SCRIPT` guard to prevent duplicate widget errors when pages import functions. Includes global live price ticker bar (`@st.fragment(run_every=15)`) with admin-configurable stock list. Contains Quant Agent chatbot page with 10 quick-action buttons in 3 rows (data-only, no LLM) + free-form LLM chat. ES Strategy page has AI Confidence overlay row + Reload Rules button. Has INLINE copies of What-If page functions and `_admin_*` tab functions (imported by Data/System Management pages).
+- `src/dashboard/market_overview_app.py` — Default landing page: prediction summary card, key market indicators (VIX, 10Y, DXY, Gold, Fear&Greed, TRIN, Buffett, CAPE), system health badges, top SHAP drivers chart.
+- `src/dashboard/scenario_analysis_app.py` — Wraps existing What-If engine (ES Strategy + SPY Predictor tabs). Imports `get_whatif_engine`, `_whatif_es_tab`, `_whatif_spy_tab` from app.py inside function body (lazy import).
+- `src/dashboard/data_management_app.py` — Split from Admin: Pipeline Actions + Database Explorer tabs. Imports `_admin_actions_tab`, `_admin_db_tab` from app.py.
+- `src/dashboard/system_management_app.py` — Split from Admin: System Status + Users + Configuration + Logs tabs. Imports `_admin_status_tab`, `_admin_users_tab`, `_admin_config_tab`, `_admin_logs_tab` from app.py.
 - `src/dashboard/performance_app.py` — Performance analytics dashboard: accuracy trends, confidence calibration, regime-stratified metrics, model comparison charts
 - `src/dashboard/tuning_app.py` — Model tuning & backtest UI: hyperparameter grid, champion/challenger comparison, backtest runner
 - `src/dashboard/rules_app.py` — Strategy Rules management page: 9 tabbed groups (spread, sizing, tp_low/med/high, risk, session, regime, rl), live edit + save + reset, revert button + change history expander per group, Rules What-If backtest section, hot-reload flag for runner
@@ -168,7 +172,7 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - All Plotly charts use `get_plotly_layout()` from `theme.py` (theme-aware)
 - All metric cards use `themed_metric_card()` from `theme.py`
 - `use_container_width=True` on all `st.plotly_chart()` calls
-- Navigation: `st.navigation` with pages — Markets group (SPY Predictor, Performance, ES Strategy, Inverted Strangle, Tune & Backtest, What-If, Single-Stock, Quant Agent) and Operations group (Monitoring, Grafana Dashboards, Strategy Rules, Admin). Forecast page removed.
+- Navigation: `st.navigation` with 3 groups — Dashboards (Market Overview [default], SPY Predictor, ES Strategy, Inverted Strangle), Analysis (Single-Stock Analysis, Performance Tracking, Scenario Analysis, Model Tuning), Administration (Strategy Rules, System Monitoring, Data Management, System Management, Quant Agent). Total pages: 13.
 - ES signal feed shows human-readable descriptions (e.g., "AI Rejected Signal" instead of raw `AI_REJECT`)
 - ES regime badges use dark text on yellow/green for WCAG contrast compliance
 
@@ -306,3 +310,19 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 ### Scripts
 - `scripts/shutdown.sh` — Kills scheduler + streamlit processes, frees ports 8501/8100, clears `__pycache__` and Streamlit cache
 - `scripts/startup.sh` — Starts scheduler (`src.launcher --spy`), waits for dashboard HTTP 200 on port 8501
+
+### v2.9.0 Changes (UI Restructuring + Market Overview + Fear&Greed/TRIN + CUDA Training)
+
+- **UI navigation restructured**: 3 groups (Dashboards, Analysis, Administration) replacing 2 groups (Markets, Operations). Total pages: 13.
+- **Market Overview page** (`src/dashboard/market_overview_app.py`): New default landing page with prediction summary, key market indicators (VIX, 10Y Yield, DXY, Gold, Fear & Greed Index, TRIN, Buffett Indicator, Shiller CAPE), system health badges, and top SHAP prediction drivers chart.
+- **Scenario Analysis page** (`src/dashboard/scenario_analysis_app.py`): Wraps existing What-If engine under cleaner name. Lazy-imports from `app.py`.
+- **Data Management page** (`src/dashboard/data_management_app.py`): Split from Admin — Pipeline Actions + Database Explorer tabs.
+- **System Management page** (`src/dashboard/system_management_app.py`): Split from Admin — System Status (with Live Ticker Settings) + Users + Configuration + Logs tabs.
+- **`_IS_MAIN_SCRIPT` guard**: All module-level UI code in `app.py` (set_page_config, CSS injection, auth gate, sidebar, navigation, ticker, `_pg.run()`) wrapped in `__name__ == "__main__"` guard. Prevents `StreamlitDuplicateElementKey` errors when pages import functions from `app.py`.
+- **Fear & Greed Index**: New `src/data/fear_greed_fetcher.py` fetches CNN Fear & Greed Index (0-100 scale). Stored in `market_breadth` table. Displayed on Market Overview.
+- **TRIN (Arms Index)**: Computed in `fetch_market_breadth()` from S&P 500 advance/decline volume ratios. Fixed bug where `volumes` DataFrame wasn't filtered to match `closes` tickers, causing `Unalignable boolean Series` error.
+- **Upsert preservation**: `store_breadth_fundamentals()` changed from `INSERT OR REPLACE` (which overwrote non-null values with None) to check-then-update logic that only updates columns where new value is not None.
+- **CUDA/GPU training**: BiLSTM model, ensemble stacking, and trainer all support GPU acceleration when CUDA is available. Device auto-detection with CPU fallback.
+- **Pipeline fixes**: Step 11 predict fixed for feature alignment. ISM PMI FRED series updated from retired `NAPM` to `ISM/MAN_PMI`. HMM regime detection robustness improvements.
+- **`page_admin()` removed**: Live Ticker Settings moved into `_admin_status_tab()`. Admin tab functions (`_admin_*`) remain in `app.py` for import by Data/System Management pages.
+- **`render_theme_toggle()` safety**: Catches `Exception` to handle duplicate key errors gracefully when `app.py` is imported as module.
