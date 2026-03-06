@@ -27,6 +27,7 @@ _TABLE_PKS = {
     "news_features": "date", "feature_store_meta": "key",
     "strategy_rules": "rule_group, rule_key",
     "market_breadth": "date",
+    "backtest_results": "date",
 }
 
 ANALYTICS_TABLES = {"prices", "technicals", "macro", "intraday_bars", "options_chain"}
@@ -242,10 +243,24 @@ class DbRouter:
         SELECT p.date, p.open, p.high, p.low, p.close, p.volume,
             t.sma_20, t.sma_50, t.rsi_14, t.macd, t.macd_signal, t.macd_hist,
             t.bb_upper, t.bb_lower, t.atr_14,
+            t.adx_14, t.cci_20, t.aroon_up, t.aroon_down,
+            t.psar_long, t.psar_short, t.dpo_20, t.trix_14,
+            t.vortex_pos, t.vortex_neg, t.williams_r, t.mfi_14,
+            t.rsi_2, t.rsi_9, t.rsi_21, t.cmo_14, t.ppo,
+            t.roc_5, t.roc_21,
+            t.kc_upper_20, t.kc_lower_20, t.atr_7, t.atr_21,
+            t.donchian_high, t.donchian_low, t.ulcer_14,
+            t.cmf_20, t.vwma_20, t.eom_14,
+            t.ema_9, t.ema_21, t.ema_200,
+            t.hma_20, t.wma_20, t.dema_20, t.tema_20, t.kama_10,
+            t.ichi_tenkan, t.ichi_kijun, t.ichi_senkou_a, t.ichi_senkou_b,
             m.vix, m.vix_change, m.us10y_yield, m.dxy, m.fed_funds, m.gold, m.crude,
             m.vix9d, m.vix3m, m.vix6m, m.vvix, m.skew_index,
             m.hy_spread, m.tlt_spy_ratio, m.eem_spy_ratio,
-            m.copper_gold_ratio, m.xlk_xlf_ratio, m.xlk_xle_ratio
+            m.copper_gold_ratio, m.xlk_xlf_ratio, m.xlk_xle_ratio,
+            m.us3m_yield, m.yield_curve_10y3m, m.sahm_rule, m.consumer_conf, m.ism_pmi,
+            m.xlk, m.xlf, m.xle, m.xlv, m.xli, m.xlu, m.xlb, m.xlp, m.xly, m.xlre,
+            m.qqq, m.iwm, m.dia
         FROM prices p
         LEFT JOIN technicals t ON p.date = t.date
         LEFT JOIN macro m ON p.date = m.date

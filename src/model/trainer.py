@@ -1583,268 +1583,72 @@ def generate_historical_backtest(conn_or_router, config: dict = None) -> pd.Data
                     f"{total_correct}/{total} correct ({total_correct / total:.1%})")
     return df
 
-def backfill_evaluations(conn_or_router) -> dict:
-    """Evaluate ALL unevaluated predictions and recompute cumulative accuracy.
 
-    Finds predictions that don't have a corresponding performance row,
-    evaluates them if next-day price data exists, and recalculates
-    cumulative accuracy across the full history.
+def run_historical_backtest(config: dict = None) -> pd.DataFrame:
+    """Run historical backtest and persist results to backtest_results table.
 
-    Returns:
-        Dict with backfill stats: evaluated, skipped, total_correct, cumulative_accuracy
+    Wrapper around generate_historical_backtest that stores results in the DB
+    so the Performance dashboard can load them without re-running.
     """
-    from src.data.db_router import DbRouter, get_router
+    from src.data.db_router import DbRouter
 
-    if isinstance(conn_or_router, DbRouter):
-        router = conn_or_router
-    else:
-        try:
-            router = get_router()
-        except Exception:
-            router = None
+    router = DbRouter(config)
+    df = generate_historical_backtest(router, config=config)
 
-    if not router:
-        logger.warning("backfill_evaluations requires DbRouter")
-        return {"error": "no router"}
+    if df.empty:
+        router.close()
+        return df
 
-    # Find all prediction dates that are NOT yet in the performance table
-    unevaluated = router.query(
-        """SELECT p.date, p.direction, p.confidence
-           FROM predictions p
-           LEFT JOIN performance pf ON p.date = pf.date
-           WHERE pf.date IS NULL
-           ORDER BY p.date"""
-    )
-
-    if unevaluated.empty:
-        logger.info("No unevaluated predictions to backfill")
-        # Still recompute cumulative accuracy in case it's stale
-        _recompute_cumulative_accuracy(router)
-        return {"evaluated": 0, "skipped": 0}
-
-    evaluated = 0
-    skipped = 0
-
-    for _, row in unevaluated.iterrows():
-        date_str = str(row["date"])
-        predicted = row["direction"]
-        pred_confidence = row["confidence"] or 0
-
-        # Get this date's close and next trading day's close
-        prices_df = router.query(
-            "SELECT date, close FROM prices WHERE date >= ? ORDER BY date LIMIT 2",
-            (date_str,)
-        )
-        if len(prices_df) < 2:
-            skipped += 1
-            continue
-
-        actual_return = (prices_df.iloc[1]["close"] - prices_df.iloc[0]["close"]) / prices_df.iloc[0]["close"]
-
-        if actual_return > 0.003:
-            actual = "BULLISH"
-        elif actual_return < -0.003:
-            actual = "BEARISH"
-        else:
-            actual = "NEUTRAL"
-
-        correct = 1 if (
-            ("BULLISH" in predicted and actual == "BULLISH") or
-            ("BEARISH" in predicted and actual == "BEARISH") or
-            (predicted == "NEUTRAL" and actual == "NEUTRAL")
-        ) else 0
-
-        # Confidence tier
-        if pred_confidence >= 70:
-            conf_tier = "high"
-        elif pred_confidence >= 50:
-            conf_tier = "medium"
-        else:
-            conf_tier = "low"
-
-        # VIX regime
-        macro_df = router.query("SELECT vix FROM macro WHERE date = ?", (date_str,))
-        vix_val = float(macro_df.iloc[0]["vix"]) if not macro_df.empty and macro_df.iloc[0]["vix"] else 18
-        if vix_val < 15:
-            vix_regime = "low"
-        elif vix_val > 25:
-            vix_regime = "high"
-        else:
-            vix_regime = "normal"
-
-        # Day of week
-        try:
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            dow = d.weekday()
-        except Exception:
-            dow = 0
-
-        # Event proximity
-        try:
-            from src.data.calendar import has_nearby_event
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
-            event_prox = 1 if has_nearby_event(d) else 0
-        except Exception:
-            event_prox = 0
-
-        # Insert (cumulative_accuracy will be recomputed below)
+    # Persist to backtest_results table
+    # Ensure table exists (CREATE IF NOT EXISTS via init_db schema)
+    try:
         router.execute(
-            """INSERT OR REPLACE INTO performance
-               (date, predicted, actual, correct, cumulative_accuracy,
-                confidence_tier, vix_regime, day_of_week, event_proximity)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (date_str, predicted, actual, correct, 0.0,
-             conf_tier, vix_regime, dow, event_prox)
+            "CREATE TABLE IF NOT EXISTS backtest_results ("
+            "date TEXT PRIMARY KEY, predicted_direction TEXT, "
+            "predicted_confidence REAL, actual_direction TEXT, "
+            "actual_return REAL, correct INTEGER, regime TEXT, "
+            "cumulative_accuracy REAL)"
         )
-        evaluated += 1
-        logger.info(f"Backfill eval {date_str}: {predicted} → {actual} "
-                    f"{'✓' if correct else '✗'}")
+    except Exception:
+        pass  # table likely already exists
 
-    # Recompute cumulative accuracy across ALL rows in chronological order
-    cum_acc = _recompute_cumulative_accuracy(router)
+    # Clear old results and insert fresh
+    try:
+        router.execute("DELETE FROM backtest_results")
+    except Exception:
+        pass
 
-    logger.info(f"Backfill complete: {evaluated} evaluated, {skipped} skipped "
-                f"(no next-day price), cumulative accuracy={cum_acc:.1%}")
-
-    return {
-        "evaluated": evaluated,
-        "skipped": skipped,
-        "cumulative_accuracy": round(cum_acc, 3),
-    }
-
-
-def _recompute_cumulative_accuracy(router) -> float:
-    """Recompute running cumulative_accuracy for all performance rows."""
-    perf_df = router.query(
-        "SELECT date, correct FROM performance ORDER BY date"
-    )
-    if perf_df.empty:
-        return 0.0
-
-    running_correct = 0
-    cum_acc = 0.0
-    for i, row in perf_df.iterrows():
-        running_correct += int(row["correct"])
-        cum_acc = running_correct / (i + 1)
-        router.execute(
-            "UPDATE performance SET cumulative_accuracy = ? WHERE date = ?",
-            (round(cum_acc, 4), str(row["date"]))
-        )
-    return cum_acc
-
-
-def generate_historical_backtest(conn_or_router, config: dict = None) -> pd.DataFrame:
-    """Run the current model against all historical data to generate
-    predicted vs actual comparison for every date with sufficient data.
-
-    This is a walk-forward simulation: for each date, we use the feature
-    vector as of that date and compare the model's prediction to what
-    actually happened the next trading day.
-
-    Returns:
-        DataFrame with columns: date, predicted_direction, predicted_confidence,
-        predicted_probs, actual_direction, actual_return, correct, regime
-    """
-    from src.data.db_router import DbRouter, get_router
-    from src.data.features import build_feature_vector, get_feature_columns, get_target
-
-    if isinstance(conn_or_router, DbRouter):
-        router = conn_or_router
-    else:
+    inserted = 0
+    for _, row in df.iterrows():
         try:
-            router = get_router()
-        except Exception:
-            logger.error("generate_historical_backtest requires DbRouter")
-            return pd.DataFrame()
+            # Detect regime from HMM if available
+            regime = "unknown"
+            try:
+                from src.model.regime import detect_regime
+                regime = detect_regime(router) or "unknown"
+            except Exception:
+                pass
 
-    # Load the current model
-    predictor = SPYPredictor(config or {})
-    if not predictor.load_latest_model():
-        logger.error("No model available for historical backtest")
-        return pd.DataFrame()
-
-    # Build full feature vector
-    conn = router.get_sqlite() if hasattr(router, 'get_sqlite') else None
-    fv = build_feature_vector(conn, config=config)
-    if fv is None or fv.empty:
-        logger.error("No feature data for backtest")
-        return pd.DataFrame()
-
-    # Get prices for actual return calculation
-    prices_df = router.query("SELECT date, close FROM prices ORDER BY date")
-    if prices_df.empty:
-        return pd.DataFrame()
-
-    price_map = dict(zip(prices_df["date"].astype(str), prices_df["close"]))
-    dates_sorted = sorted(price_map.keys())
-
-    # Get feature columns the model was trained on
-    feature_cols = predictor.trained_feature_names or get_feature_columns()
-    available = [c for c in feature_cols if c in fv.columns]
-
-    if not available:
-        logger.error("No matching features between model and feature vector")
-        return pd.DataFrame()
-
-    results = []
-    fv_dates = fv["date"].astype(str).tolist() if "date" in fv.columns else []
-
-    for idx, row_date in enumerate(fv_dates):
-        # Need next trading day's price to compute actual
-        date_idx = dates_sorted.index(row_date) if row_date in dates_sorted else -1
-        if date_idx < 0 or date_idx >= len(dates_sorted) - 1:
-            continue
-
-        next_date = dates_sorted[date_idx + 1]
-        close_today = price_map[row_date]
-        close_next = price_map[next_date]
-        actual_return = (close_next - close_today) / close_today
-
-        if actual_return > 0.003:
-            actual_dir = "BULLISH"
-        elif actual_return < -0.003:
-            actual_dir = "BEARISH"
-        else:
-            actual_dir = "NEUTRAL"
-
-        # Get model prediction for this date
-        try:
-            features = fv[fv["date"].astype(str) == row_date][available].iloc[0].values
-            features = np.nan_to_num(features, nan=0.0)
-            pred = predictor.predict(features, feature_names=available)
-
-            predicted_dir = pred.get("direction", "NEUTRAL")
-            correct = 1 if (
-                ("BULLISH" in pred.get("scale_label", "") and actual_dir == "BULLISH") or
-                ("BEARISH" in pred.get("scale_label", "") and actual_dir == "BEARISH") or
-                (predicted_dir == "NEUTRAL" and actual_dir == "NEUTRAL")
-            ) else 0
-
-            results.append({
-                "date": row_date,
-                "predicted_direction": pred.get("scale_label", predicted_dir),
-                "predicted_confidence": pred.get("confidence", 0),
-                "prob_down": pred.get("probabilities", {}).get("down", 33.3),
-                "prob_neutral": pred.get("probabilities", {}).get("neutral", 33.3),
-                "prob_up": pred.get("probabilities", {}).get("up", 33.3),
-                "actual_direction": actual_dir,
-                "actual_return_pct": round(actual_return * 100, 3),
-                "correct": correct,
-                "close": close_today,
-                "next_close": close_next,
-            })
+            router.execute(
+                """INSERT OR REPLACE INTO backtest_results
+                   (date, predicted_direction, predicted_confidence,
+                    actual_direction, actual_return, correct, regime,
+                    cumulative_accuracy)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(row["date"]),
+                 row.get("predicted_direction", ""),
+                 float(row.get("predicted_confidence", 0)),
+                 row.get("actual_direction", ""),
+                 float(row.get("actual_return_pct", 0)) / 100.0,
+                 int(row.get("correct", 0)),
+                 regime,
+                 float(row.get("cumulative_accuracy", 0)))
+            )
+            inserted += 1
         except Exception as e:
-            logger.debug(f"Backtest skip {row_date}: {e}")
-            continue
+            logger.debug(f"Failed to insert backtest row {row.get('date')}: {e}")
 
-    df = pd.DataFrame(results)
-    if not df.empty:
-        # Compute rolling accuracy (20-day window)
-        df["rolling_accuracy_20d"] = df["correct"].rolling(20, min_periods=5).mean()
-        df["cumulative_accuracy"] = df["correct"].expanding().mean()
-        total_correct = df["correct"].sum()
-        total = len(df)
-        logger.info(f"Historical backtest: {total} dates, "
-                    f"{total_correct}/{total} correct ({total_correct/total:.1%})")
+    router.close()
+    logger.info(f"Persisted {inserted} backtest results to DB")
     return df
 

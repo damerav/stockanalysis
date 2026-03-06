@@ -116,6 +116,18 @@ CREATE TABLE IF NOT EXISTS performance (
     event_proximity INTEGER    -- 1 if within 2 days of FOMC/CPI/NFP
 );
 
+-- Historical backtest results (model predictions vs actuals)
+CREATE TABLE IF NOT EXISTS backtest_results (
+    date TEXT PRIMARY KEY,
+    predicted_direction TEXT,
+    predicted_confidence REAL,
+    actual_direction TEXT,
+    actual_return REAL,
+    correct INTEGER,
+    regime TEXT,
+    cumulative_accuracy REAL
+);
+
 -- Market breadth & index fundamentals
 CREATE TABLE IF NOT EXISTS market_breadth (
     date TEXT PRIMARY KEY,
@@ -304,6 +316,22 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("stoch_k", "REAL"), ("stoch_d", "REAL"),
     ]
     _add_columns_if_missing(conn, "technicals", tech_new_cols)
+
+    # v2.8: pandas-ta comprehensive technical indicator columns
+    pta_new_cols = [
+        ("adx_14", "REAL"), ("cci_20", "REAL"), ("aroon_up", "REAL"), ("aroon_down", "REAL"),
+        ("psar_long", "REAL"), ("psar_short", "REAL"), ("dpo_20", "REAL"), ("trix_14", "REAL"),
+        ("vortex_pos", "REAL"), ("vortex_neg", "REAL"), ("williams_r", "REAL"), ("mfi_14", "REAL"),
+        ("rsi_2", "REAL"), ("rsi_9", "REAL"), ("rsi_21", "REAL"), ("cmo_14", "REAL"), ("ppo", "REAL"),
+        ("roc_5", "REAL"), ("roc_21", "REAL"),
+        ("kc_upper_20", "REAL"), ("kc_lower_20", "REAL"), ("atr_7", "REAL"), ("atr_21", "REAL"),
+        ("donchian_high", "REAL"), ("donchian_low", "REAL"), ("ulcer_14", "REAL"),
+        ("cmf_20", "REAL"), ("vwma_20", "REAL"), ("eom_14", "REAL"),
+        ("ema_9", "REAL"), ("ema_21", "REAL"), ("ema_200", "REAL"),
+        ("hma_20", "REAL"), ("wma_20", "REAL"), ("dema_20", "REAL"), ("tema_20", "REAL"), ("kama_10", "REAL"),
+        ("ichi_tenkan", "REAL"), ("ichi_kijun", "REAL"), ("ichi_senkou_a", "REAL"), ("ichi_senkou_b", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "technicals", pta_new_cols)
 
     # P3: Earnings calendar table
     conn.execute("""

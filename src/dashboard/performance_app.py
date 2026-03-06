@@ -417,7 +417,7 @@ def page_performance():
         st.info("No backtest data yet. Click below to run a historical backtest "
                 "using the current model against all available price history.")
         if st.button("🔬 Run Historical Backtest", key="run_backtest_btn"):
-            with st.spinner("Running backtest across all historical data..."):
+            with st.spinner("Running backtest across all historical data — this may take 20-30 seconds..."):
                 try:
                     import yaml as _yaml
                     try:
@@ -434,7 +434,21 @@ def page_performance():
                         st.error("Backtest returned no results — check model and data availability")
                 except Exception as e:
                     st.error(f"Backtest failed: {e}")
-    else:
+    if not bt_df.empty:
+        # Time range filter — default to last 6 months
+        time_opts = ["Last 6 Months", "Last 3 Months", "Last 1 Month", "All Data"]
+        time_sel = st.radio("Time Range", time_opts, index=0, horizontal=True,
+                            key="bt_time_range")
+        if time_sel == "Last 6 Months":
+            cutoff = bt_df["date"].max() - pd.Timedelta(days=180)
+            bt_df = bt_df[bt_df["date"] >= cutoff]
+        elif time_sel == "Last 3 Months":
+            cutoff = bt_df["date"].max() - pd.Timedelta(days=90)
+            bt_df = bt_df[bt_df["date"] >= cutoff]
+        elif time_sel == "Last 1 Month":
+            cutoff = bt_df["date"].max() - pd.Timedelta(days=30)
+            bt_df = bt_df[bt_df["date"] >= cutoff]
+
         # Summary metrics
         bt_total = len(bt_df)
         bt_acc = bt_df["correct"].mean()
@@ -485,7 +499,8 @@ def page_performance():
             opacity=0.3,
         ), secondary_y=True)
 
-        fig_bt.update_layout(**layout, height=420, xaxis_rangeslider_visible=False,
+        _bt_layout = {k: v for k, v in layout.items() if k not in ("legend", "yaxis")}
+        fig_bt.update_layout(**_bt_layout, height=420, xaxis_rangeslider_visible=False,
                              legend=dict(orientation="h", yanchor="bottom", y=1.02,
                                          xanchor="right", x=1))
         fig_bt.update_yaxes(title_text="Accuracy", tickformat=".0%",
@@ -526,7 +541,7 @@ def page_performance():
                 marker=dict(size=5, color=colors["red"], symbol="x", opacity=0.5),
             ))
 
-        fig_bt_pv.update_layout(**layout, height=340,
+        fig_bt_pv.update_layout(**_bt_layout, height=340,
                                 yaxis=dict(tickvals=[-2, -1, 0, 1, 2],
                                            ticktext=["Strong Bear", "Bearish", "Neutral",
                                                      "Bullish", "Strong Bull"]),
@@ -594,7 +609,7 @@ def page_performance():
                 mode="lines+markers",
                 line=dict(color=colors["text_muted"], dash="dot"),
             ))
-            fig_cal.update_layout(**layout, height=300,
+            fig_cal.update_layout(**_bt_layout, height=300,
                                   yaxis_tickformat=".0%",
                                   yaxis_range=[0, min(1.0, cal_data["hit_rate"].max() + 0.15)],
                                   legend=dict(orientation="h", yanchor="bottom", y=1.02,
@@ -630,172 +645,3 @@ def page_performance():
                        if c in recent.columns]
         st.dataframe(recent[display_cols], use_container_width=True, hide_index=True)
 
-    # ── Historical Backtest ──────────────────────────────────────────
-    st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
-                f'font-size:0.95rem;">Historical Backtest (Model vs Market)</p>',
-                unsafe_allow_html=True)
-    st.caption("Runs the current model against all historical data to show "
-               "predicted vs actual direction for every trading day.")
-
-    if st.button("🔬 Run Historical Backtest", key="run_backtest"):
-        with st.spinner("Running backtest across all historical dates..."):
-            try:
-                import yaml as _yaml
-                try:
-                    with open("config.yaml") as f:
-                        cfg = _yaml.safe_load(f) or {}
-                except Exception:
-                    cfg = {}
-                from src.model.trainer import generate_historical_backtest
-                from src.data.db_router import DbRouter
-                router = DbRouter(cfg)
-                bt = generate_historical_backtest(router, config=cfg)
-                router.close()
-                if bt.empty:
-                    st.warning("No backtest data generated. Ensure model and price data exist.")
-                else:
-                    st.session_state["_backtest_df"] = bt
-            except Exception as e:
-                st.error(f"Backtest failed: {e}")
-                logger.error(f"Historical backtest error: {e}", exc_info=True)
-
-    bt = st.session_state.get("_backtest_df")
-    if bt is not None and not bt.empty:
-        # Summary metrics
-        bt_total = len(bt)
-        bt_correct = bt["correct"].sum()
-        bt_acc = bt_correct / bt_total
-        bt_bull_mask = bt["actual_direction"] == "BULLISH"
-        bt_bear_mask = bt["actual_direction"] == "BEARISH"
-        bt_bull_acc = bt.loc[bt_bull_mask, "correct"].mean() if bt_bull_mask.any() else 0
-        bt_bear_acc = bt.loc[bt_bear_mask, "correct"].mean() if bt_bear_mask.any() else 0
-
-        bc1, bc2, bc3, bc4 = st.columns(4)
-        bc1.markdown(metric_card("Backtest Days", str(bt_total)), unsafe_allow_html=True)
-        bc2.markdown(metric_card("Backtest Accuracy", f"{bt_acc:.1%}",
-                                 color="green" if bt_acc > 0.45 else "red"),
-                     unsafe_allow_html=True)
-        bc3.markdown(metric_card("Bull Day Accuracy", f"{bt_bull_acc:.1%}",
-                                 color="green" if bt_bull_acc > 0.5 else "red"),
-                     unsafe_allow_html=True)
-        bc4.markdown(metric_card("Bear Day Accuracy", f"{bt_bear_acc:.1%}",
-                                 color="green" if bt_bear_acc > 0.5 else "red"),
-                     unsafe_allow_html=True)
-
-        st.markdown("")
-
-        # Rolling accuracy chart
-        fig_bt = make_subplots(specs=[[{"secondary_y": True}]])
-
-        fig_bt.add_trace(go.Scatter(
-            x=bt["date"], y=bt["cumulative_accuracy"],
-            name="Cumulative Accuracy", line=dict(color=colors["blue"], width=2),
-        ), secondary_y=False)
-        fig_bt.add_trace(go.Scatter(
-            x=bt["date"], y=bt["rolling_accuracy_20d"],
-            name="20-Day Rolling", line=dict(color=colors["orange"], width=2, dash="dash"),
-        ), secondary_y=False)
-        fig_bt.add_hline(y=0.5, line_dash="dot", line_color=colors["text_muted"],
-                         annotation_text="50%", annotation_position="bottom right")
-
-        # Overlay SPY close on secondary axis
-        fig_bt.add_trace(go.Scatter(
-            x=bt["date"], y=bt["close"],
-            name="SPY Close", line=dict(color=colors["text_muted"], width=1),
-            opacity=0.4,
-        ), secondary_y=True)
-
-        fig_bt.update_layout(**layout, height=400,
-                             legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                         xanchor="right", x=1))
-        fig_bt.update_yaxes(title_text="Accuracy", tickformat=".0%",
-                            secondary_y=False)
-        fig_bt.update_yaxes(title_text="SPY Close ($)", secondary_y=True)
-        st.plotly_chart(fig_bt, use_container_width=True, key="bt_rolling_acc")
-
-        # Prediction vs Actual direction chart
-        _dir_map_bt = {
-            "STRONG_BULLISH": 2, "WEAK_BULLISH": 1, "BULLISH": 1,
-            "NEUTRAL": 0, "WEAK_BEARISH": -1, "BEARISH": -1,
-            "STRONG_BEARISH": -2,
-        }
-        bt["pred_val"] = bt["predicted_direction"].map(_dir_map_bt).fillna(0)
-        bt["actual_val"] = bt["actual_direction"].map(_dir_map_bt).fillna(0)
-
-        fig_bt2 = make_subplots(specs=[[{"secondary_y": True}]])
-        fig_bt2.add_trace(go.Scatter(
-            x=bt["date"], y=bt["pred_val"], name="Predicted",
-            mode="lines", line=dict(color=colors["blue"], width=1.5),
-        ), secondary_y=False)
-        fig_bt2.add_trace(go.Scatter(
-            x=bt["date"], y=bt["actual_val"], name="Actual",
-            mode="lines", line=dict(color=colors["orange"], width=1.5, dash="dash"),
-        ), secondary_y=False)
-
-        # Highlight misses
-        bt_misses = bt[bt["correct"] == 0]
-        if not bt_misses.empty:
-            fig_bt2.add_trace(go.Scatter(
-                x=bt_misses["date"], y=bt_misses["actual_val"], name="Miss",
-                mode="markers",
-                marker=dict(size=5, color=colors["red"], symbol="x", opacity=0.5),
-            ), secondary_y=False)
-
-        fig_bt2.add_trace(go.Scatter(
-            x=bt["date"], y=bt["close"], name="SPY Close",
-            line=dict(color=colors["text_muted"], width=1), opacity=0.3,
-        ), secondary_y=True)
-
-        fig_bt2.update_layout(**layout, height=400,
-                              legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                          xanchor="right", x=1))
-        fig_bt2.update_yaxes(
-            tickvals=[-2, -1, 0, 1, 2],
-            ticktext=["Strong Bear", "Bearish", "Neutral", "Bullish", "Strong Bull"],
-            title_text="Direction", secondary_y=False,
-        )
-        fig_bt2.update_yaxes(title_text="SPY Close ($)", secondary_y=True)
-        st.plotly_chart(fig_bt2, use_container_width=True, key="bt_pred_vs_actual")
-
-        # Confidence distribution
-        with st.expander("📊 Backtest Details", expanded=False):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                fig_conf = go.Figure(go.Histogram(
-                    x=bt["predicted_confidence"], nbinsx=20,
-                    marker_color=colors["blue"], opacity=0.7,
-                ))
-                fig_conf.update_layout(**layout, title=dict(text="Confidence Distribution",
-                                       font=get_title_font()), height=280,
-                                       xaxis_title="Confidence %", yaxis_title="Count")
-                st.plotly_chart(fig_conf, use_container_width=True, key="bt_conf_dist")
-
-            with col_b:
-                # Accuracy by confidence bucket
-                bt["conf_bucket"] = pd.cut(bt["predicted_confidence"],
-                                           bins=[0, 40, 50, 60, 70, 100],
-                                           labels=["<40%", "40-50%", "50-60%", "60-70%", ">70%"])
-                bucket_acc = bt.groupby("conf_bucket", observed=True).agg(
-                    accuracy=("correct", "mean"), count=("correct", "count")
-                )
-                if not bucket_acc.empty:
-                    fig_bkt = go.Figure(go.Bar(
-                        x=bucket_acc.index.astype(str), y=bucket_acc["accuracy"],
-                        marker_color=colors["blue"],
-                        text=[f"{v:.0%}<br>n={c}" for v, c in
-                              zip(bucket_acc["accuracy"], bucket_acc["count"])],
-                        textposition="outside",
-                    ))
-                    fig_bkt.update_layout(**layout, title=dict(text="Accuracy by Confidence",
-                                         font=get_title_font()), height=280,
-                                         yaxis_tickformat=".0%",
-                                         yaxis_range=[0, min(1.0, bucket_acc["accuracy"].max() + 0.15)])
-                    st.plotly_chart(fig_bkt, use_container_width=True, key="bt_acc_by_conf")
-
-            # Raw data table
-            st.dataframe(
-                bt[["date", "predicted_direction", "predicted_confidence",
-                    "actual_direction", "actual_return_pct", "correct",
-                    "rolling_accuracy_20d"]].tail(50).iloc[::-1],
-                use_container_width=True, hide_index=True,
-            )
