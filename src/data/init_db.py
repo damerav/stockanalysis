@@ -291,6 +291,22 @@ def init_db(config: dict = None) -> str:
                     ("performance", "enhanced_predicted", "TEXT"),
                     ("performance", "enhanced_correct", "INTEGER"),
                     ("performance", "enhanced_cumulative_accuracy", "REAL"),
+                    # v2.10: Comprehensive economic metrics
+                    ("macro", "cpi", "REAL"),
+                    ("macro", "core_cpi", "REAL"),
+                    ("macro", "pce", "REAL"),
+                    ("macro", "core_pce", "REAL"),
+                    ("macro", "ppi", "REAL"),
+                    ("macro", "gdp", "REAL"),
+                    ("macro", "nfp", "REAL"),
+                    ("macro", "unemployment_rate", "REAL"),
+                    ("macro", "initial_claims", "REAL"),
+                    ("macro", "continuing_claims", "REAL"),
+                    ("macro", "retail_sales", "REAL"),
+                    ("macro", "industrial_production", "REAL"),
+                    ("macro", "housing_starts", "REAL"),
+                    ("macro", "building_permits", "REAL"),
+                    ("macro", "case_shiller_hpi", "REAL"),
                 ]:
                     try:
                         _pg_conn.cursor().execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ctype}")
@@ -681,6 +697,32 @@ def _migrate_schema(conn: sqlite3.Connection):
         ("qqq", "REAL"), ("iwm", "REAL"), ("dia", "REAL"),
     ]
     _add_columns_if_missing(conn, "macro", sector_etf_cols)
+
+    # v2.10: Comprehensive economic metrics (inflation, growth, employment, housing)
+    econ_new_cols = [
+        ("cpi", "REAL"), ("core_cpi", "REAL"),
+        ("pce", "REAL"), ("core_pce", "REAL"),
+        ("ppi", "REAL"), ("gdp", "REAL"),
+        ("nfp", "REAL"), ("unemployment_rate", "REAL"),
+        ("initial_claims", "REAL"), ("continuing_claims", "REAL"),
+        ("retail_sales", "REAL"), ("industrial_production", "REAL"),
+        ("housing_starts", "REAL"), ("building_permits", "REAL"),
+        ("case_shiller_hpi", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "macro", econ_new_cols)
+
+    # v2.10: Comprehensive economic metrics (inflation, growth, employment, housing)
+    econ_metrics_cols = [
+        ("cpi", "REAL"), ("core_cpi", "REAL"),
+        ("pce", "REAL"), ("core_pce", "REAL"),
+        ("ppi", "REAL"), ("gdp", "REAL"),
+        ("nfp", "REAL"), ("unemployment_rate", "REAL"),
+        ("initial_claims", "REAL"), ("continuing_claims", "REAL"),
+        ("retail_sales", "REAL"), ("industrial_production", "REAL"),
+        ("housing_starts", "REAL"), ("building_permits", "REAL"),
+        ("case_shiller_hpi", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "macro", econ_metrics_cols)
 
     # v2.9.2: HMM regime column on predictions table
     _add_columns_if_missing(conn, "predictions", [("regime", "TEXT")])

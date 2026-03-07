@@ -119,17 +119,37 @@ class FallbackFetcher:
     def get_macro_fred(self) -> dict:
         """Fetch macro indicators from FRED. Uses official API if key is set, else CSV fallback."""
         series = {
+            # Core Market & Rates
             "vix": "VIXCLS",
             "us10y_yield": "DGS10",
             "us3m_yield": "DTB3",              # 3-Month Treasury Bill rate
             "yield_curve_10y3m": "T10Y3M",     # 10Y-3M spread (recession signal)
             "sahm_rule": "SAHMREALTIME",       # Sahm Rule recession indicator
             "consumer_conf": "UMCSENT",        # U. of Michigan Consumer Sentiment
-            "ism_pmi": "INDPRO",                 # Industrial Production Index (manufacturing activity proxy)
+            "ism_pmi": "INDPRO",               # Industrial Production Index (manufacturing activity proxy)
             "dxy": "DTWEXBGS",
             "fed_funds": "FEDFUNDS",
             "gold": None,  # fetched via yfinance below
             "crude": "DCOILWTICO",
+            # Inflation
+            "cpi": "CPIAUCSL",                 # CPI All Urban Consumers, SA
+            "core_cpi": "CPILFESL",            # Core CPI (less food & energy)
+            "pce": "PCEPI",                    # Personal Consumption Expenditures Price Index
+            "core_pce": "PCEPILFE",            # Core PCE
+            "ppi": "PPIACO",                   # Producer Price Index, All Commodities
+            # Growth & Employment
+            "gdp": "GDP",                      # GDP, SA Annual Rate
+            "nfp": "PAYEMS",                   # Non-Farm Payrolls
+            "unemployment_rate": "UNRATE",
+            "initial_claims": "ICSA",          # Initial Jobless Claims
+            "continuing_claims": "CCSA",       # Continuing Jobless Claims
+            # Activity
+            "retail_sales": "RSXFS",           # Retail Sales, ex. Food Services
+            "industrial_production": "INDPRO", # Industrial Production Index
+            # Housing
+            "housing_starts": "HOUST",
+            "building_permits": "PERMIT",
+            "case_shiller_hpi": "CSUSHPINSA",  # S&P/Case-Shiller National HPI
         }
         result = {}
         for name, fred_id in series.items():

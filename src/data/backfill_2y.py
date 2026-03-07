@@ -128,11 +128,36 @@ def backfill_historical(years: int = 3, config: dict = None):
 
     # ── 2. Macro data from FRED ──
     fred_series = {
+        # Core Market & Rates
         "vix": "VIXCLS",
         "us10y_yield": "DGS10",
+        "us3m_yield": "DTB3",
+        "yield_curve_10y3m": "T10Y3M",
+        "sahm_rule": "SAHMREALTIME",
+        "consumer_conf": "UMCSENT",
+        "ism_pmi": "INDPRO",
         "dxy": "DTWEXBGS",
         "fed_funds": "FEDFUNDS",
         "crude": "DCOILWTICO",
+        # Inflation
+        "cpi": "CPIAUCSL",
+        "core_cpi": "CPILFESL",
+        "pce": "PCEPI",
+        "core_pce": "PCEPILFE",
+        "ppi": "PPIACO",
+        # Growth & Employment
+        "gdp": "GDP",
+        "nfp": "PAYEMS",
+        "unemployment_rate": "UNRATE",
+        "initial_claims": "ICSA",
+        "continuing_claims": "CCSA",
+        # Activity
+        "retail_sales": "RSXFS",
+        "industrial_production": "INDPRO",
+        # Housing
+        "housing_starts": "HOUST",
+        "building_permits": "PERMIT",
+        "case_shiller_hpi": "CSUSHPINSA",
     }
 
     macro_frames = {}
@@ -171,7 +196,13 @@ def backfill_historical(years: int = 3, config: dict = None):
 
     for name, series in macro_frames.items():
         series.index = pd.to_datetime(series.index).strftime("%Y-%m-%d")
-        macro_df = macro_df.join(series, how="left")
+        # Reindex to trading dates with forward-fill so that weekend/non-trading
+        # day observations (e.g. ICSA on Saturdays, GDP quarterly) propagate
+        # to the next available trading day.
+        all_dates = sorted(set(series.index.tolist() + trading_dates))
+        reindexed = series.reindex(all_dates).ffill()
+        reindexed = reindexed.reindex(trading_dates)
+        macro_df[name] = reindexed.values
 
     # Forward-fill macro data (FRED has gaps on weekends/holidays)
     macro_df = macro_df.ffill()
@@ -185,21 +216,27 @@ def backfill_historical(years: int = 3, config: dict = None):
 
     # Insert macro rows
     inserted = 0
+    # Build column list dynamically from all available macro columns
+    _macro_cols = [
+        "vix", "vix_change", "us10y_yield", "us3m_yield", "yield_curve_10y3m",
+        "dxy", "fed_funds", "gold", "crude",
+        "sahm_rule", "consumer_conf", "ism_pmi",
+        "cpi", "core_cpi", "pce", "core_pce", "ppi",
+        "gdp", "nfp", "unemployment_rate", "initial_claims", "continuing_claims",
+        "retail_sales", "industrial_production",
+        "housing_starts", "building_permits", "case_shiller_hpi",
+    ]
+    _col_str = ", ".join(_macro_cols)
+    _ph_str = ", ".join(["?"] * len(_macro_cols))
     for _, row in macro_df.iterrows():
-        sql = """INSERT OR REPLACE INTO macro
-                 (date, vix, vix_change, us10y_yield, dxy, fed_funds, gold, crude)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""
-        params = (
-            row["date"],
-            float(row["vix"]) if pd.notna(row.get("vix")) else None,
-            float(row["vix_change"]) if pd.notna(row.get("vix_change")) else None,
-            float(row["us10y_yield"]) if pd.notna(row.get("us10y_yield")) else None,
-            float(row["dxy"]) if pd.notna(row.get("dxy")) else None,
-            float(row["fed_funds"]) if pd.notna(row.get("fed_funds")) else None,
-            float(row["gold"]) if pd.notna(row.get("gold")) else None,
-            float(row["crude"]) if pd.notna(row.get("crude")) else None,
+        vals = [row["date"]]
+        for c in _macro_cols:
+            v = row.get(c)
+            vals.append(float(v) if pd.notna(v) else None)
+        _db_exec(
+            f"INSERT OR REPLACE INTO macro (date, {_col_str}) VALUES (?, {_ph_str})",
+            tuple(vals)
         )
-        _db_exec(sql, params)
         inserted += 1
     logger.info(f"Inserted {inserted} macro rows")
 

@@ -647,10 +647,47 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
                   "hy_spread", "tlt_spy_ratio", "eem_spy_ratio",
                   "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio",
                   "xlk", "xlf", "xle",
-                  "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia"]
+                  "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia",
+                  # v2.10: Comprehensive economic metrics
+                  "cpi", "core_cpi", "pce", "core_pce", "ppi",
+                  "gdp", "nfp", "unemployment_rate", "initial_claims", "continuing_claims",
+                  "retail_sales", "industrial_production",
+                  "housing_starts", "building_permits", "case_shiller_hpi"]
     for col in macro_cols:
         if col in df.columns:
             df[col] = df[col].ffill().infer_objects(copy=False)
+
+    # --- v2.10: Derived economic features ---
+    # Inflation momentum (YoY change — monthly data forward-filled to daily)
+    if "cpi" in df.columns:
+        df["cpi_mom"] = df["cpi"].pct_change(periods=252)  # ~12 months of trading days
+    else:
+        df["cpi_mom"] = 0.0
+    if "ppi" in df.columns:
+        df["ppi_mom"] = df["ppi"].pct_change(periods=252)
+    else:
+        df["ppi_mom"] = 0.0
+    # Inflation surprise (acceleration: current YoY change minus prior YoY change)
+    if "cpi" in df.columns:
+        cpi_yoy = df["cpi"].pct_change(periods=252)
+        df["inflation_surprise"] = cpi_yoy - cpi_yoy.shift(252)
+    else:
+        df["inflation_surprise"] = 0.0
+    # Employment momentum (3-month smoothed NFP change)
+    if "nfp" in df.columns:
+        df["nfp_mom"] = df["nfp"].pct_change(periods=63).rolling(63).mean()  # ~3 months
+    else:
+        df["nfp_mom"] = 0.0
+    # Claims trend (4-week MA diff — weekly data forward-filled)
+    if "initial_claims" in df.columns:
+        df["claims_trend"] = df["initial_claims"].rolling(20).mean().diff()  # ~4 weeks
+    else:
+        df["claims_trend"] = 0.0
+    # Housing momentum (YoY HPI change)
+    if "case_shiller_hpi" in df.columns:
+        df["hpi_mom"] = df["case_shiller_hpi"].pct_change(periods=252)
+    else:
+        df["hpi_mom"] = 0.0
 
     # Fill NaN sentiment with neutral
     sentiment_cols = ["sentiment_score", "sentiment_confidence", "article_count",
@@ -970,12 +1007,19 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         df["sp500_cape"] = 0.0
         df["buffett_indicator"] = 0.0
 
-    # Fill NaN for all v2.8 features
+    # Fill NaN for all v2.8+ features
     v28_cols = ["earnings_yield_gap", "defensive_offensive_ratio", "qqq_iwm_ratio",
                 "xlv_xle_ratio", "weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
                 "monthly_rsi", "monthly_momentum_3m", "st_bullish_pct", "st_bearish_pct",
                 "st_bull_bear_ratio", "st_message_volume", "sp500_cape", "buffett_indicator",
-                "us3m_yield", "yield_curve_10y3m", "sahm_rule", "consumer_conf", "ism_pmi"]
+                "us3m_yield", "yield_curve_10y3m", "sahm_rule", "consumer_conf", "ism_pmi",
+                # v2.10: Economic metrics
+                "cpi", "core_cpi", "pce", "core_pce", "ppi",
+                "gdp", "nfp", "unemployment_rate", "initial_claims", "continuing_claims",
+                "retail_sales", "industrial_production",
+                "housing_starts", "building_permits", "case_shiller_hpi",
+                "cpi_mom", "ppi_mom", "inflation_surprise",
+                "nfp_mom", "claims_trend", "hpi_mom"]
     for col in v28_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
@@ -1078,6 +1122,15 @@ def get_feature_columns() -> list[str]:
         "sp500_cape", "buffett_indicator",
         "sahm_rule", "yield_curve_10y3m", "us3m_yield",
         "consumer_conf", "ism_pmi", "earnings_yield_gap",
+        # v2.10: Comprehensive Economic Metrics (raw)
+        "cpi", "core_cpi", "pce", "core_pce", "ppi",
+        "gdp", "nfp", "unemployment_rate",
+        "initial_claims", "continuing_claims",
+        "retail_sales", "industrial_production",
+        "housing_starts", "building_permits", "case_shiller_hpi",
+        # v2.10: Derived economic features
+        "cpi_mom", "ppi_mom", "inflation_surprise",
+        "nfp_mom", "claims_trend", "hpi_mom",
         # v2.8: Comprehensive Technicals (pandas-ta)
         "adx_14", "cci_20", "aroon_up", "aroon_down",
         "psar_long", "psar_short", "dpo_20", "trix_14",

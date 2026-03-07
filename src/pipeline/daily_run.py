@@ -539,6 +539,11 @@ class DailyPipeline:
             "copper_gold_ratio", "xlk_xlf_ratio", "xlk_xle_ratio",
             "xlk", "xlf", "xle",
             "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia",
+            # v2.10: Comprehensive economic metrics
+            "cpi", "core_cpi", "pce", "core_pce", "ppi",
+            "gdp", "nfp", "unemployment_rate", "initial_claims", "continuing_claims",
+            "retail_sales", "industrial_production",
+            "housing_starts", "building_permits", "case_shiller_hpi",
         ]
         _col_str = ", ".join(_macro_cols)
         _ph_str = ", ".join(["?"] * len(_macro_cols))
