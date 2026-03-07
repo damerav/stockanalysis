@@ -22,6 +22,7 @@ import pandas as pd
 import requests
 
 from src.data.init_db import init_db, get_connection, load_config
+from src.data.db_router import get_router
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,36 @@ def backfill_dense(years: int = 3, config: dict = None):
     if config is None:
         config = load_config()
 
-    conn = get_connection(config)
+    raw_conn = get_connection(config)
+
+    try:
+        router = get_router(config)
+        logger.info(f"DbRouter available: {router is not None}")
+    except Exception as e:
+        logger.warning(f"DbRouter unavailable: {e}")
+        router = None
+
+    class _ConnWrapper:
+        """Wraps raw connection to route SQL through DbRouter."""
+        def __init__(self, raw, rtr):
+            self._raw = raw
+            self._rtr = rtr
+        def execute(self, sql, params=None):
+            if self._rtr is not None:
+                self._rtr.execute(sql, tuple(params) if isinstance(params, list) else params)
+            else:
+                # SQLite fallback
+                self._raw.execute(sql, params)
+        def commit(self):
+            if self._rtr is None:
+                self._raw.commit()
+        def close(self):
+            if self._rtr is not None:
+                self._rtr.close()
+            self._raw.close()
+
+    conn = _ConnWrapper(raw_conn, router)
+
     fred_key = config.get("fred", {}).get("api_key", "")
     # Resolve from encrypted DB if placeholder
     try:
@@ -87,15 +117,18 @@ def backfill_dense(years: int = 3, config: dict = None):
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=int(years * 365))).strftime("%Y-%m-%d")
 
+    def _db_query(sql):
+        if router:
+            return router.query(sql)
+        return pd.read_sql_query(sql, raw_conn)
+
     # Get existing trading dates from prices table
-    dates_df = pd.read_sql_query(
-        "SELECT date FROM prices ORDER BY date", conn)
+    dates_df = _db_query("SELECT date FROM prices ORDER BY date")
     trading_dates = dates_df["date"].tolist()
     logger.info(f"Trading dates in DB: {len(trading_dates)}")
 
     # Load existing prices for intraday proxy computation
-    prices = pd.read_sql_query(
-        "SELECT date, open, high, low, close, volume FROM prices ORDER BY date", conn)
+    prices = _db_query("SELECT date, open, high, low, close, volume FROM prices ORDER BY date")
 
     # ── 1. VIX Term Structure from yfinance ──
     vix_tickers = {
@@ -172,7 +205,7 @@ def backfill_dense(years: int = 3, config: dict = None):
 
     # VIX term slope = (VIX3M - VIX) / VIX
     # Need VIX from macro table
-    macro = pd.read_sql_query("SELECT date, vix FROM macro ORDER BY date", conn)
+    macro = _db_query("SELECT date, vix FROM macro ORDER BY date")
     vix_series = macro.set_index("date")["vix"]
     result["_vix"] = result["date"].map(vix_series)
 
@@ -208,7 +241,7 @@ def backfill_dense(years: int = 3, config: dict = None):
     if "HG_F" in etf_data:
         gold_series = None
         # Get gold from macro
-        macro_gold = pd.read_sql_query("SELECT date, gold FROM macro ORDER BY date", conn)
+        macro_gold = _db_query("SELECT date, gold FROM macro ORDER BY date")
         if not macro_gold.empty:
             gold_series = macro_gold.set_index("date")["gold"]
         if gold_series is not None:
@@ -253,7 +286,7 @@ def backfill_dense(years: int = 3, config: dict = None):
     result["vwap_spread"] = result["date"].map((p["close"] - vwap_proxy) / p["close"].replace(0, np.nan))
 
     # ATR percentile = current ATR / max ATR over 252 days
-    atr_col = pd.read_sql_query("SELECT date, atr_14 FROM technicals ORDER BY date", conn)
+    atr_col = _db_query("SELECT date, atr_14 FROM technicals ORDER BY date")
     if not atr_col.empty:
         atr_s = atr_col.set_index("date")["atr_14"]
         atr_max = atr_s.rolling(252, min_periods=20).max()
@@ -399,8 +432,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Dense feature backfill")
-    parser.add_argument("--years", type=int, default=3,
-                        help="Years of history (default: 3)")
+    parser.add_argument("--years", type=int, default=5,
+                        help="Years of history (default: 5)")
     parser.add_argument("--config", type=str, default="config.yaml")
     args = parser.parse_args()
 

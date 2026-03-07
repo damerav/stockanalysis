@@ -20,7 +20,7 @@ llm:
   temperature: 0.3
 
 xgboost:
-  lookback_days: 252
+  lookback_days: 1260
   max_depth: 6
   learning_rate: 0.05
   n_estimators: 500

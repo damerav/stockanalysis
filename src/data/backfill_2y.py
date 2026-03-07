@@ -65,6 +65,7 @@ def backfill_historical(years: int = 3, config: dict = None):
 
     db_path = init_db(config)
     conn = get_connection(config)
+
     fred_key = config.get("fred", {}).get("api_key", "")
     # Resolve from encrypted DB if placeholder
     try:
@@ -76,11 +77,23 @@ def backfill_historical(years: int = 3, config: dict = None):
 
     try:
         router = get_router(config)
-        use_duck = True
     except Exception:
         logger.warning("DbRouter unavailable, using SQLite only")
         router = None
-        use_duck = False
+
+    def _db_exec(sql, params=None):
+        """Execute via router (handles INSERT OR REPLACE → ON CONFLICT)."""
+        if router:
+            router.execute(sql, params)
+        else:
+            conn.execute(sql, params)
+            conn.commit()
+
+    def _db_query(sql, params=None):
+        """Query via router."""
+        if router:
+            return router.query(sql, params)
+        return pd.read_sql_query(sql, conn, params=params)
 
     days = int(years * 365)
     end_date = datetime.now().strftime("%Y-%m-%d")
@@ -110,13 +123,7 @@ def backfill_historical(years: int = 3, config: dict = None):
                  VALUES (?, ?, ?, ?, ?, ?)"""
         params = (row["date"], float(row["open"]), float(row["high"]),
                   float(row["low"]), float(row["close"]), int(row["volume"]))
-        if use_duck:
-            try:
-                router.write_analytics(sql, params)
-            except Exception:
-                pass
-        conn.execute(sql, params)
-    conn.commit()
+        _db_exec(sql, params)
     logger.info(f"Inserted {len(prices)} price rows")
 
     # ── 2. Macro data from FRED ──
@@ -192,21 +199,14 @@ def backfill_historical(years: int = 3, config: dict = None):
             float(row["gold"]) if pd.notna(row.get("gold")) else None,
             float(row["crude"]) if pd.notna(row.get("crude")) else None,
         )
-        if use_duck:
-            try:
-                router.write_analytics(sql, params)
-            except Exception:
-                pass
-        conn.execute(sql, params)
+        _db_exec(sql, params)
         inserted += 1
-    conn.commit()
     logger.info(f"Inserted {inserted} macro rows")
 
     # ── 3. Recompute technicals ──
     logger.info("Recomputing technicals for all dates...")
-    price_df = pd.read_sql_query(
-        "SELECT date, open, high, low, close, volume FROM prices ORDER BY date",
-        conn
+    price_df = _db_query(
+        "SELECT date, open, high, low, close, volume FROM prices ORDER BY date"
     )
     if len(price_df) > 0:
         tech_df = compute_all_technicals(price_df, config=config)
@@ -214,13 +214,13 @@ def backfill_historical(years: int = 3, config: dict = None):
         logger.info(f"Computed and stored technicals for {len(tech_df)} rows")
 
     # ── Summary ──
-    price_count = conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
-    macro_count = conn.execute("SELECT COUNT(*) FROM macro").fetchone()[0]
-    tech_count = conn.execute("SELECT COUNT(*) FROM technicals").fetchone()[0]
+    cnt_prices = _db_query("SELECT COUNT(*) as cnt FROM prices")
+    cnt_macro = _db_query("SELECT COUNT(*) as cnt FROM macro")
+    cnt_tech = _db_query("SELECT COUNT(*) as cnt FROM technicals")
     logger.info(f"\nBackfill complete:")
-    logger.info(f"  Prices: {price_count} rows")
-    logger.info(f"  Macro:  {macro_count} rows")
-    logger.info(f"  Technicals: {tech_count} rows")
+    logger.info(f"  Prices: {cnt_prices.iloc[0]['cnt']} rows")
+    logger.info(f"  Macro:  {cnt_macro.iloc[0]['cnt']} rows")
+    logger.info(f"  Technicals: {cnt_tech.iloc[0]['cnt']} rows")
 
     conn.close()
     logger.info("Done.")
@@ -230,8 +230,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Backfill 2+ years of historical data")
-    parser.add_argument("--years", type=int, default=3,
-                        help="Years of history to load (default: 3)")
+    parser.add_argument("--years", type=int, default=5,
+                        help="Years of history to load (default: 5)")
     parser.add_argument("--config", type=str, default="config.yaml")
     args = parser.parse_args()
 
