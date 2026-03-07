@@ -1282,9 +1282,28 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
             return None
         actual_return = (prices[1][0] - prices[0][0]) / prices[0][0]
 
-    if actual_return > 0.003:
+    # Get VIX for adaptive threshold and regime (query once, use for both)
+    if router:
+        macro_df = router.query("SELECT vix FROM macro WHERE date = ?", (date_str,))
+        vix_val = float(macro_df.iloc[0]["vix"]) if not macro_df.empty and macro_df.iloc[0]["vix"] else 18
+    else:
+        macro_row = conn_or_router.execute(
+            "SELECT vix FROM macro WHERE date = ?", (date_str,)
+        ).fetchone()
+        vix_val = macro_row[0] if macro_row and macro_row[0] else 18
+
+    # Use adaptive neutral threshold (consistent with training and backtest)
+    from src.data.features import get_adaptive_neutral_threshold
+    try:
+        from src.strategy.rules_store import get_rule
+        _base_thresh = get_rule("prediction", "neutral_threshold") or 0.004
+    except Exception:
+        _base_thresh = 0.004
+    _thresh = get_adaptive_neutral_threshold(vix_val, _base_thresh)
+
+    if actual_return > _thresh:
         actual = "BULLISH"
-    elif actual_return < -0.003:
+    elif actual_return < -_thresh:
         actual = "BEARISH"
     else:
         actual = "NEUTRAL"
@@ -1302,16 +1321,6 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
         conf_tier = "medium"
     else:
         conf_tier = "low"
-
-    # VIX regime
-    if router:
-        macro_df = router.query("SELECT vix FROM macro WHERE date = ?", (date_str,))
-        vix_val = float(macro_df.iloc[0]["vix"]) if not macro_df.empty and macro_df.iloc[0]["vix"] else 18
-    else:
-        macro_row = conn_or_router.execute(
-            "SELECT vix FROM macro WHERE date = ?", (date_str,)
-        ).fetchone()
-        vix_val = macro_row[0] if macro_row and macro_row[0] else 18
 
     if vix_val < 15:
         vix_regime = "low"
@@ -1460,9 +1469,22 @@ def backfill_evaluations(conn_or_router) -> dict:
 
         actual_return = (prices_df.iloc[1]["close"] - prices_df.iloc[0]["close"]) / prices_df.iloc[0]["close"]
 
-        if actual_return > 0.003:
+        # Get VIX for adaptive threshold and regime
+        macro_df = router.query("SELECT vix FROM macro WHERE date = ?", (date_str,))
+        vix_val = float(macro_df.iloc[0]["vix"]) if not macro_df.empty and macro_df.iloc[0]["vix"] else 18
+
+        # Use adaptive neutral threshold (consistent with training and backtest)
+        from src.data.features import get_adaptive_neutral_threshold
+        try:
+            from src.strategy.rules_store import get_rule
+            _bt = get_rule("prediction", "neutral_threshold") or 0.004
+        except Exception:
+            _bt = 0.004
+        _at = get_adaptive_neutral_threshold(vix_val, _bt)
+
+        if actual_return > _at:
             actual = "BULLISH"
-        elif actual_return < -0.003:
+        elif actual_return < -_at:
             actual = "BEARISH"
         else:
             actual = "NEUTRAL"
@@ -1470,13 +1492,11 @@ def backfill_evaluations(conn_or_router) -> dict:
         correct = 1 if (
             ("BULLISH" in predicted and actual == "BULLISH") or
             ("BEARISH" in predicted and actual == "BEARISH") or
-            (predicted == "NEUTRAL" and actual == "NEUTRAL")
+            ("NEUTRAL" in predicted and actual == "NEUTRAL")
         ) else 0
 
         conf_tier = "high" if pred_confidence >= 70 else ("medium" if pred_confidence >= 50 else "low")
 
-        macro_df = router.query("SELECT vix FROM macro WHERE date = ?", (date_str,))
-        vix_val = float(macro_df.iloc[0]["vix"]) if not macro_df.empty and macro_df.iloc[0]["vix"] else 18
         vix_regime = "low" if vix_val < 15 else ("high" if vix_val > 25 else "normal")
 
         try:
