@@ -117,6 +117,7 @@ class Scheduler:
         self._last_intraday_runs: dict = {}  # P2: track intraday updates
         self._last_vigilance_check: float = 0  # P3: event-driven monitoring
         self._vigilance: object = None  # lazy-loaded
+        self._last_kb_rebuild_week: str = ""  # weekly knowledge base rebuild
 
     def start(self):
         self._running = True
@@ -144,6 +145,12 @@ class Scheduler:
                             today != self._last_run_date):
                         self._last_run_date = today
                         self._run_pipeline()
+
+                        # Weekly knowledge base rebuild (Mondays after pipeline)
+                        iso_week = now.strftime("%G-W%V")
+                        if weekday == 0 and iso_week != self._last_kb_rebuild_week:
+                            self._last_kb_rebuild_week = iso_week
+                            self._rebuild_knowledge_base()
 
                     # P2: Intraday prediction updates
                     for hour, minute in INTRADAY_UPDATES:
@@ -176,6 +183,20 @@ class Scheduler:
             proc.kill()
         except Exception as e:
             logger.error(f"Pipeline execution failed: {e}")
+
+    def _rebuild_knowledge_base(self):
+        """Weekly: re-embed source files into knowledge_vectors for RAG chatbot."""
+        logger.info("Weekly knowledge base rebuild starting")
+        try:
+            cmd = [sys.executable, "-m", "src.data.build_knowledge_base"]
+            proc = subprocess.Popen(cmd)
+            proc.wait(timeout=300)  # 5 min max
+            logger.info(f"Knowledge base rebuild completed (exit {proc.returncode})")
+        except subprocess.TimeoutExpired:
+            logger.error("Knowledge base rebuild timed out")
+            proc.kill()
+        except Exception as e:
+            logger.error(f"Knowledge base rebuild failed: {e}")
 
     def _run_intraday_update(self, hour: int, minute: int):
         """P2: Run intraday prediction refresh (steps 3-5, 8-9, 11 only)."""
