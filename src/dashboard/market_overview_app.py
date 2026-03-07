@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 def page_market_overview():
     """Renders the Market Overview dashboard."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="market_overview", page_title="Market Overview")
     # ── Lazy imports to avoid circular dependency ──────────────────────
     import yaml
     from src.dashboard.theme import get_colors, page_header, metric_card, is_dark

@@ -55,6 +55,8 @@ def _categorize_features() -> dict[str, list[str]]:
 
 def page_tuning():
     """Renders the model tuning & backtesting page."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="tuning", page_title="Model Tuning")
     st.markdown(page_header("🛠️ Model Tuning & Backtesting"), unsafe_allow_html=True)
 
     colors = get_colors()

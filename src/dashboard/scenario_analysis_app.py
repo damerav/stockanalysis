@@ -10,6 +10,8 @@ from src.dashboard.theme import page_header
 
 def page_scenario_analysis():
     """Renders the Scenario Analysis page."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="scenario", page_title="Scenario Analysis")
     st.markdown(page_header("🔬 Scenario Analysis"), unsafe_allow_html=True)
     st.caption(
         "Simulate how changes to market conditions, model features, or strategy rules "

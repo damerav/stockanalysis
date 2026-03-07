@@ -272,6 +272,8 @@ def _generate_ai_narrative(ticker: str, df: pd.DataFrame, perf: dict) -> str:
 
 def page_single_stock():
     """Render the 🔍 Single-Stock Analysis page."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="single_stock", page_title="Single-Stock Analysis")
     _refresh_theme()
     # ── Compact toolbar: title + controls on one line ──
     _t, _c1, _c2 = st.columns([4, 1, 1])

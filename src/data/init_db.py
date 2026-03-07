@@ -346,6 +346,34 @@ def init_db(config: dict = None) -> str:
 
             except Exception as e:
                 logger.warning(f"strategy_rules PostgreSQL setup failed: {e}")
+
+            # Knowledge base table for RAG chatbot (pgvector)
+            try:
+                _pg_conn.cursor().execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                _pg_conn.commit()
+                _pg_conn.cursor().execute("""
+                    CREATE TABLE IF NOT EXISTS knowledge_vectors (
+                        id          SERIAL PRIMARY KEY,
+                        source_path VARCHAR(512) NOT NULL,
+                        chunk_index INTEGER NOT NULL DEFAULT 0,
+                        chunk_text  TEXT NOT NULL,
+                        embedding   VECTOR(384) NOT NULL,
+                        created_at  TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                _pg_conn.commit()
+                _pg_conn.cursor().execute("""
+                    CREATE INDEX IF NOT EXISTS idx_kv_embedding
+                    ON knowledge_vectors
+                    USING ivfflat (embedding vector_cosine_ops)
+                    WITH (lists = 100)
+                """)
+                _pg_conn.commit()
+                logger.info("knowledge_vectors table ready in PostgreSQL")
+            except Exception as e:
+                _pg_conn.rollback()
+                logger.debug(f"knowledge_vectors setup skipped: {e}")
+
         router.close()
     except Exception as e:
         logger.debug(f"PostgreSQL not available (non-fatal): {e}")

@@ -1282,6 +1282,8 @@ def _ds_all_news_db():
 
 def page_monitoring():
     """Main monitoring page with tabbed sub-dashboards."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="monitoring", page_title="System Monitoring")
     _refresh_theme()
 
     # Theme-aware tab styling (inherits from app.py global CSS, just override tab styling)

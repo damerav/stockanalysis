@@ -10,6 +10,8 @@ from src.dashboard.theme import page_header
 
 def page_system_management():
     """Renders the System Management page."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="system_mgmt", page_title="System Management")
     st.markdown(page_header("⚙️ System Management"), unsafe_allow_html=True)
     st.caption(
         "Manage users, view system logs, review configuration, and check system health. "

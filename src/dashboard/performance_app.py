@@ -149,6 +149,8 @@ def _load_backtest_results() -> pd.DataFrame:
 
 def page_performance():
     """Renders the model performance analysis page."""
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="performance", page_title="Performance Tracking")
     st.markdown(page_header("🎯 Model Performance"), unsafe_allow_html=True)
 
     df = _load_performance()

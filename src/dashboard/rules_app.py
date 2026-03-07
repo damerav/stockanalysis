@@ -22,6 +22,8 @@ _GROUP_LABELS = {
 
 
 def page_rules():
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="rules", page_title="Strategy Rules")
     c = get_colors()
     st.markdown(page_header("⚙️ Strategy Rules"), unsafe_allow_html=True)
 

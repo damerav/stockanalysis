@@ -35,6 +35,14 @@ lxml>=5.0
 pandas_market_calendars>=4.4
 # Comprehensive technical indicators
 pandas-ta>=0.3.14b
+# RAG chatbot dependencies
+sentence-transformers>=2.7.0
+fpdf2>=2.7.0
+kaleido>=0.2.1
 # LSTM forecaster + news pipeline
 tensorflow>=2.15; platform_machine != "aarch64"
 nltk>=3.8
+# RAG chatbot + report generation
+sentence-transformers>=2.7.0
+fpdf2>=2.7
+kaleido>=0.2.1

@@ -376,6 +376,31 @@ class DbRouter:
             logger.error(f"vector_search failed: {e}")
             return pd.DataFrame()
 
+    def vector_search_knowledge(self, embedding: list[float], limit: int = 10) -> pd.DataFrame:
+        """Semantic search over the knowledge_vectors table (docs + code chunks).
+
+        Returns a DataFrame with columns: source_path, chunk_text, similarity.
+        Falls back to an empty DataFrame if pgvector is unavailable.
+        """
+        if not self._pg_engine:
+            return pd.DataFrame()
+        try:
+            embed_str = str(embedding)
+            sql = text("""
+                SELECT source_path,
+                       chunk_text,
+                       1 - (embedding <=> :emb::vector) AS similarity
+                FROM   knowledge_vectors
+                ORDER  BY embedding <=> :emb::vector
+                LIMIT  :lim
+            """)
+            return pd.read_sql_query(
+                sql, self._pg_engine, params={"emb": embed_str, "lim": limit}
+            )
+        except Exception as e:
+            logger.error(f"vector_search_knowledge failed: {e}")
+            return pd.DataFrame()
+
     def close(self):
         if self._pg_engine:
             try:

@@ -43,6 +43,8 @@ from src.dashboard.market_overview_app import page_market_overview
 from src.dashboard.scenario_analysis_app import page_scenario_analysis
 from src.dashboard.data_management_app import page_data_management
 from src.dashboard.system_management_app import page_system_management
+from src.dashboard.reports_app import page_reports
+from src.dashboard.chatbot_widget import render_chatbot_widget
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
 from src.dashboard.theme import (
@@ -282,6 +284,7 @@ def load_performance() -> pd.DataFrame:
 
 
 def page_spy():
+    render_chatbot_widget(page_key="spy", page_title="SPY Predictor")
     c = get_colors()
     state = load_spy_state()
     prediction = state.get("prediction", {})
@@ -798,6 +801,7 @@ def _es_chart_from_db():
 
 
 def page_es():
+    render_chatbot_widget(page_key="es", page_title="ES Strategy")
     c = get_colors()
     state = load_es_state()
     position = state.get("position", {"status": "FLAT", "lots": 0})
@@ -1079,6 +1083,7 @@ def get_whatif_engine():
 
 
 def page_whatif():
+    render_chatbot_widget(page_key="whatif", page_title="Scenario Analysis")
     st.markdown(page_header('🔬 What-If Analysis'), unsafe_allow_html=True)
     engine = get_whatif_engine()
 
@@ -2901,6 +2906,7 @@ def _grafana_summary_cards():
 
 def page_grafana():
     """Embed Grafana dashboards or fall back to native Plotly monitoring."""
+    render_chatbot_widget(page_key="grafana", page_title="System Monitoring")
     st.markdown(page_header("📡 System Monitoring"), unsafe_allow_html=True)
     st.caption(
         "Live system monitoring powered by Grafana. Dashboards cover SPY Predictor performance, "
@@ -3008,6 +3014,7 @@ def page_grafana():
 
 
 def page_quant_agent():
+    render_chatbot_widget(page_key="quant_agent", page_title="Quant Agent")
     c = get_colors()
     st.markdown(page_header('🤖 Quant Agent'), unsafe_allow_html=True)
 
@@ -3588,6 +3595,7 @@ if _IS_MAIN_SCRIPT:
             st.Page(page_performance, title="Performance Tracking", icon=":material/verified:"),
             st.Page(page_scenario_analysis, title="Scenario Analysis", icon=":material/science:"),
             st.Page(page_tuning, title="Model Tuning", icon=":material/tune:"),
+            st.Page(page_reports, title="Reports", icon=":material/download:"),
         ],
         "Administration": [
             st.Page(page_rules, title="Strategy Rules", icon=":material/rule:"),

@@ -804,6 +804,8 @@ def _run_adjustment_alerts(open_pos: pd.DataFrame) -> list[dict]:
 # ── Main Page ─────────────────────────────────────────────────────────────────
 
 def page_strangle():
+    from src.dashboard.chatbot_widget import render_chatbot_widget
+    render_chatbot_widget(page_key="strangle", page_title="Inverted Strangle")
     _header("🕷️ Inverted Strangle — Defined Risk")
 
     tab_open, tab_new, tab_predict, tab_history, tab_tracker, tab_guardrails, tab_whatif, tab_guide, tab_deepdive = st.tabs([
