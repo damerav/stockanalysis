@@ -1292,7 +1292,7 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
     correct = 1 if (
         ("BULLISH" in predicted and actual == "BULLISH") or
         ("BEARISH" in predicted and actual == "BEARISH") or
-        (predicted == "NEUTRAL" and actual == "NEUTRAL")
+        ("NEUTRAL" in predicted and actual == "NEUTRAL")
     ) else 0
 
     # Confidence tier
@@ -1367,7 +1367,7 @@ def evaluate_past_prediction(conn_or_router, date_str: str) -> Optional[dict]:
         enhanced_correct_val = 1 if (
             ("BULLISH" in enhanced_predicted and actual == "BULLISH") or
             ("BEARISH" in enhanced_predicted and actual == "BEARISH") or
-            (enhanced_predicted == "NEUTRAL" and actual == "NEUTRAL")
+            ("NEUTRAL" in enhanced_predicted and actual == "NEUTRAL")
         ) else 0
         enhanced_total += 1
         enhanced_correct_total += enhanced_correct_val
@@ -1585,6 +1585,10 @@ def generate_historical_backtest(conn_or_router, config: dict = None) -> pd.Data
     fv["_date_str"] = fv["date"].astype(str)
     date_index = {d: idx for idx, d in enumerate(dates_sorted)}
 
+    # Build VIX map for adaptive threshold evaluation
+    macro_df = router.query("SELECT date, vix FROM macro ORDER BY date")
+    vix_map = dict(zip(macro_df["date"].astype(str), macro_df["vix"])) if not macro_df.empty else {}
+
     for _, fv_row in fv.iterrows():
         row_date = str(fv_row["_date_str"])
         if row_date not in date_index:
@@ -1598,9 +1602,18 @@ def generate_historical_backtest(conn_or_router, config: dict = None) -> pd.Data
         close_next = price_map[next_date]
         actual_return = (close_next - close_today) / close_today
 
-        if actual_return > 0.003:
+        # Use the same adaptive threshold the model was trained with
+        # to ensure consistent class boundaries between training and evaluation
+        vix_val = vix_map.get(row_date, 18.0)
+        from src.data.features import get_adaptive_neutral_threshold
+        eval_threshold = get_adaptive_neutral_threshold(
+            float(vix_val) if vix_val is not None else 18.0,
+            predictor.neutral_threshold
+        )
+
+        if actual_return > eval_threshold:
             actual_dir = "BULLISH"
-        elif actual_return < -0.003:
+        elif actual_return < -eval_threshold:
             actual_dir = "BEARISH"
         else:
             actual_dir = "NEUTRAL"
@@ -1614,7 +1627,7 @@ def generate_historical_backtest(conn_or_router, config: dict = None) -> pd.Data
             correct = 1 if (
                 ("BULLISH" in pred_label and actual_dir == "BULLISH") or
                 ("BEARISH" in pred_label and actual_dir == "BEARISH") or
-                (pred_label == "NEUTRAL" and actual_dir == "NEUTRAL")
+                ("NEUTRAL" in pred_label and actual_dir == "NEUTRAL")
             ) else 0
 
             results.append({
