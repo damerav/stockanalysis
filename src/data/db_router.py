@@ -281,7 +281,11 @@ class DbRouter:
             m.copper_gold_ratio, m.xlk_xlf_ratio, m.xlk_xle_ratio,
             m.us3m_yield, m.yield_curve_10y3m, m.sahm_rule, m.consumer_conf, m.ism_pmi,
             m.xlk, m.xlf, m.xle, m.xlv, m.xli, m.xlu, m.xlb, m.xlp, m.xly, m.xlre,
-            m.qqq, m.iwm, m.dia
+            m.qqq, m.iwm, m.dia,
+            m.cpi, m.core_cpi, m.pce, m.core_pce, m.ppi,
+            m.gdp, m.nfp, m.unemployment_rate, m.initial_claims, m.continuing_claims,
+            m.retail_sales, m.industrial_production,
+            m.housing_starts, m.building_permits, m.case_shiller_hpi
         FROM prices p
         LEFT JOIN technicals t ON p.date = t.date
         LEFT JOIN macro m ON p.date = m.date

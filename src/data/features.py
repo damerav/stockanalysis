@@ -783,8 +783,8 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
         if not news_daily.empty:
             news_daily = news_daily.set_index("date")
-            df["news_volume"] = df["date"].map(news_daily.get("news_volume", {})).fillna(0)
-            df["news_source_count"] = df["date"].map(news_daily.get("news_source_count", {})).fillna(0)
+            df["news_volume"] = df["date"].map(news_daily["news_volume"]).fillna(0)
+            df["news_source_count"] = df["date"].map(news_daily["news_source_count"]).fillna(0)
             nv = df["news_volume"].replace(0, np.nan)
             df["news_volume_spike"] = nv / nv.rolling(5, min_periods=1).mean()
             df["news_volume_spike"] = df["news_volume_spike"].fillna(1.0)
@@ -935,7 +935,8 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
     # --- Multi-Timeframe Technical Features ---
     try:
-        price_idx = df.set_index(pd.to_datetime(df["date"]))[["open", "high", "low", "close", "volume"]]
+        daily_dates = pd.to_datetime(df["date"])
+        price_idx = df.set_index(daily_dates)[["open", "high", "low", "close", "volume"]]
         weekly = price_idx.resample("W").agg({
             "open": "first", "high": "max", "low": "min",
             "close": "last", "volume": "sum"
@@ -947,22 +948,20 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
 
         if len(weekly) >= 14:
             w_rsi = compute_rsi(weekly["close"], 14)
-            w_rsi_map = pd.Series(w_rsi.values, index=weekly.index.strftime("%Y-%m-%d"))
-            df["weekly_rsi"] = df["date"].map(w_rsi_map).ffill()
+            # Reindex weekly onto daily dates with forward-fill (weekly value
+            # carries forward to all trading days in that week)
+            w_rsi_daily = w_rsi.reindex(daily_dates, method="ffill")
+            df["weekly_rsi"] = w_rsi_daily.values
             w_mom = weekly["close"].pct_change(5)
-            w_mom_map = pd.Series(w_mom.values, index=weekly.index.strftime("%Y-%m-%d"))
-            df["weekly_momentum_5w"] = df["date"].map(w_mom_map).ffill()
+            df["weekly_momentum_5w"] = w_mom.reindex(daily_dates, method="ffill").values
             _, _, w_macd_hist = compute_macd(weekly["close"])
-            w_mh_map = pd.Series(w_macd_hist.values, index=weekly.index.strftime("%Y-%m-%d"))
-            df["weekly_macd_hist"] = df["date"].map(w_mh_map).ffill()
+            df["weekly_macd_hist"] = w_macd_hist.reindex(daily_dates, method="ffill").values
 
         if len(monthly) >= 12:
             m_rsi = compute_rsi(monthly["close"], 14)
-            m_rsi_map = pd.Series(m_rsi.values, index=monthly.index.strftime("%Y-%m-%d"))
-            df["monthly_rsi"] = df["date"].map(m_rsi_map).ffill()
+            df["monthly_rsi"] = m_rsi.reindex(daily_dates, method="ffill").values
             m_mom = monthly["close"].pct_change(3)
-            m_mom_map = pd.Series(m_mom.values, index=monthly.index.strftime("%Y-%m-%d"))
-            df["monthly_momentum_3m"] = df["date"].map(m_mom_map).ffill()
+            df["monthly_momentum_3m"] = m_mom.reindex(daily_dates, method="ffill").values
 
         for col in ["weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
                      "monthly_rsi", "monthly_momentum_3m"]:
@@ -1099,10 +1098,6 @@ def get_feature_columns() -> list[str]:
         # News-derived (expanded news.db)
         "news_volume", "news_source_count", "news_volume_spike",
         "sentiment_momentum",
-        # Category-specific news volume (worldmonitor feeds)
-        # NOTE: Disabled until enough historical data accumulates (all zeros for historical dates)
-        # "news_cb_volume", "news_commodity_volume", "news_forex_volume",
-        # "news_bond_volume", "news_econ_volume", "news_deriv_volume",
         # Geopolitical risk features
         "geo_risk_score", "geo_fear_score", "geo_recovery_score",
         "geo_net_risk", "geo_article_ratio", "geo_max_risk",
@@ -1151,6 +1146,21 @@ def get_feature_columns() -> list[str]:
         # v2.8: Sector Rotation
         "defensive_offensive_ratio", "qqq_iwm_ratio", "xlv_xle_ratio",
         "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia",
+        # Sector ETF raw prices (used in rotation ratios, also direct features)
+        "xlk", "xlf", "xle",
+        # Raw SMA values (used in derived features, also direct signals)
+        "sma_20", "sma_50",
+        # Bollinger Band raw values
+        "bb_upper", "bb_lower",
+        # Raw options columns (used in derived features)
+        "gex", "max_pain",
+        # Sentiment confidence
+        "sentiment_confidence",
+        # FinBERT neutral (complement of positive/negative)
+        "finbert_neutral",
+        # Category-specific news volume (worldmonitor feeds)
+        "news_cb_volume", "news_commodity_volume", "news_forex_volume",
+        "news_bond_volume", "news_econ_volume", "news_deriv_volume",
     ]
 
 
