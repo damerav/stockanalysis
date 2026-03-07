@@ -902,24 +902,55 @@ class DailyPipeline:
         macro = self.fallback.get_macro_fred() if self.fallback else {}
         if self.router:
             tech_df = self.router.read_analytics(
-                "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals WHERE date = ?",
+                "SELECT rsi_14, macd, sma_20, sma_50, atr_14 FROM technicals WHERE date = ?",
                 (self.today,),
             )
             tech_row = tech_df.iloc[0] if not tech_df.empty else None
         else:
             tech_row = self._db_fetchone(
-                "SELECT rsi_14, macd, sma_20, sma_50 FROM technicals WHERE date = ?",
+                "SELECT rsi_14, macd, sma_20, sma_50, atr_14 FROM technicals WHERE date = ?",
                 (self.today,),
             )
         indicators = {}
         if tech_row is not None:
             if hasattr(tech_row, 'iloc'):
                 indicators = {"rsi_14": tech_row.iloc[0], "macd": tech_row.iloc[1],
-                              "sma_20": tech_row.iloc[2], "sma_50": tech_row.iloc[3]}
+                              "sma_20": tech_row.iloc[2], "sma_50": tech_row.iloc[3],
+                              "atr_14": tech_row.iloc[4]}
             else:
                 indicators = {"rsi_14": tech_row[0], "macd": tech_row[1],
-                              "sma_20": tech_row[2], "sma_50": tech_row[3]}
+                              "sma_20": tech_row[2], "sma_50": tech_row[3],
+                              "atr_14": tech_row[4]}
         indicators["vix"] = macro.get("vix")
+        indicators["vix_change"] = macro.get("vix_change")
+
+        # Add sentiment and volume ratio from daily_sentiment / feature vector
+        try:
+            sent_df = self._db_query(
+                "SELECT score FROM daily_sentiment WHERE date = ?",
+                (self.today,),
+            )
+            if not sent_df.empty and pd.notna(sent_df.iloc[0]["score"]):
+                indicators["sentiment_score"] = round(float(sent_df.iloc[0]["score"]), 4)
+            else:
+                indicators["sentiment_score"] = 0.0
+        except Exception:
+            indicators["sentiment_score"] = 0.0
+
+        # Volume ratio from prices table
+        try:
+            vol_df = self._db_query(
+                "SELECT volume FROM prices WHERE date <= ? ORDER BY date DESC LIMIT 21",
+                (self.today,),
+            )
+            if not vol_df.empty and len(vol_df) >= 2:
+                today_vol = float(vol_df.iloc[0]["volume"])
+                avg_vol = float(vol_df.iloc[1:].mean().iloc[0])
+                indicators["volume_ratio"] = round(today_vol / avg_vol, 2) if avg_vol > 0 else 1.0
+            else:
+                indicators["volume_ratio"] = None
+        except Exception:
+            indicators["volume_ratio"] = None
 
         # Compute enhanced prediction (model + institutional flow fusion)
         from src.realtime.dashboard_bridge import read_state

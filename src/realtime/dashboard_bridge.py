@@ -28,12 +28,25 @@ def _atomic_write(filepath: str, data: dict):
 def write_spy_state(prediction: dict = None, indicators: dict = None,
                     flow_alerts: list = None, enhanced_prediction: dict = None):
     """Write SPY predictor state for dashboard consumption."""
+    pred = prediction or {}
+    # Preserve vigilance_alerts from existing state (written by vigilance monitor)
+    existing_alerts = []
+    state_path = os.path.join(DATA_DIR, "spy_state.json")
+    try:
+        with open(state_path, "r") as f:
+            existing = json.load(f)
+            existing_alerts = existing.get("vigilance_alerts", [])
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
     state = {
         "updated_at": datetime.now().isoformat(),
-        "prediction": prediction or {},
+        "prediction": pred,
         "indicators": indicators or {},
         "flow_alerts": flow_alerts or [],
         "enhanced_prediction": enhanced_prediction or {},
+        "regime": pred.get("regime", ""),
+        "prediction_set": pred.get("prediction_set", []),
+        "vigilance_alerts": existing_alerts,
     }
     _atomic_write(os.path.join(DATA_DIR, "spy_state.json"), state)
 
