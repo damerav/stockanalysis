@@ -388,20 +388,35 @@ def _get_expiry_dates(dte_target: int = 45) -> list[str]:
     return candidates
 
 
+def _snap_strike(available_strikes, target: float) -> float:
+    """Snap a target strike to the nearest available strike in the chain."""
+    if not len(available_strikes):
+        return target
+    idx = np.argmin(np.abs(np.array(available_strikes) - target))
+    return float(available_strikes[idx])
+
+
 def _fetch_chain_for_strike(
     underlying: str, expiry: str, strikes: list[float], option_types: list[str],
-) -> pd.DataFrame:
-    """Fetch the options chain and filter for specific strikes and types."""
+) -> tuple[pd.DataFrame, dict]:
+    """Fetch the options chain and filter for nearest matching strikes.
+
+    Returns (filtered_chain, snap_map) where snap_map maps each original
+    strike to the nearest available strike in the chain.
+    """
     try:
         poly = _polygon()
         chain = poly.get_options_chain(underlying, expiry)
         if chain.empty:
-            return pd.DataFrame()
-        mask = chain["strike"].isin(strikes) & chain["option_type"].isin(option_types)
-        return chain[mask].copy()
+            return pd.DataFrame(), {}
+        available = sorted(chain["strike"].unique())
+        snap_map = {s: _snap_strike(available, s) for s in strikes}
+        snapped = list(set(snap_map.values()))
+        mask = chain["strike"].isin(snapped) & chain["option_type"].isin(option_types)
+        return chain[mask].copy(), snap_map
     except Exception as e:
         logger.warning("Options chain fetch failed: %s", e)
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
 
 def _price_spread(chain: pd.DataFrame, short_put: float, short_call: float,
@@ -892,20 +907,29 @@ def page_strangle():
                         if st.button("Refresh Greeks", key=f"greeks_{pos_id}"):
                             with st.spinner("Fetching options chain..."):
                                 _ul = str(pos["underlying"]).replace("[PAPER] ", "")
-                                chain = _fetch_chain_for_strike(
+                                chain, snap_map = _fetch_chain_for_strike(
                                     _ul, pos["expiry_date"],
                                     [pos["short_put"], pos["short_call"], pos["long_put"], pos["long_call"]],
                                     ["put", "call"],
                                 )
                                 if not chain.empty:
-                                    greeks = _get_greeks(chain, float(pos["short_put"]), float(pos["short_call"]),
-                                                         float(pos["long_put"]), float(pos["long_call"]))
+                                    # Use snapped strikes for Greeks lookup
+                                    _sp = snap_map.get(float(pos["short_put"]), float(pos["short_put"]))
+                                    _sc = snap_map.get(float(pos["short_call"]), float(pos["short_call"]))
+                                    _lp = snap_map.get(float(pos["long_put"]), float(pos["long_put"]))
+                                    _lc = snap_map.get(float(pos["long_call"]), float(pos["long_call"]))
+                                    greeks = _get_greeks(chain, _sp, _sc, _lp, _lc)
                                     g1, g2, g3, g4 = st.columns(4)
                                     with g1: st.metric("Net Delta", f"{greeks['delta']:+.4f}")
                                     with g2: st.metric("Net Gamma", f"{greeks['gamma']:+.4f}")
                                     with g3: st.metric("Net Theta", f"{greeks['theta']:+.4f}")
                                     with g4: st.metric("Net Vega", f"{greeks['vega']:+.4f}")
                                     st.plotly_chart(_greeks_gauge(greeks), use_container_width=True, key=f"gg_{pos_id}")
+                                    # Show strike snapping info if any strikes were adjusted
+                                    snapped = {k: v for k, v in snap_map.items() if abs(k - v) > 0.01}
+                                    if snapped:
+                                        snap_str = ", ".join(f"${k:.2f}→${v:.0f}" for k, v in snapped.items())
+                                        st.caption(f"ℹ️ Strikes snapped to nearest chain: {snap_str}")
 
                                     # Store position delta for adjustment alerts
                                     try:
@@ -1059,10 +1083,14 @@ def page_strangle():
                         vix_now = 20.0
                     credit_info = _theoretical_spread_price(spot, short_put, short_call, long_put, long_call, dte, vix_now)
             else:
-                chain = _fetch_chain_for_strike(underlying, expiry,
+                chain, snap_map = _fetch_chain_for_strike(underlying, expiry,
                                                 [short_put, short_call, long_put, long_call], ["put", "call"])
                 if not chain.empty:
-                    credit_info = _price_spread(chain, short_put, short_call, long_put, long_call)
+                    _sp = snap_map.get(short_put, short_put)
+                    _sc = snap_map.get(short_call, short_call)
+                    _lp = snap_map.get(long_put, long_put)
+                    _lc = snap_map.get(long_call, long_call)
+                    credit_info = _price_spread(chain, _sp, _sc, _lp, _lc)
                 else:
                     credit_info = _yf_price_spread(underlying, expiry, short_put, short_call, long_put, long_call)
                     if not credit_info:
@@ -1353,13 +1381,16 @@ def page_strangle():
                         # Try Polygon first, fall back to theoretical
                         c2c = None
                         try:
-                            chain = _fetch_chain_for_strike(
+                            chain, snap_map = _fetch_chain_for_strike(
                                 pos["underlying"].replace("[PAPER] ", ""), expiry_str,
                                 [pos["short_put"], pos["short_call"], pos["long_put"], pos["long_call"]],
                                 ["put", "call"])
                             if not chain.empty:
-                                spread = _price_spread(chain, float(pos["short_put"]), float(pos["short_call"]),
-                                                       float(pos["long_put"]), float(pos["long_call"]))
+                                _sp = snap_map.get(float(pos["short_put"]), float(pos["short_put"]))
+                                _sc = snap_map.get(float(pos["short_call"]), float(pos["short_call"]))
+                                _lp = snap_map.get(float(pos["long_put"]), float(pos["long_put"]))
+                                _lc = snap_map.get(float(pos["long_call"]), float(pos["long_call"]))
+                                spread = _price_spread(chain, _sp, _sc, _lp, _lc)
                                 c2c = spread["net_credit"]
                         except Exception:
                             pass
