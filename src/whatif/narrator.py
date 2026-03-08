@@ -15,7 +15,7 @@ class WhatIfNarrator:
         llm_cfg = config.get("llm", {})
         wi_cfg = config.get("whatif", {})
         self.base_url = llm_cfg.get("base_url", "http://localhost:11434")
-        self.model = llm_cfg.get("model", "deepseek-r1:70b")
+        self.model = llm_cfg.get("model", "qwen3:8b")
         self.temperature = wi_cfg.get("narrator_temperature", 0.5)
         self.max_tokens = wi_cfg.get("narrator_max_tokens", 800)
 
@@ -44,12 +44,13 @@ class WhatIfNarrator:
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "options": {
                         "temperature": self.temperature,
                         "num_predict": self.max_tokens,
                     },
                 },
-                timeout=300,
+                timeout=60,
             )
             if resp.status_code == 200:
                 content = resp.json().get("message", {}).get("content", "")

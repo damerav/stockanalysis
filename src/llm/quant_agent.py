@@ -23,8 +23,8 @@ from src.data.db_router import get_router
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE = "http://localhost:11434"
-OLLAMA_MODEL = "deepseek-r1:70b"
-OLLAMA_MODEL_FAST = "deepseek-r1:14b"
+OLLAMA_MODEL = "qwen3:8b"
+OLLAMA_MODEL_FAST = "qwen3:4b"
 
 
 class QuantAgent:
@@ -227,18 +227,19 @@ RULES:
         
         Args:
             messages: Chat messages.
-            model: Override model name. Defaults to self.model (70B).
-                   Use self.model_fast for quick tasks.
+            model: Override model name. Defaults to self.model (qwen3:8b).
+                   Use self.model_fast for quick tasks (qwen3:4b).
         """
         payload = {
             "model": model or self.model,
             "messages": messages,
             "stream": False,
+            "think": False,  # Disable qwen3 thinking mode for speed
             "options": {"temperature": 0.3, "num_predict": 2048},
         }
 
         def _do_call() -> Optional[str]:
-            resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=300)
+            resp = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=60)
             if resp.status_code == 200:
                 return resp.json().get("message", {}).get("content", "")
             logger.warning(f"Ollama returned {resp.status_code}")

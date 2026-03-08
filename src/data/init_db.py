@@ -152,6 +152,32 @@ CREATE TABLE IF NOT EXISTS market_breadth (
     new_lows_52w INTEGER,
     breadth_thrust REAL
 );
+
+-- CFTC Commitment of Traders (institutional futures positioning)
+CREATE TABLE IF NOT EXISTS cot_data (
+    date TEXT PRIMARY KEY,
+    cot_commercial_net REAL,
+    cot_leveraged_net REAL,
+    cot_asset_mgr_net REAL,
+    cot_spec_ratio REAL,
+    cot_commercial_change REAL,
+    cot_leveraged_change REAL
+);
+
+-- ETF fund flows (institutional capital movement proxy)
+CREATE TABLE IF NOT EXISTS etf_flows (
+    date TEXT PRIMARY KEY,
+    flow_spy REAL, flow_qqq REAL, flow_iwm REAL,
+    flow_tlt REAL, flow_hyg REAL, flow_gld REAL,
+    flow_xlk REAL, flow_xlf REAL, flow_xle REAL,
+    flow_eem REAL,
+    equity_bond_flow_ratio REAL,
+    growth_value_flow_ratio REAL,
+    em_dm_flow_ratio REAL,
+    flow_momentum_5d REAL,
+    flow_breadth REAL,
+    safe_haven_flow REAL
+);
 """
 
 
@@ -224,6 +250,34 @@ def init_db(config: dict = None) -> str:
                 """)
                 from datetime import datetime
                 _seed_strategy_rules_pg(router, datetime.now().isoformat())
+                # ETF fund flows table (PostgreSQL)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS etf_flows (
+                        date TEXT PRIMARY KEY,
+                        flow_spy REAL, flow_qqq REAL, flow_iwm REAL,
+                        flow_tlt REAL, flow_hyg REAL, flow_gld REAL,
+                        flow_xlk REAL, flow_xlf REAL, flow_xle REAL,
+                        flow_eem REAL,
+                        equity_bond_flow_ratio REAL,
+                        growth_value_flow_ratio REAL,
+                        em_dm_flow_ratio REAL,
+                        flow_momentum_5d REAL,
+                        flow_breadth REAL,
+                        safe_haven_flow REAL
+                    )
+                """)
+                # Inverted strangle tables (PostgreSQL)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS cot_data (
+                        date TEXT PRIMARY KEY,
+                        cot_commercial_net REAL,
+                        cot_leveraged_net REAL,
+                        cot_asset_mgr_net REAL,
+                        cot_spec_ratio REAL,
+                        cot_commercial_change REAL,
+                        cot_leveraged_change REAL
+                    )
+                """)
                 # Inverted strangle tables (PostgreSQL)
                 router.execute("""
                     CREATE TABLE IF NOT EXISTS inverted_strangle_positions (
@@ -373,6 +427,26 @@ def init_db(config: dict = None) -> str:
             except Exception as e:
                 _pg_conn.rollback()
                 logger.debug(f"knowledge_vectors setup skipped: {e}")
+
+            # v3.0: DeepSeek narrative scores cache
+            try:
+                _pg_conn.cursor().execute("""
+                    CREATE TABLE IF NOT EXISTS deepseek_scores (
+                        date        TEXT PRIMARY KEY,
+                        ds_sentiment    REAL,
+                        ds_confidence   REAL,
+                        ds_bull_factors INTEGER,
+                        ds_bear_factors INTEGER,
+                        ds_theme        TEXT,
+                        ds_impact       REAL,
+                        scored_at       TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                _pg_conn.commit()
+                logger.info("deepseek_scores table ready in PostgreSQL")
+            except Exception as e:
+                _pg_conn.rollback()
+                logger.debug(f"deepseek_scores setup: {e}")
 
         router.close()
     except Exception as e:
@@ -861,6 +935,9 @@ _STRATEGY_RULE_DEFAULTS = [
     ("prediction", "neutral_threshold", "0.004", "float", "0.001", "0.01", "Neutral band width for target labeling"),
     ("prediction", "lookback_days", "1260", "int", "100", "2520", "Training window size in days"),
     ("prediction", "confidence_dampening_factor", "0.85", "float", "0.5", "1.0", "Confidence multiplier for choppy/bear regimes"),
+    ("prediction", "neutral_confidence_threshold", "0.42", "float", "0.33", "0.55", "Min probability to call a direction (below = NEUTRAL)"),
+    ("prediction", "binary_confidence_gate", "0.05", "float", "0.0", "0.30", "Binary model confidence gate: abstain when max(P) < 0.5 + gate (0=disabled)"),
+    ("prediction", "use_binary_model", "true", "bool", None, None, "Use binary UP/DOWN model with confidence gating instead of 3-class"),
 ]
 
 

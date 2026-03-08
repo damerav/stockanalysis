@@ -1,38 +1,40 @@
-"""Secure web search via Bing Search API.
+"""Web search via DuckDuckGo — no API key required.
 
-Only the user's question is sent to Bing. No internal context, code,
-or documentation is ever transmitted.
+Uses the ddgs library which handles browser impersonation
+properly. Only the user's question is sent externally.
+No internal context, code, or documentation is ever transmitted.
 """
 import logging
-import requests
-from src.data.secrets_manager import get_secret
 
 logger = logging.getLogger(__name__)
 
-BING_API_ENDPOINT = "https://api.bing.microsoft.com/v7.0/search"
 
-
-def search_bing(query: str, count: int = 5) -> list[dict]:
-    """Perform a web search using the Bing Search API.
+def search_web(query: str, count: int = 3) -> list[dict]:
+    """Search the web using DuckDuckGo (no API key needed).
 
     Returns a list of dicts with 'name', 'url', and 'snippet'.
-    Returns an empty list if the API key is not configured or the call fails.
     """
-    api_key = get_secret("bing_api_key")
-    if not api_key:
-        return []
-
-    headers = {"Ocp-Apim-Subscription-Key": api_key}
-    params = {"q": query, "count": count, "responseFilter": "Webpages"}
-
     try:
-        resp = requests.get(BING_API_ENDPOINT, headers=headers, params=params, timeout=10)
-        resp.raise_for_status()
-        results = resp.json().get("webPages", {}).get("value", [])
-        return [
-            {"name": r.get("name"), "url": r.get("url"), "snippet": r.get("snippet")}
-            for r in results
-        ]
+        from ddgs import DDGS
+
+        with DDGS() as ddgs:
+            raw = list(ddgs.text(query, max_results=count))
+
+        results = []
+        for r in raw:
+            results.append({
+                "name": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", ""),
+            })
+        if results:
+            logger.info("DuckDuckGo returned %d results for: %s", len(results), query[:60])
+        return results
+
     except Exception as e:
-        logger.warning("Bing Search API call failed: %s", e)
+        logger.warning("DuckDuckGo search failed: %s", e)
         return []
+
+
+# Backward compatibility alias
+search_bing = search_web

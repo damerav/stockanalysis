@@ -186,7 +186,7 @@ def collect_system_health():
             lines.append("system_ollama_online 1")
             lines.append(f"system_ollama_model_count {len(models)}")
             config = _load_config()
-            target = config.get("llm", {}).get("model", "deepseek-r1:70b")
+            target = config.get("llm", {}).get("model", "qwen3:8b")
             has_target = 1 if any(target in m.get("name", "") for m in models) else 0
             lines.append(f"system_ollama_target_loaded {has_target}")
         else:

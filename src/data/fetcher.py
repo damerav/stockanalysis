@@ -14,6 +14,7 @@ class FallbackFetcher:
     """Fallback data sources when Polygon is unavailable."""
 
     def __init__(self, finnhub_key: str = "", fred_key: str = "", config: dict = None):
+        self.config = config or {}
         if config:
             self.finnhub_key = finnhub_key or config.get("finnhub", {}).get("api_key", "")
             self.fred_key = fred_key or config.get("fred", {}).get("api_key", "")
@@ -197,19 +198,47 @@ class FallbackFetcher:
                 logger.warning(f"FRED {name} ({fred_id}) failed: {e}")
                 result[name] = None
 
-        # Gold price via yfinance (FRED series unreliable)
+        # Gold price — Polygon primary, yfinance fallback
+        gold_fetched = False
         try:
-            import yfinance as yf
-            gold_data = yf.download("GC=F", period="5d", progress=False)
-            if not gold_data.empty:
-                if isinstance(gold_data.columns, pd.MultiIndex):
-                    gold_data.columns = gold_data.columns.get_level_values(0)
-                result["gold"] = float(gold_data["Close"].iloc[-1])
-            else:
-                result["gold"] = None
+            import os as _os
+            _poly_key = ""
+            try:
+                from src.data.secrets_manager import get_secret
+                _poly_key = get_secret("polygon_api_key", fallback="")
+            except Exception:
+                pass
+            if not _poly_key:
+                _poly_key = (self.config.get("polygon", {}) or {}).get("api_key", "")
+            if not _poly_key or _poly_key == "FROM_ENCRYPTED_DB":
+                _poly_key = _os.environ.get("POLYGON_API_KEY", "")
+            if _poly_key:
+                from src.data.polygon_fetcher import PolygonFetcher
+                _poly = PolygonFetcher(_poly_key)
+                from datetime import datetime, timedelta
+                _today = datetime.now().strftime("%Y-%m-%d")
+                _ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                _gld = _poly.get_daily_bars("GLD", _ago, _today)
+                if not _gld.empty:
+                    result["gold"] = float(_gld["close"].iloc[-1])
+                    gold_fetched = True
+                    logger.debug("Gold from Polygon (GLD)")
         except Exception as e:
-            logger.warning(f"Gold price fetch failed: {e}")
-            result["gold"] = None
+            logger.debug(f"Polygon gold failed: {e}")
+
+        if not gold_fetched:
+            try:
+                import yfinance as yf
+                gold_data = yf.download("GC=F", period="5d", progress=False)
+                if not gold_data.empty:
+                    if isinstance(gold_data.columns, pd.MultiIndex):
+                        gold_data.columns = gold_data.columns.get_level_values(0)
+                    result["gold"] = float(gold_data["Close"].iloc[-1])
+                else:
+                    result["gold"] = None
+            except Exception as e:
+                logger.warning(f"Gold price fetch failed (both sources): {e}")
+                result["gold"] = None
 
         # Compute VIX change if we have current VIX
         if result.get("vix") is not None:

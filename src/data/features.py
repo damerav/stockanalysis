@@ -1006,6 +1006,55 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         df["sp500_cape"] = 0.0
         df["buffett_indicator"] = 0.0
 
+    # --- ETF Fund Flow features ---
+    etf_flow_cols = [
+        "flow_spy", "flow_qqq", "flow_iwm", "flow_tlt", "flow_hyg",
+        "flow_gld", "flow_xlk", "flow_xlf", "flow_xle", "flow_eem",
+        "equity_bond_flow_ratio", "growth_value_flow_ratio",
+        "em_dm_flow_ratio", "flow_momentum_5d", "flow_breadth",
+        "safe_haven_flow",
+    ]
+    try:
+        col_str = ", ".join(etf_flow_cols)
+        etf_df = router.query(
+            f"SELECT date, {col_str} FROM etf_flows ORDER BY date"
+        )
+        if not etf_df.empty:
+            df = df.merge(etf_df, on="date", how="left")
+            for col in etf_flow_cols:
+                if col in df.columns:
+                    df[col] = df[col].ffill().fillna(0)
+        else:
+            for col in etf_flow_cols:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"ETF flow features failed: {e}")
+        for col in etf_flow_cols:
+            df[col] = 0.0
+
+    # --- CFTC Commitment of Traders features (weekly, forward-filled to daily) ---
+    cot_cols = [
+        "cot_commercial_net", "cot_leveraged_net", "cot_asset_mgr_net",
+        "cot_spec_ratio", "cot_commercial_change", "cot_leveraged_change",
+    ]
+    try:
+        cot_col_str = ", ".join(cot_cols)
+        cot_df = router.query(
+            f"SELECT date, {cot_col_str} FROM cot_data ORDER BY date"
+        )
+        if not cot_df.empty:
+            df = df.merge(cot_df, on="date", how="left")
+            for col in cot_cols:
+                if col in df.columns:
+                    df[col] = df[col].ffill().fillna(0)
+        else:
+            for col in cot_cols:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"COT features failed: {e}")
+        for col in cot_cols:
+            df[col] = 0.0
+
     # Fill NaN for all v2.8+ features
     v28_cols = ["earnings_yield_gap", "defensive_offensive_ratio", "qqq_iwm_ratio",
                 "xlv_xle_ratio", "weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
@@ -1023,10 +1072,55 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         if col in df.columns:
             df[col] = df[col].fillna(0)
 
-    # ===== FINAL NaN KILLER — no NaN should ever reach the model =====
-    # Forward-fill then back-fill any remaining NaN in numeric columns,
-    # then fill any still-remaining NaN with 0.
+    # ===== FINAL NaN KILLER — no NaN or inf should ever reach the model =====
+    # --- v3.0: DeepSeek narrative scoring features ---
+    ds_cols = ["ds_sentiment", "ds_confidence", "ds_bull_factors", "ds_bear_factors",
+               "ds_impact", "ds_sentiment_momentum", "ds_conviction", "ds_bull_bear_ratio"]
+    try:
+        from src.data.deepseek_scorer import compute_deepseek_features
+        ds_df = compute_deepseek_features(config)
+        if not ds_df.empty:
+            ds_df = ds_df.set_index("date")
+            for col in ds_cols:
+                if col in ds_df.columns:
+                    df[col] = df["date"].map(ds_df[col]).fillna(0)
+                else:
+                    df[col] = 0.0
+        else:
+            for col in ds_cols:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"DeepSeek features failed: {e}")
+        for col in ds_cols:
+            df[col] = 0.0
+
+    # --- v3.0: Enhanced options RND features ---
+    rnd_cols = ["rnd_skewness", "rnd_kurtosis", "iv_smile_curvature",
+                "put_skew_25d", "call_skew_25d", "butterfly_spread",
+                "risk_reversal_25d", "vol_of_vol", "gamma_imbalance",
+                "oi_put_wall", "oi_call_wall"]
+    try:
+        from src.data.options_rnd import fetch_and_compute_rnd
+        rnd_data = fetch_and_compute_rnd(config)
+        for col in rnd_cols:
+            df[col] = rnd_data.get(col, 0.0)
+    except Exception as e:
+        logger.debug(f"RND features failed: {e}")
+        for col in rnd_cols:
+            df[col] = 0.0
+
+    # --- v3.0: LLM Alpha features ---
+    try:
+        from src.data.alpha_generator import compute_alpha_features, load_alphas
+        alphas = load_alphas()
+        if alphas:
+            df = compute_alpha_features(df, alphas)
+    except Exception as e:
+        logger.debug(f"Alpha features failed: {e}")
+
+    # Replace inf/-inf with NaN, then forward-fill, back-fill, and fill with 0.
     numeric_cols = df.select_dtypes(include=[np.number]).columns
+    df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
     df[numeric_cols] = df[numeric_cols].ffill().bfill().fillna(0)
 
     return df
@@ -1148,6 +1242,12 @@ def get_feature_columns() -> list[str]:
         "xlv", "xli", "xlu", "xlb", "xlp", "xly", "xlre", "qqq", "iwm", "dia",
         # Sector ETF raw prices (used in rotation ratios, also direct features)
         "xlk", "xlf", "xle",
+        # ETF fund flow features (institutional capital movement)
+        "flow_spy", "flow_qqq", "flow_iwm", "flow_tlt", "flow_hyg",
+        "flow_gld", "flow_xlk", "flow_xlf", "flow_xle", "flow_eem",
+        "equity_bond_flow_ratio", "growth_value_flow_ratio",
+        "em_dm_flow_ratio", "flow_momentum_5d", "flow_breadth",
+        "safe_haven_flow",
         # Raw SMA values (used in derived features, also direct signals)
         "sma_20", "sma_50",
         # Bollinger Band raw values
@@ -1161,6 +1261,17 @@ def get_feature_columns() -> list[str]:
         # Category-specific news volume (worldmonitor feeds)
         "news_cb_volume", "news_commodity_volume", "news_forex_volume",
         "news_bond_volume", "news_econ_volume", "news_deriv_volume",
+        # CFTC Commitment of Traders (institutional futures positioning)
+        "cot_commercial_net", "cot_leveraged_net", "cot_asset_mgr_net",
+        "cot_spec_ratio", "cot_commercial_change", "cot_leveraged_change",
+        # v3.0: DeepSeek narrative scoring (continuous LLM sentiment)
+        "ds_sentiment", "ds_confidence", "ds_bull_factors", "ds_bear_factors",
+        "ds_impact", "ds_sentiment_momentum", "ds_conviction", "ds_bull_bear_ratio",
+        # v3.0: Enhanced options — Risk-Neutral Density features
+        "rnd_skewness", "rnd_kurtosis", "iv_smile_curvature",
+        "put_skew_25d", "call_skew_25d", "butterfly_spread",
+        "risk_reversal_25d", "vol_of_vol", "gamma_imbalance",
+        "oi_put_wall", "oi_call_wall",
     ]
 
 

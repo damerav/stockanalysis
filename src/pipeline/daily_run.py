@@ -154,10 +154,13 @@ class DailyPipeline:
             (9.5, "Earnings Calendar",          self._step95_earnings),
             (9.6, "Fed Communications",         self._step96_fed_comms),
             (9.7, "Market Breadth & Fundamentals", self._step97_market_breadth),
+            (9.8, "ETF Fund Flows",                 self._step98_etf_flows),
+            (9.9, "CFTC COT Data",                  self._step99_cot_data),
             (10,  "Retrain XGBoost",           self._step10_retrain),
             (11,  "Generate Prediction",        self._step11_predict),
             (12,  "Generate LLM Report",       self._step12_report),
             (13,  "Send Alerts",               self._step13_alerts),
+            (14,  "Refresh Knowledge Base",    self._step14_knowledge_base),
         ]
 
         for step_num, name, func in steps:
@@ -762,6 +765,32 @@ class DailyPipeline:
             logger.warning(f"Market breadth fetch failed (non-fatal): {e}")
             return {"error": str(e)}
 
+    def _step98_etf_flows(self) -> dict:
+        """Step 9.8: Fetch ETF fund flow proxies."""
+        try:
+            from src.data.etf_fetcher import fetch_etf_flows, store_etf_flows
+            flow_df = fetch_etf_flows(days=30)
+            if flow_df is not None and not flow_df.empty and self.router:
+                store_etf_flows(self.router, flow_df)
+                return {"rows": len(flow_df)}
+            return {"skipped": True, "reason": "no flow data"}
+        except Exception as e:
+            logger.warning(f"ETF flow fetch failed (non-fatal): {e}")
+            return {"error": str(e)}
+
+    def _step99_cot_data(self) -> dict:
+        """Step 9.9: Fetch CFTC Commitment of Traders data."""
+        try:
+            from src.data.cot_fetcher import fetch_cot_data, store_cot_data
+            cot_df = fetch_cot_data(years=2)
+            if cot_df is not None and not cot_df.empty and self.router:
+                store_cot_data(self.router, cot_df)
+                return {"rows": len(cot_df)}
+            return {"skipped": True, "reason": "no COT data"}
+        except Exception as e:
+            logger.warning(f"COT data fetch failed (non-fatal): {e}")
+            return {"error": str(e)}
+
     def _step10_retrain(self) -> dict:
         """Step 10: Build feature vector + retrain XGBoost (P2: with feature store, regime)."""
         feature_cols = get_feature_columns()
@@ -818,7 +847,9 @@ class DailyPipeline:
             logger.warning(f"Regime detection failed (non-fatal): {e}")
 
         available = [c for c in feature_cols if c in fv.columns]
-        X = fv[available]
+        # Include close column for multi-horizon target generation in train()
+        train_cols = available + (["close"] if "close" in fv.columns and "close" not in available else [])
+        X = fv[train_cols]
         y = get_target(fv, threshold=self.predictor.neutral_threshold)
 
         metrics = self.predictor.train(X, y, use_gpu=True, feature_names=available)
@@ -975,8 +1006,14 @@ class DailyPipeline:
 
         write_spy_state(prediction=prediction, indicators=indicators,
                         flow_alerts=flow_alerts, enhanced_prediction=enhanced)
+        binary_info = ""
+        if prediction.get("binary_model_used"):
+            if prediction.get("binary_abstained"):
+                binary_info = " [BINARY:ABSTAINED]"
+            else:
+                binary_info = f" [BINARY:P(UP)={prediction.get('binary_p_up', 0):.3f}]"
         logger.info(
-            f"Prediction: {prediction['scale_label']} ({prediction['confidence']:.0f}%) | "
+            f"Prediction: {prediction['scale_label']} ({prediction['confidence']:.0f}%){binary_info} | "
             f"Enhanced: {enhanced['enhanced_direction']} (score={enhanced['enhanced_score']:+.1f}, "
             f"flow={enhanced['flow_score']:+.1f}, alerts={enhanced['flow_alert_count']})"
             f"{' [LOW CONVICTION]' if prediction.get('is_low_conviction') else ''}"
@@ -1049,6 +1086,27 @@ class DailyPipeline:
         except Exception as e:
             logger.warning(f"Alert sending failed: {e}")
             return {"sent": False, "error": str(e)}
+
+    def _step14_knowledge_base(self) -> dict:
+        """Step 14: Refresh RAG knowledge base embeddings (for help chatbot)."""
+        try:
+            from src.data.build_knowledge_base import build_knowledge_base
+            build_knowledge_base(truncate=True)
+            return {"status": "ok"}
+        except Exception as e:
+            logger.warning(f"Knowledge base refresh failed (non-fatal): {e}")
+            return {"status": "skipped", "error": str(e)}
+
+    def _step14_knowledge_base(self) -> dict:
+        """Step 14: Refresh RAG knowledge base embeddings (for help chatbot)."""
+        try:
+            from src.data.build_knowledge_base import build_knowledge_base
+            build_knowledge_base(truncate=True)
+            return {"status": "ok"}
+        except Exception as e:
+            logger.warning(f"Knowledge base refresh failed (non-fatal): {e}")
+            return {"status": "skipped", "error": str(e)}
+
 
 
 # ---------------------------------------------------------------------------

@@ -577,7 +577,7 @@ def tab_system_health():
             import yaml
             with open("config.yaml") as f:
                 cfg = yaml.safe_load(f) or {}
-            target = cfg.get("llm", {}).get("model", "deepseek-r1:70b")
+            target = cfg.get("llm", {}).get("model", "qwen3:8b")
             target_loaded = any(target in m.get("name", "") for m in models)
         except Exception:
             pass

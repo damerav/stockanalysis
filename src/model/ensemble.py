@@ -22,8 +22,11 @@ class StackingEnsemble:
         self.xgb_model = None
         self.lgbm_model = None
         self.bilstm_model = None
+        self.transformer_model = None
         self.meta_learner: Optional[LogisticRegression] = None
         self.num_classes = 3
+        self.base_weights = None  # Performance-based base learner weights
+
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             use_gpu: bool = True, embargo: int = 5) -> dict:
@@ -128,15 +131,78 @@ class StackingEnsemble:
             logger.warning(f"BiLSTM base failed: {e}")
             bilstm_meta_probs = np.full((len(X_meta), 3), 1/3)
 
+        # --- Base learner 4: Transformer ---
+        try:
+            from src.model.transformer_model import TransformerClassifier
+            self.transformer_model = TransformerClassifier(
+                input_dim=X.shape[1], seq_len=self.seq_len,
+                d_model=128, nhead=4, num_layers=2, epochs=40,
+            )
+            self.transformer_model.fit(X_base_train, y_base_train)
+            transformer_meta_probs = self.transformer_model.predict_proba(X_meta)
+            if len(transformer_meta_probs) < len(X_meta):
+                pad = np.full((len(X_meta) - len(transformer_meta_probs), 3), 1/3)
+                transformer_meta_probs = np.vstack([pad, transformer_meta_probs])
+            elif len(transformer_meta_probs) > len(X_meta):
+                transformer_meta_probs = transformer_meta_probs[-len(X_meta):]
+            metrics["transformer_meta_acc"] = float(np.mean(
+                np.argmax(transformer_meta_probs, axis=1) == y_meta))
+            logger.info(f"Transformer base: meta_acc={metrics['transformer_meta_acc']:.3f}")
+        except Exception as e:
+            logger.warning(f"Transformer base failed: {e}")
+            transformer_meta_probs = np.full((len(X_meta), 3), 1/3)
+
+        # --- Compute performance-based base learner weights ---
+        base_accs = []
+        for name, probs in [("xgb", xgb_meta_probs), ("lgbm", lgbm_meta_probs),
+                             ("bilstm", bilstm_meta_probs),
+                             ("transformer", transformer_meta_probs)]:
+            preds = np.argmax(probs, axis=1)
+            acc = float(np.mean(preds == y_meta)) if len(y_meta) > 0 else 1/3
+            base_accs.append(max(acc, 0.01))
+        acc_arr = np.array(base_accs)
+        self.base_weights = acc_arr / acc_arr.sum()
+        logger.info(f"Base learner weights: xgb={self.base_weights[0]:.3f}, "
+                     f"lgbm={self.base_weights[1]:.3f}, bilstm={self.base_weights[2]:.3f}, "
+                     f"transformer={self.base_weights[3]:.3f}")
+        metrics["base_weights"] = {
+            "xgb": float(self.base_weights[0]),
+            "lgbm": float(self.base_weights[1]),
+            "bilstm": float(self.base_weights[2]),
+            "transformer": float(self.base_weights[3]),
+        }
+
         # --- Meta-learner: Logistic Regression on stacked probabilities ---
-        meta_features = np.hstack([xgb_meta_probs, lgbm_meta_probs, bilstm_meta_probs])
-        self.meta_learner = LogisticRegression(
-            max_iter=1000, solver="lbfgs",
-        )
-        self.meta_learner.fit(meta_features, y_meta)
+        # Replace NaN with 1/3 (uniform) in all base learner outputs
+        xgb_meta_probs = np.nan_to_num(xgb_meta_probs, nan=1/3)
+        lgbm_meta_probs = np.nan_to_num(lgbm_meta_probs, nan=1/3)
+        bilstm_meta_probs = np.nan_to_num(bilstm_meta_probs, nan=1/3)
+        transformer_meta_probs = np.nan_to_num(transformer_meta_probs, nan=1/3)
+
+        weighted_blend = (self.base_weights[0] * xgb_meta_probs +
+                          self.base_weights[1] * lgbm_meta_probs +
+                          self.base_weights[2] * bilstm_meta_probs +
+                          self.base_weights[3] * transformer_meta_probs)
+        meta_features = np.hstack([xgb_meta_probs, lgbm_meta_probs,
+                                   bilstm_meta_probs, transformer_meta_probs,
+                                   weighted_blend])
+
+        # Try multiple regularization strengths, pick best on meta set
+        best_acc = 0.0
+        best_C = 1.0
+        for C_val in [0.01, 0.1, 1.0, 10.0]:
+            lr = LogisticRegression(max_iter=1000, solver="lbfgs", C=C_val)
+            lr.fit(meta_features, y_meta)
+            acc = float(np.mean(lr.predict(meta_features) == y_meta))
+            if acc > best_acc:
+                best_acc = acc
+                best_C = C_val
+                self.meta_learner = lr
+
         meta_preds = self.meta_learner.predict(meta_features)
         metrics["meta_acc"] = float(np.mean(meta_preds == y_meta))
-        logger.info(f"Meta-learner: acc={metrics['meta_acc']:.3f}")
+        metrics["meta_C"] = best_C
+        logger.info(f"Meta-learner: acc={metrics['meta_acc']:.3f} (C={best_C})")
 
         # --- Evaluate on holdout ---
         holdout_start = meta_end + embargo
@@ -178,7 +244,33 @@ class StackingEnsemble:
         else:
             bilstm_p = np.full((len(X), 3), 1/3)
 
-        meta_features = np.hstack([xgb_p, lgbm_p, bilstm_p])
+        # Transformer base learner
+        transformer_p = np.full((len(X), 3), 1/3)
+        if hasattr(self, 'transformer_model') and self.transformer_model is not None:
+            try:
+                transformer_p = self.transformer_model.predict_proba(X)
+                if len(transformer_p) < len(X):
+                    pad = np.full((len(X) - len(transformer_p), 3), 1/3)
+                    transformer_p = np.vstack([pad, transformer_p])
+                elif len(transformer_p) > len(X):
+                    transformer_p = transformer_p[-len(X):]
+            except Exception:
+                pass
+
+        # Replace NaN with uniform 1/3 in all base learner outputs
+        xgb_p = np.nan_to_num(xgb_p, nan=1/3)
+        lgbm_p = np.nan_to_num(lgbm_p, nan=1/3)
+        bilstm_p = np.nan_to_num(bilstm_p, nan=1/3)
+        transformer_p = np.nan_to_num(transformer_p, nan=1/3)
+
+        # Build meta-features matching training format (raw + weighted blend)
+        w = self.base_weights if self.base_weights is not None else np.array([0.25, 0.25, 0.25, 0.25])
+        if len(w) == 3:
+            # Backward compat: old 3-learner weights
+            w = np.array([w[0], w[1], w[2], 0.0])
+            w /= w.sum() if w.sum() > 0 else 1.0
+        weighted_blend = w[0] * xgb_p + w[1] * lgbm_p + w[2] * bilstm_p + w[3] * transformer_p
+        meta_features = np.hstack([xgb_p, lgbm_p, bilstm_p, transformer_p, weighted_blend])
         return self.meta_learner.predict_proba(meta_features)
 
     def predict(self, X: np.ndarray) -> np.ndarray:

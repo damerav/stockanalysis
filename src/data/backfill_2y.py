@@ -1,11 +1,13 @@
-"""Backfill 2+ years of historical data from yfinance + FRED.
+"""Backfill 2+ years of historical data from Polygon.io / yfinance + FRED.
 
 Loads SPY prices, macro indicators (VIX, yields, DXY, fed funds, gold, crude),
 and recomputes technicals for all dates. This gives the model enough data
 to train properly (~500+ trading days).
 
+Data source priority: Polygon.io (primary) → yfinance (fallback).
+
 Usage:
-    python -m src.data.backfill_2y [--years 3]
+    python -m src.data.backfill_2y [--years 10]
 """
 
 import argparse
@@ -99,23 +101,54 @@ def backfill_historical(years: int = 3, config: dict = None):
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    # ── 1. SPY Prices from yfinance ──
+    # ── 1. SPY Prices — Polygon.io primary, yfinance fallback ──
     logger.info(f"Fetching {years} years of SPY data ({start_date} to {end_date})...")
+    prices = None
+
+    # Try Polygon first
     try:
-        import yfinance as yf
-        data = yf.download("SPY", start=start_date, end=end_date, progress=False)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        df = data.reset_index()
-        df["date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
-        df = df.rename(columns={"Open": "open", "High": "high", "Low": "low",
-                                "Close": "close", "Volume": "volume"})
-        prices = df[["date", "open", "high", "low", "close", "volume"]].copy()
-        logger.info(f"Got {len(prices)} trading days of SPY prices")
+        import os as _os
+        polygon_key = ""
+        try:
+            from src.data.secrets_manager import get_secret
+            polygon_key = get_secret("polygon_api_key", fallback="")
+        except Exception:
+            pass
+        if not polygon_key:
+            polygon_key = (config.get("polygon", {}) or {}).get("api_key", "")
+        if not polygon_key or polygon_key == "FROM_ENCRYPTED_DB":
+            polygon_key = _os.environ.get("POLYGON_API_KEY", "")
+
+        if polygon_key:
+            from src.data.polygon_fetcher import PolygonFetcher
+            polygon = PolygonFetcher(polygon_key)
+            prices = polygon.get_daily_bars("SPY", start_date, end_date)
+            if not prices.empty:
+                logger.info(f"Polygon: got {len(prices)} trading days of SPY prices")
+            else:
+                prices = None
+                logger.warning("Polygon returned empty SPY data, falling back to yfinance")
     except Exception as e:
-        logger.error(f"yfinance failed: {e}")
-        conn.close()
-        return
+        logger.warning(f"Polygon SPY fetch failed ({e}), falling back to yfinance")
+        prices = None
+
+    # yfinance fallback
+    if prices is None:
+        try:
+            import yfinance as yf
+            data = yf.download("SPY", start=start_date, end=end_date, progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            df = data.reset_index()
+            df["date"] = pd.to_datetime(df["Date"]).dt.strftime("%Y-%m-%d")
+            df = df.rename(columns={"Open": "open", "High": "high", "Low": "low",
+                                    "Close": "close", "Volume": "volume"})
+            prices = df[["date", "open", "high", "low", "close", "volume"]].copy()
+            logger.info(f"yfinance: got {len(prices)} trading days of SPY prices")
+        except Exception as e:
+            logger.error(f"Both Polygon and yfinance failed for SPY: {e}")
+            conn.close()
+            return
 
     # Insert prices
     for _, row in prices.iterrows():
@@ -174,20 +207,36 @@ def backfill_historical(years: int = 3, config: dict = None):
         except Exception as e:
             logger.warning(f"  {name} failed: {e}")
 
-    # Gold from yfinance
-    logger.info("Fetching gold prices from yfinance...")
-    try:
-        import yfinance as yf
-        gold = yf.download("GC=F", start=start_date, end=end_date, progress=False)
-        if isinstance(gold.columns, pd.MultiIndex):
-            gold.columns = gold.columns.get_level_values(0)
-        gold = gold.reset_index()
-        gold["date"] = pd.to_datetime(gold["Date"]).dt.strftime("%Y-%m-%d")
-        gold = gold.rename(columns={"Close": "gold"})
-        macro_frames["gold"] = gold.set_index("date")["gold"]
-        logger.info(f"  gold: {len(gold)} observations")
-    except Exception as e:
-        logger.warning(f"  gold failed: {e}")
+    # Gold — Polygon primary, yfinance fallback
+    logger.info("Fetching gold prices...")
+    gold_fetched = False
+    if polygon_key:
+        try:
+            from src.data.polygon_fetcher import PolygonFetcher
+            polygon = PolygonFetcher(polygon_key)
+            # Polygon uses "C:XAUUSD" for gold spot or "GLD" ETF as proxy
+            gold_df = polygon.get_daily_bars("GLD", start_date, end_date)
+            if not gold_df.empty:
+                gold_df = gold_df.rename(columns={"close": "gold"})
+                macro_frames["gold"] = gold_df.set_index("date")["gold"]
+                logger.info(f"  Polygon gold (GLD proxy): {len(gold_df)} observations")
+                gold_fetched = True
+        except Exception as e:
+            logger.debug(f"  Polygon gold failed: {e}")
+
+    if not gold_fetched:
+        try:
+            import yfinance as yf
+            gold = yf.download("GC=F", start=start_date, end=end_date, progress=False)
+            if isinstance(gold.columns, pd.MultiIndex):
+                gold.columns = gold.columns.get_level_values(0)
+            gold = gold.reset_index()
+            gold["date"] = pd.to_datetime(gold["Date"]).dt.strftime("%Y-%m-%d")
+            gold = gold.rename(columns={"Close": "gold"})
+            macro_frames["gold"] = gold.set_index("date")["gold"]
+            logger.info(f"  yfinance gold: {len(gold)} observations")
+        except Exception as e:
+            logger.warning(f"  gold failed (both sources): {e}")
 
     # Merge all macro into one DataFrame aligned to trading dates
     trading_dates = prices["date"].tolist()
@@ -267,8 +316,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Backfill 2+ years of historical data")
-    parser.add_argument("--years", type=int, default=5,
-                        help="Years of history to load (default: 5)")
+    parser.add_argument("--years", type=int, default=10,
+                        help="Years of history to load (default: 10)")
     parser.add_argument("--config", type=str, default="config.yaml")
     args = parser.parse_args()
 

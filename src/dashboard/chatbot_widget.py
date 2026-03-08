@@ -9,8 +9,8 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
-_DEEP_DIVE_LABEL = "Deep Dive (70b)"
-_FAST_LABEL = "Fast (14b)"
+_DEEP_DIVE_LABEL = "Deep Dive (8b)"
+_FAST_LABEL = "Fast (8b)"
 
 
 def _get_bot():
@@ -60,9 +60,11 @@ def render_chatbot_widget(page_key: str, page_title: str):
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
                 if msg.get("sources"):
-                    with st.expander("Sources", expanded=False):
-                        for src in msg["sources"]:
-                            st.caption(f"`{src}`")
+                    web_sources = [s for s in msg["sources"] if s.startswith("http")]
+                    if web_sources:
+                        with st.expander("Sources", expanded=False):
+                            for src in web_sources:
+                                st.markdown(f"[{src}]({src})", unsafe_allow_html=True)
 
         if prompt := st.chat_input(
             f"Ask about {page_title}...", key=f"chat_input_{page_key}"
@@ -85,9 +87,11 @@ def render_chatbot_widget(page_key: str, page_title: str):
                         )
                     st.markdown(result["answer"])
                     if result.get("sources"):
-                        with st.expander("Sources", expanded=False):
-                            for src in result["sources"]:
-                                st.caption(f"`{src}`")
+                        web_sources = [s for s in result["sources"] if s.startswith("http")]
+                        if web_sources:
+                            with st.expander("Sources", expanded=False):
+                                for src in web_sources:
+                                    st.markdown(f"[{src}]({src})", unsafe_allow_html=True)
 
                 st.session_state[msg_key].append({
                     "role": "assistant",

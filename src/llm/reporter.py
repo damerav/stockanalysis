@@ -14,7 +14,7 @@ class DailyReporter:
         config = config or {}
         llm_cfg = config.get("llm", {})
         self.base_url = llm_cfg.get("base_url", "http://localhost:11434")
-        self.model = llm_cfg.get("model", "deepseek-r1:70b")
+        self.model = llm_cfg.get("model", "qwen3:8b")
         self.temperature = 0.4  # slightly more creative than sentiment
 
     def generate_report(self, context: dict, llm_available: bool = True) -> str:
@@ -39,9 +39,10 @@ class DailyReporter:
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "options": {"temperature": self.temperature},
                 },
-                timeout=300,
+                timeout=60,
             )
             if resp.status_code == 200:
                 content = resp.json().get("message", {}).get("content", "")

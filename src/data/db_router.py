@@ -30,6 +30,9 @@ _TABLE_PKS = {
     "strategy_rules": "rule_group, rule_key",
     "market_breadth": "date",
     "backtest_results": "date",
+    "etf_flows": "date",
+    "cot_data": "date",
+    "deepseek_scores": "date",
 }
 
 ANALYTICS_TABLES = {"prices", "technicals", "macro", "intraday_bars", "options_chain"}
@@ -390,12 +393,14 @@ class DbRouter:
             return pd.DataFrame()
         try:
             embed_str = str(embedding)
+            # Use CAST() instead of :: to avoid SQLAlchemy parsing :emb::vector
+            # as two named params (:emb and :vector)
             sql = text("""
                 SELECT source_path,
                        chunk_text,
-                       1 - (embedding <=> :emb::vector) AS similarity
+                       1 - (embedding <=> CAST(:emb AS vector)) AS similarity
                 FROM   knowledge_vectors
-                ORDER  BY embedding <=> :emb::vector
+                ORDER  BY embedding <=> CAST(:emb AS vector)
                 LIMIT  :lim
             """)
             return pd.read_sql_query(
@@ -404,6 +409,7 @@ class DbRouter:
         except Exception as e:
             logger.error(f"vector_search_knowledge failed: {e}")
             return pd.DataFrame()
+
 
     def close(self):
         if self._pg_engine:

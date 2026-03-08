@@ -426,8 +426,8 @@ class SystemLauncher:
         import json
         state = {
             "updated_at": datetime.now().isoformat(),
-            "is_stocks_alive": self.streamer.is_stocks_alive(),
-            "is_options_alive": self.streamer.is_options_alive(),
+            "is_stocks_alive": self.streamer.is_stocks_alive,
+            "is_options_alive": self.streamer.is_options_alive,
         }
         try:
             import tempfile

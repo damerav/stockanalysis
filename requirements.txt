@@ -46,3 +46,5 @@ nltk>=3.8
 sentence-transformers>=2.7.0
 fpdf2>=2.7
 kaleido>=0.2.1
+# DuckDuckGo web search (no API key)
+ddgs>=9.0

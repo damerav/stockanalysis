@@ -108,6 +108,15 @@ def main():
     else:
         logger.info("STEP 4: Skipped (--skip-polygon)")
 
+    # Step 4.5: Backfill ETF fund flows
+    logger.info("=" * 60)
+    logger.info("STEP 4.5: Backfilling ETF fund flows...")
+    try:
+        from src.data.etf_fetcher import backfill_etf_flows
+        backfill_etf_flows(router, years=max(args.days // 252, 5))
+    except Exception as e:
+        logger.error(f"ETF flow backfill failed: {e}")
+
     # Step 5: Retrain model
     if not args.skip_retrain:
         logger.info("=" * 60)
@@ -128,7 +137,7 @@ def main():
     logger.info("=" * 60)
     logger.info("SUMMARY:")
     for table in ["technicals", "options_analytics", "intraday_features",
-                   "intraday_bars", "market_breadth"]:
+                   "intraday_bars", "market_breadth", "etf_flows"]:
         try:
             cnt = router.query(f"SELECT COUNT(*) as cnt FROM {table}")
             logger.info(f"  {table}: {cnt.iloc[0]['cnt']} rows")

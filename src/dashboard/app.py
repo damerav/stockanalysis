@@ -1616,7 +1616,7 @@ def _admin_status_tab():
                 models = resp.json().get("models", [])
                 model_names = [m.get("name", "") for m in models]
                 config = _load_config()
-                target_model = config.get("llm", {}).get("model", "deepseek-r1:70b")
+                target_model = config.get("llm", {}).get("model", "qwen3:8b")
                 if any(target_model in n for n in model_names):
                     st.success(f"Online — {target_model}")
                 else:
@@ -1790,7 +1790,7 @@ def _admin_status_tab():
             if resp.status_code == 200:
                 models = [m.get("name", "") for m in resp.json().get("models", [])]
                 config = _load_config()
-                target = config.get("llm", {}).get("model", "deepseek-r1:70b")
+                target = config.get("llm", {}).get("model", "qwen3:8b")
                 if any(target in n for n in models):
                     st.success(f"Online — {target}")
                 else:

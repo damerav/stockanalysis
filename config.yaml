@@ -109,7 +109,7 @@ confidence_api:
 
 # P2: Stacking Ensemble
 ensemble:
-  enabled: false                 # Set true to enable XGBoost+BiLSTM+LightGBM ensemble
+  enabled: true                  # XGBoost+BiLSTM+LightGBM stacking ensemble
   bilstm_seq_len: 20
   bilstm_hidden: 128
   bilstm_epochs: 30

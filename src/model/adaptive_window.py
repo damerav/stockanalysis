@@ -12,7 +12,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-CANDIDATE_WINDOWS = [252, 504]
+CANDIDATE_WINDOWS = [252, 504, 756, 1260]
 VALIDATION_DAYS = 21  # Validate on most recent 21 trading days
 
 

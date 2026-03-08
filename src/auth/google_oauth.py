@@ -452,11 +452,21 @@ def _cleanup_stale_sessions(max_age_days: int = 7):
 
 
 def _set_cookie(session_id: str):
-    """Set session ID cookie in the browser via JS injection."""
+    """Set session ID cookie in the browser via JS injection.
+
+    Tries multiple approaches to set the cookie on the main page:
+    1. parent.document.cookie (from iframe to parent)
+    2. document.cookie (fallback)
+    """
     import streamlit.components.v1 as components
     js = f"""
     <script>
-    document.cookie = "{_COOKIE_NAME}={session_id}; path=/; max-age={_COOKIE_MAX_AGE}; SameSite=Lax";
+    (function() {{
+        var cookieStr = "{_COOKIE_NAME}={session_id}; path=/; max-age={_COOKIE_MAX_AGE}; SameSite=Lax";
+        try {{ parent.document.cookie = cookieStr; }} catch(e) {{}}
+        try {{ window.top.document.cookie = cookieStr; }} catch(e) {{}}
+        document.cookie = cookieStr;
+    }})();
     </script>
     """
     components.html(js, height=0, width=0)
@@ -467,7 +477,12 @@ def _clear_cookie():
     import streamlit.components.v1 as components
     js = f"""
     <script>
-    document.cookie = "{_COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax";
+    (function() {{
+        var cookieStr = "{_COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax";
+        try {{ parent.document.cookie = cookieStr; }} catch(e) {{}}
+        try {{ window.top.document.cookie = cookieStr; }} catch(e) {{}}
+        document.cookie = cookieStr;
+    }})();
     </script>
     """
     components.html(js, height=0, width=0)
@@ -483,33 +498,31 @@ def _read_cookie() -> Optional[str]:
 
 
 def _persist_session(token: str):
-    """Persist session using server-side file + cookie + query param (triple redundancy)."""
+    """Persist session using server-side file + session_state.
+
+    The browser cookie is set lazily on the first authenticated page render
+    (in is_authenticated) to avoid race conditions with st.rerun().
+    """
     session_id = _generate_session_id()
     _save_server_session(session_id, token)
-    _set_cookie(session_id)
-    # Also store in query params as fallback (survives refresh even if cookie JS fails)
-    st.query_params["sid"] = session_id
     # Keep in session_state for current run
     st.session_state["_session_id"] = session_id
+    # Flag: cookie needs to be set on next page render
+    st.session_state["_cookie_needs_set"] = True
 
 
 def _restore_session_from_cookie():
     """If session_state is empty but a valid session exists, restore it.
 
-    Checks three sources in order:
-      1. st.query_params['sid'] (most reliable — embedded in URL)
-      2. Browser cookie (set via JS)
-      3. session_state._session_id (same tab, no refresh)
+    Checks sources in order:
+      1. Browser cookie via st.context.cookies (most reliable — survives refresh + navigation)
+      2. session_state._session_id (same tab, no refresh)
     """
     if st.session_state.get("auth_user") is not None:
         return
 
-    # Try query param first (survives refresh reliably)
-    session_id = st.query_params.get("sid")
-
-    # Fallback to cookie
-    if not session_id:
-        session_id = _read_cookie()
+    # Try cookie first (survives refresh and page navigation)
+    session_id = _read_cookie()
 
     # Fallback to session_state (shouldn't be needed but just in case)
     if not session_id:
@@ -528,9 +541,6 @@ def _restore_session_from_cookie():
         st.session_state["auth_user"] = user
         st.session_state["auth_token"] = token
         st.session_state["_session_id"] = session_id
-        # Re-set query param in case it was restored from cookie
-        if "sid" not in st.query_params:
-            st.query_params["sid"] = session_id
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +554,16 @@ def is_authenticated() -> bool:
         _cleanup_stale_sessions()
         st.session_state["_sessions_cleaned"] = True
     _restore_session_from_cookie()
-    return st.session_state.get("auth_user") is not None
+    authenticated = st.session_state.get("auth_user") is not None
+    # Lazily set/refresh the browser cookie when authenticated.
+    # This handles two cases:
+    #   1. First page load after login (_cookie_needs_set flag)
+    #   2. Cookie expired or missing but session_state still valid
+    if authenticated:
+        sid = st.session_state.get("_session_id")
+        if sid and (st.session_state.pop("_cookie_needs_set", False) or not _read_cookie()):
+            _set_cookie(sid)
+    return authenticated
 
 
 def get_user() -> Optional[dict]:
@@ -561,12 +580,9 @@ def logout():
     """Clear session state, server-side session file, and cookie."""
     session_id = st.session_state.get("_session_id")
     _delete_server_session(session_id)
-    for key in ["auth_user", "auth_token", "_session_id"]:
+    for key in ["auth_user", "auth_token", "_session_id", "_cookie_needs_set"]:
         st.session_state.pop(key, None)
     _clear_cookie()
-    # Clear the sid query param
-    if "sid" in st.query_params:
-        st.query_params.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -651,10 +667,8 @@ def handle_oauth_callback():
         st.session_state["auth_user"] = session_user
         st.session_state["auth_token"] = create_session_token(session_user)
         _persist_session(st.session_state["auth_token"])
-        # Don't clear all query_params — _persist_session sets 'sid'
-        for k in list(st.query_params.keys()):
-            if k != "sid":
-                del st.query_params[k]
+        # Clear OAuth query params (code, state, etc.)
+        st.query_params.clear()
 
     except Exception as e:
         logger.error("OAuth callback error: %s", e)
@@ -694,10 +708,15 @@ def render_login_page() -> bool:
                         token = create_session_token(user)
                         st.session_state["auth_user"] = user
                         st.session_state["auth_token"] = token
-                        _persist_session(token)
-                        st.rerun()
+                        # Flag for post-form session persistence (can't call st.html inside form)
+                        st.session_state["_auth_pending_persist"] = token
                     else:
                         st.error("Invalid username or password")
+
+            # Handle session persistence OUTSIDE the form context
+            if st.session_state.pop("_auth_pending_persist", None):
+                _persist_session(st.session_state["auth_token"])
+                st.rerun()
 
             if has_google:
                 st.divider()
@@ -718,10 +737,14 @@ def render_login_page() -> bool:
                         token = create_session_token(user)
                         st.session_state["auth_user"] = user
                         st.session_state["auth_token"] = token
-                        _persist_session(token)
-                        st.rerun()
+                        st.session_state["_auth_pending_persist"] = token
                     else:
                         st.error("Invalid username or password")
+
+            # Handle session persistence OUTSIDE the form context
+            if st.session_state.pop("_auth_pending_persist", None):
+                _persist_session(st.session_state["auth_token"])
+                st.rerun()
 
     return is_authenticated()
 

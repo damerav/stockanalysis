@@ -17,7 +17,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "http://localhost:11434"
-DEFAULT_MODEL = "deepseek-r1:70b"
+DEFAULT_MODEL = "qwen3:8b"
 OLLAMA_STARTUP_TIMEOUT = 15  # seconds
 INFERENCE_TIMEOUT = 120  # seconds (first load can take 60s+ for 70B model)
 DOWNLOAD_LOG_INTERVAL = 5  # log every 5% progress
@@ -374,9 +374,10 @@ Articles:{article_text}"""
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "options": {"temperature": self.temperature},
                 },
-                timeout=300,  # 5 min per batch
+                timeout=60,  # qwen3 is fast
             )
             if resp.status_code == 200:
                 content = resp.json().get("message", {}).get("content", "")

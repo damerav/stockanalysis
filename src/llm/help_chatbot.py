@@ -1,22 +1,22 @@
 """Help Chatbot — a page-aware, self-hosted RAG assistant.
 
-Orchestrates the full RAG pipeline:
-1. Expand query with a fast local LLM.
-2. Retrieve context from local pgvector (docs+code) and optionally web search.
-3. Re-rank retrieved chunks with a local cross-encoder.
-4. Synthesize the final answer using a fast or deep local LLM.
+Orchestrates a streamlined RAG pipeline:
+1. Retrieve context from local pgvector knowledge base.
+2. Re-rank retrieved chunks with a local cross-encoder.
+3. Synthesize the final answer using a fast or deep local LLM.
 """
 import logging
+import re
 import requests
 import pandas as pd
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from src.data.db_router import get_router
-from src.llm.web_search import search_bing
+from src.llm.web_search import search_web
 
 logger = logging.getLogger(__name__)
 
-FAST_MODEL = "deepseek-r1:14b"
-DEEP_MODEL = "deepseek-r1:70b"
+FAST_MODEL = "qwen3:8b"
+DEEP_MODEL = "qwen3:8b"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 DEFAULT_BASE_URL = "http://localhost:11434"
@@ -38,69 +38,73 @@ class HelpChatbot:
         self.router = get_router(config)
         self.embedder = SentenceTransformer(EMBEDDING_MODEL)
         self.reranker = CrossEncoder(CROSS_ENCODER_MODEL)
+        # Warm up the fast model so first user query isn't slow
+        self._warmup()
+
+    def _warmup(self):
+        """Send a tiny prompt to Ollama to pre-load the fast model into GPU memory."""
+        try:
+            requests.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": FAST_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": 0.3, "num_predict": 1},
+                },
+                timeout=120,
+            )
+            logger.info("HelpChatbot: warmed up %s", FAST_MODEL)
+        except Exception as e:
+            logger.warning("HelpChatbot warmup failed: %s", e)
 
     def ask(self, question: str, page_context: str, use_deep_model: bool = False) -> dict:
-        """Main entry point for asking a question."""
+        """Main entry point — vector lookup + web search + rerank + synthesize."""
         try:
-            expanded_queries = self._expand_query(question, page_context)
-            queries = [question] + expanded_queries
+            # 1. Always retrieve from both sources in parallel
+            vector_chunks = self._retrieve_from_vectors(question)
+            web_chunks = self._retrieve_from_web(question)
 
-            vector_chunks = self._retrieve_from_vectors(queries)
-            web_chunks = self._retrieve_from_web(queries)
-            all_chunks = pd.concat([vector_chunks, web_chunks]).drop_duplicates(subset=["chunk_text"])
+            parts = [df for df in [vector_chunks, web_chunks] if not df.empty]
+            if not parts:
+                # No retrieval results at all — fall back to pure LLM
+                answer = self._call_llm(
+                    f"Answer this question concisely: {question}", 
+                    model=DEEP_MODEL if use_deep_model else FAST_MODEL
+                )
+                return {"answer": answer, "sources": []}
 
-            if all_chunks.empty:
-                return {"answer": "I could not find any relevant information.", "sources": []}
+            all_chunks = pd.concat(parts, ignore_index=True).drop_duplicates(subset=["chunk_text"])
 
-            reranked_chunks = self._rerank_chunks(question, all_chunks)
-            top_5_chunks = reranked_chunks.head(5)
+            # 2. Re-rank and take top 5
+            reranked = self._rerank_chunks(question, all_chunks)
+            top_chunks = reranked.head(5)
 
-            answer = self._synthesize(question, page_context, top_5_chunks, use_deep_model)
-            sources = top_5_chunks["source_path"].tolist()
+            # 3. Synthesize answer
+            answer = self._synthesize(question, page_context, top_chunks, use_deep_model)
+            sources = top_chunks["source_path"].tolist()
 
             return {"answer": answer, "sources": sources}
         except Exception as e:
             logger.error("HelpChatbot.ask failed: %s", e, exc_info=True)
             return {"answer": f"An error occurred: {e}", "sources": []}
 
-    def _expand_query(self, question: str, page_context: str) -> list[str]:
-        """Use the fast LLM to generate alternative phrasings."""
-        prompt = (
-            "You are a query expansion assistant. Given a user's question and the "
-            "current page they are on, generate 3 alternative ways to phrase the "
-            "question to improve search results. Focus on synonyms and related "
-            "technical terms. Return only a numbered list.\n\n"
-            f'User Question: "{question}"\n'
-            f'Page Context: "{page_context}"\n\n'
-            "Alternative Questions:\n1. "
-        )
-        try:
-            response = self._call_llm(prompt, model=FAST_MODEL)
-            return [
-                line.strip().split(". ", 1)[1]
-                for line in response.strip().split("\n")
-                if ". " in line
-            ][:3]
-        except Exception as e:
-            logger.warning("Query expansion failed: %s", e)
-            return []
-
-    def _retrieve_from_vectors(self, queries: list[str]) -> pd.DataFrame:
+    def _retrieve_from_vectors(self, query: str) -> pd.DataFrame:
         """Retrieve relevant chunks from the local pgvector knowledge base."""
-        all_results = []
-        for q in queries:
-            embedding = self.embedder.encode(q, normalize_embeddings=True).tolist()
+        try:
+            embedding = self.embedder.encode(query, normalize_embeddings=True).tolist()
             df = self.router.vector_search_knowledge(embedding, limit=10)
             if not df.empty:
-                all_results.append(df)
-        return pd.concat(all_results) if all_results else pd.DataFrame(
-            columns=["source_path", "chunk_text", "similarity"]
-        )
+                return df
+        except Exception as e:
+            logger.warning("Vector search failed: %s", e)
+        return pd.DataFrame(columns=["source_path", "chunk_text", "similarity"])
 
-    def _retrieve_from_web(self, queries: list[str]) -> pd.DataFrame:
+    def _retrieve_from_web(self, query: str) -> pd.DataFrame:
         """Retrieve relevant snippets from the web using Bing Search."""
         all_results = []
-        web_results = search_bing(queries[0])
+        web_results = search_web(query)
         for r in web_results:
             name = r.get("name", "")
             snippet = r.get("snippet", "")
@@ -114,11 +118,18 @@ class HelpChatbot:
         return pd.DataFrame(all_results)
 
     def _rerank_chunks(self, question: str, chunks: pd.DataFrame) -> pd.DataFrame:
-        """Use a cross-encoder to re-rank retrieved chunks for relevance."""
+        """Use a cross-encoder to re-rank retrieved chunks for relevance.
+
+        Vector DB (local knowledge base) results get a boost so platform-specific
+        content is preferred over generic web results.
+        """
         pairs = [[question, row["chunk_text"]] for _, row in chunks.iterrows()]
         scores = self.reranker.predict(pairs)
         chunks = chunks.copy()
         chunks["rerank_score"] = scores
+        # Boost local knowledge base results — web URLs start with http
+        is_web = chunks["source_path"].str.startswith("http")
+        chunks.loc[~is_web, "rerank_score"] += 1.5  # strong boost for local docs
         return chunks.sort_values("rerank_score", ascending=False)
 
     def _synthesize(self, question: str, page_context: str,
@@ -127,17 +138,23 @@ class HelpChatbot:
         context_parts = []
         for _, row in chunks.iterrows():
             src = row["source_path"]
-            txt = row["chunk_text"]
-            context_parts.append(f"Source: {src}\nContent: {txt}")
-        context_str = "\n\n---\n\n".join(context_parts)
+            txt = row["chunk_text"][:500]  # Truncate long chunks
+            context_parts.append(f"[{src}]: {txt}")
+        context_str = "\n---\n".join(context_parts)
 
         prompt = (
-            "You are a helpful AI assistant for a stock analysis platform. "
-            "Answer the user's question based *only* on the provided context. "
-            "Be concise and clear. Cite sources by mentioning the file path "
-            "(e.g., `src/data/features.py`).\n\n"
-            f'Page Context: "{page_context}"\n\n'
-            f'User Question: "{question}"\n\n'
+            "You are a concise AI assistant for the SPY/SPX Predictor & ES Futures "
+            "Strategy platform. This platform uses ML models (XGBoost, LightGBM, BiLSTM, "
+            "and Transformer in a stacking ensemble with logistic meta-learner) for daily "
+            "market predictions, with a real-time ES futures trading engine and Streamlit "
+            "dashboard.\n"
+            "Answer the question directly. Use the context below when relevant, "
+            "but you may also use your general knowledge for generic finance/trading "
+            "questions. For platform-specific questions, prefer the context and cite "
+            "file paths. Do NOT explain your reasoning process. Do NOT start with "
+            "'Let me analyze' or similar preambles. Keep answers under 200 words.\n\n"
+            f"Page: {page_context}\n"
+            f"Question: {question}\n\n"
             f"Context:\n{context_str}\n\nAnswer:"
         )
         model = DEEP_MODEL if use_deep_model else FAST_MODEL
@@ -149,12 +166,23 @@ class HelpChatbot:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
-            "options": {"temperature": 0.3},
+            "think": False,
+            "options": {"temperature": 0.3, "num_predict": 300},
         }
         resp = requests.post(
             f"{self.base_url}/api/chat",
             json=payload,
-            timeout=120,
+            timeout=60,
         )
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        content = resp.json()["message"]["content"]
+        # Strip any residual <think> blocks
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        # Strip leaked thinking preambles (qwen3:4b sometimes ignores think=False)
+        # Patterns: "Hmm, the user...", "Looking at the context...", "Let me..."
+        content = re.sub(
+            r"^(?:Hmm,?\s.*?\n\n|Looking at the context.*?\n\n|Let me .*?\n\n|"
+            r"I need to .*?\n\n|The user .*?\n\n|Okay,?\s.*?\n\n)+",
+            "", content, flags=re.DOTALL
+        ).strip()
+        return content
