@@ -437,8 +437,8 @@ def page_performance():
                 except Exception as e:
                     st.error(f"Backtest failed: {e}")
     if not bt_df.empty:
-        # Time range filter — default to last 6 months
-        time_opts = ["Last 6 Months", "Last 3 Months", "Last 1 Month", "All Data"]
+        # Time range filter — default to All Data
+        time_opts = ["All Data", "Last 6 Months", "Last 3 Months", "Last 1 Month"]
         time_sel = st.radio("Time Range", time_opts, index=0, horizontal=True,
                             key="bt_time_range")
         if time_sel == "Last 6 Months":

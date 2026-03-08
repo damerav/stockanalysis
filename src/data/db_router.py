@@ -31,6 +31,7 @@ _TABLE_PKS = {
     "market_breadth": "date",
     "backtest_results": "date",
     "etf_flows": "date",
+    "nav_premium": "date",
     "cot_data": "date",
     "deepseek_scores": "date",
 }

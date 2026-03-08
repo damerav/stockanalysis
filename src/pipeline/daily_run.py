@@ -156,6 +156,7 @@ class DailyPipeline:
             (9.7, "Market Breadth & Fundamentals", self._step97_market_breadth),
             (9.8, "ETF Fund Flows",                 self._step98_etf_flows),
             (9.9, "CFTC COT Data",                  self._step99_cot_data),
+            (9.10, "NAV Premium/Discount",           self._step9a_nav_premium),
             (10,  "Retrain XGBoost",           self._step10_retrain),
             (11,  "Generate Prediction",        self._step11_predict),
             (12,  "Generate LLM Report",       self._step12_report),
@@ -789,6 +790,19 @@ class DailyPipeline:
             return {"skipped": True, "reason": "no COT data"}
         except Exception as e:
             logger.warning(f"COT data fetch failed (non-fatal): {e}")
+            return {"error": str(e)}
+
+    def _step9a_nav_premium(self) -> dict:
+        """Step 9.10: Fetch NAV premium/discount features (SPY vs S&P 500)."""
+        try:
+            from src.data.nav_premium import fetch_nav_premium_data, store_nav_premium
+            nav_df = fetch_nav_premium_data(days=30)
+            if nav_df is not None and not nav_df.empty and self.router:
+                store_nav_premium(self.router, nav_df)
+                return {"rows": len(nav_df)}
+            return {"skipped": True, "reason": "no NAV premium data"}
+        except Exception as e:
+            logger.warning(f"NAV premium fetch failed (non-fatal): {e}")
             return {"error": str(e)}
 
     def _step10_retrain(self) -> dict:

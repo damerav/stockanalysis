@@ -169,6 +169,7 @@ class SPYPredictor:
             self.neutral_confidence_threshold = get_rule("prediction", "neutral_confidence_threshold", 0.42)
             self.binary_confidence_gate = get_rule("prediction", "binary_confidence_gate", 0.05)
             self.use_binary_model = get_rule("prediction", "use_binary_model", True)
+            self.bearish_extra_margin = get_rule("prediction", "bearish_extra_margin", 0.04)
         except Exception:
             self.lookback_days = xgb_cfg.get("lookback_days", 252)
             self.neutral_threshold = xgb_cfg.get("neutral_threshold", 0.004)
@@ -176,6 +177,7 @@ class SPYPredictor:
             self.neutral_confidence_threshold = 0.42
             self.binary_confidence_gate = 0.05
             self.use_binary_model = True
+            self.bearish_extra_margin = 0.04
         self.max_depth = xgb_cfg.get("max_depth", 6)
         self.learning_rate = xgb_cfg.get("learning_rate", 0.05)
         self.n_estimators = xgb_cfg.get("n_estimators", 500)
@@ -506,7 +508,7 @@ class SPYPredictor:
         # pass but can be highly predictive once the model sees them in the refit.
         _PROTECTED_PREFIXES = ("cot_", "flow_", "buffett_", "sp500_cape",
                                "yield_curve_", "sahm_rule", "fear_greed",
-                               "ds_", "rnd_", "alpha_")
+                               "ds_", "rnd_", "alpha_", "nav_")
         protected_indices = set()
         if feature_names:
             for i, fname in enumerate(feature_names):
@@ -1102,41 +1104,6 @@ class SPYPredictor:
             "feature_names": getattr(self, '_binary_feature_names', feature_names),
         }
 
-    def _align_features(self, features: np.ndarray,
-                         feature_names: list[str]) -> tuple:
-        """Align input features to match the model's trained feature set.
-
-        If trained_feature_names exists, reorder/filter/pad the input so the
-        model always receives exactly the columns it expects, in the right order.
-        Missing features are filled with 0.0.
-
-        Returns:
-            (aligned_features, aligned_names) — ready for model inference.
-        """
-        if not self.trained_feature_names or not feature_names:
-            return features, feature_names
-
-        if features.ndim == 1:
-            features = features.reshape(1, -1)
-
-        # Build lookup: input feature name → column index
-        input_map = {name: i for i, name in enumerate(feature_names)}
-
-        # Create aligned array with model's expected shape
-        n_trained = len(self.trained_feature_names)
-        aligned = np.zeros((features.shape[0], n_trained), dtype=np.float64)
-
-        for out_idx, trained_name in enumerate(self.trained_feature_names):
-            if trained_name in input_map:
-                aligned[:, out_idx] = features[:, input_map[trained_name]]
-
-        matched = sum(1 for n in self.trained_feature_names if n in input_map)
-        if matched < n_trained:
-            logger.debug(f"Feature alignment: {matched}/{n_trained} matched, "
-                         f"{n_trained - matched} filled with 0.0")
-
-        return aligned, list(self.trained_feature_names)
-
     def predict(self, features: np.ndarray,
                 feature_names: list[str] = None) -> dict:
         """Generate prediction for a single feature vector.
@@ -1253,6 +1220,33 @@ class SPYPredictor:
                 pred_label = 0
                 confidence = float(probs[1]) * 100
 
+        # --- Bearish bias correction ---
+        # Model over-predicts DOWN days (29 bearish misses vs 15 bullish).
+        # Require a higher probability margin for BEARISH calls.
+        # If the margin between P(DOWN) and P(UP) is thin, flip to NEUTRAL.
+        bearish_extra_margin = getattr(self, 'bearish_extra_margin', 0.04)
+        if not binary_used and pred_label == -1 and bearish_extra_margin > 0:
+            margin = probs[0] - probs[2]  # P(DOWN) - P(UP)
+            if margin < bearish_extra_margin:
+                logger.debug(f"Bearish bias correction: margin={margin:.3f} < {bearish_extra_margin}, "
+                             f"overriding BEARISH to NEUTRAL")
+                pred_class = 1
+                pred_label = 0
+                confidence = float(probs[1]) * 100
+
+        # --- Margin-based confidence scaling ---
+        # When the gap between top-2 probabilities is thin, the model is
+        # uncertain even if the top prob looks decent. Scale confidence
+        # by the margin to reduce high-confidence misses.
+        sorted_probs = np.sort(probs)[::-1]
+        prob_margin = sorted_probs[0] - sorted_probs[1]
+        # margin_factor: 1.0 when margin >= 0.15, scales down linearly to 0.7 at margin=0
+        margin_factor = min(1.0, 0.7 + 2.0 * prob_margin)
+        if margin_factor < 1.0 and pred_label != 0:
+            confidence *= margin_factor
+            logger.debug(f"Margin scaling: margin={prob_margin:.3f}, factor={margin_factor:.2f}, "
+                         f"conf={confidence:.1f}%")
+
         # Map to 5-level scale
         direction = DIRECTION_MAP[pred_label]
         strength = ""
@@ -1266,18 +1260,29 @@ class SPYPredictor:
         # --- Regime-aware confidence dampening ---
         # In choppy or bear regimes, model confidence tends to be overfit.
         # Apply dampening factor to reduce false conviction.
+        # Choppy regimes get stronger dampening (most miss streaks happen here).
         dampened = False
+        regime = ""
+        try:
+            from src.realtime.dashboard_bridge import read_state
+            state = read_state("spy_state.json")
+            regime = state.get("regime", "")
+        except Exception:
+            pass
+
+        dampening_factor = 1.0
         if hasattr(self, 'confidence_dampening_factor') and self.confidence_dampening_factor < 1.0:
-            try:
-                from src.realtime.dashboard_bridge import read_state
-                state = read_state("spy_state.json")
-                regime = state.get("regime", "")
-                if regime in ("high_vol_choppy", "bear_trend"):
-                    confidence *= self.confidence_dampening_factor
-                    dampened = True
-                    logger.debug(f"Confidence dampened by {self.confidence_dampening_factor} for regime={regime}")
-            except Exception:
-                pass  # No state file or regime info — skip dampening
+            if regime == "high_vol_choppy":
+                # Stronger dampening for choppy — this is where miss streaks cluster
+                dampening_factor = self.confidence_dampening_factor * 0.9
+                dampened = True
+            elif regime == "bear_trend":
+                dampening_factor = self.confidence_dampening_factor
+                dampened = True
+
+        if dampened:
+            confidence *= dampening_factor
+            logger.debug(f"Confidence dampened by {dampening_factor:.2f} for regime={regime}")
 
         result = {
             "direction": direction,

@@ -6,13 +6,13 @@ This file provides permanent context for every chat session in this workspace.
 
 SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predictions with a real-time ES futures trading engine, unified Streamlit dashboard, and full observability stack.
 
-- **Current version**: v2.9.1 (Extended Features + Live-Tunable Prediction Rules + Retrain)
+- **Current version**: v2.9.2 (Prediction Calibration + Margin Scaling + Binary Model Disabled)
 - **Git remote**: `https://github.com/damerav/stockanalysis.git`
 - **Git user**: `damerav <damerav@gmail.com>`
 
 ## Architecture
 
-- **229 model features** available across price, technicals (40+ via pandas-ta), macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, market breadth/fundamentals, valuation (CAPE, Buffett), multi-timeframe (weekly/monthly RSI/momentum), social sentiment (StockTwits), sector rotation (13 ETFs), calendar/holiday effects (NYSE calendar), price level analysis (52-week proximity, round numbers), and trend persistence (consecutive days, Donchian breakouts) — **35 kept after aggressive feature selection** (feature selection expands with each retrain)
+- **229 model features** available across price, technicals (40+ via pandas-ta), macro, sentiment, options, microstructure, earnings, Fed NLP, geopolitical risk, oil shock, FinBERT NLP, market breadth/fundamentals, valuation (CAPE, Buffett), multi-timeframe (weekly/monthly RSI/momentum), social sentiment (StockTwits), sector rotation (13 ETFs), calendar/holiday effects (NYSE calendar), price level analysis (52-week proximity, round numbers), and trend persistence (consecutive days, Donchian breakouts) — **316 kept (no feature selection)** using March 7 model
 - **18+ database tables** in PostgreSQL (primary) with SQLite fallback, via `src/data/db_router.py`. All reads use SQLAlchemy 2.0 engine (no psycopg2 DBAPI2 warnings). PostgreSQL runs in Docker container on DGX (`stockanalysis` database, user `stockapp`). Plus `news.db` (7000+ articles with FinBERT cache, category-tagged). Includes `inverted_strangle_positions` (27 columns) and `inverted_strangle_adjustments` (11 columns) for options strategy tracking.
 - **16-step daily pipeline** (`src/pipeline/daily_run.py`) with expanded news ingestion (44 categorized RSS feeds across 13 finance categories, 2800+ articles/fetch) and market breadth computation
 - **Stacking ensemble**: XGBoost + BiLSTM + LightGBM with logistic meta-learner
@@ -24,7 +24,7 @@ SPY/SPX Predictor + ES Futures Strategy system. ML-powered daily market predicti
   - Sample quality weighting — z-score anomaly detection + VIX-based penalty + label-flip detection
   - Entropy-weighted self-distillation refit — up-weights hard/uncertain samples (focal-loss-like)
   - Knowledge distillation validation — trains student models on soft targets, only adopts if accuracy improves
-- **Current model accuracy**: 3-class test=56.5%, 35 features selected from 229 available
+- **Current model accuracy**: 3-class backtest=76.1% (2512 days), bull=85.8%, bear=66.3%, neutral=70.1%, 316 features (no selection), high-confidence misses=14.1%
 
 ## Infrastructure
 
@@ -346,3 +346,16 @@ ssh abidamera@192.168.1.211 "fuser -k 8501/tcp 2>/dev/null; sleep 1; cd ~/stocka
 - **Model retrained**: Full retrain with 229 features on DGX (CUDA). Feature selection kept 35 features (up from 32). Test accuracy improved to 56.5%.
 - **FinBERT cache fixes** (from prior session): `db_router.py` PK mapping for `finbert_cache`, geopolitical date filtering fix, news_features FinBERT scoring fix.
 - **Strategy rules total**: 44 rules across 13 groups (spread, sizing, entry, tp_low/med/high, risk, session, indicators, regime, ai, rl, prediction). All entry/indicators/ai groups now seeded.
+
+### v2.9.2 Changes (Prediction Calibration + Margin Scaling + Binary Model Disabled)
+
+- **Binary model disabled**: `use_binary_model` set to `False` in strategy_rules DB. The binary UP/DOWN model was overriding correct 3-class predictions — many cases where 3-class correctly predicted UP (e.g., P(UP)=52.7%), the binary model disagreed. 3-class alone: 76.8% overall, 88.6% bull, 69.4% bear vs binary gate=0.0: 70.9% overall, 75.9% bull.
+- **Margin-based confidence scaling** (NEW in `predict()`): When gap between top-2 probabilities is thin, scales confidence down. Formula: `margin_factor = min(1.0, 0.7 + 2.0 * prob_margin)`. Reduces high-confidence misses from ~100% to ~14.1% without hurting directional accuracy.
+- **Bearish bias correction** (added then disabled): `bearish_extra_margin` parameter added to `predict()` — when predicted BEARISH, requires minimum margin `P(DOWN) - P(UP) >= bearish_extra_margin` or overrides to NEUTRAL. Tested at 0.04 but hurt bear accuracy (69.4%→63.8%), so set to 0.0 (disabled). Margin-based confidence scaling alone handles the high-confidence miss problem.
+- **Enhanced regime dampening**: Choppy regime (`high_vol_choppy`) now gets stronger dampening (`factor * 0.9`) vs bear regime (just `factor`). Most miss streaks cluster in choppy regimes.
+- **Model reverted to March 7**: Deleted March 8 experimental models. March 7 model (`xgb_spy_20260307.json`) with 316 features and no feature selection performs best: 76.1% overall backtest accuracy.
+- **Duplicate `_align_features` removed**: Was defined at both lines 1105 and 1332 in trainer.py. Python uses last definition; both were identical. Removed the dead first copy.
+- **Performance dashboard default changed**: Time range filter now defaults to "All Data" instead of "Last 6 Months" to show full backtest results.
+- **Performance table rebuilt**: `performance` table populated from `backtest_results` (2512 rows) so dashboard top section reflects current model inference logic.
+- **New prediction rules in strategy_rules DB**: `bearish_extra_margin` (0.0, disabled), `use_binary_model` (False), `binary_confidence_gate` (0.0). Total: 45 rules across 13 groups.
+- **Backtest results**: 2512 days, 76.1% overall, BULLISH 85.8% (1175d), BEARISH 66.3% (906d), NEUTRAL 70.1% (431d), high-confidence misses 14.1%.

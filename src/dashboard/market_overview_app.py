@@ -313,3 +313,96 @@ def page_market_overview():
         )
         st.plotly_chart(fig_shap, use_container_width=True, key="overview_shap")
         st.caption("For full prediction details, SHAP analysis, and historical charts, visit the **SPY Predictor** page.")
+
+    # ══════════════════════════════════════════════════════════════════
+    # SECTION 5: CANDLESTICK PATTERN SIGNALS
+    # ══════════════════════════════════════════════════════════════════
+    try:
+        cfg = _load_cfg()
+        router = get_router(cfg)
+        # Get last 20 days of OHLCV for pattern detection
+        ohlcv = router.query(
+            "SELECT date, open, high, low, close, volume FROM prices "
+            "ORDER BY date DESC LIMIT 20"
+        )
+        if not ohlcv.empty:
+            ohlcv = ohlcv.sort_values("date").reset_index(drop=True)
+            from src.data.candlestick_patterns import detect_patterns
+            patterns = detect_patterns(ohlcv)
+            latest = patterns.iloc[-1]
+
+            # Collect active patterns
+            single_bullish = []
+            single_bearish = []
+            single_neutral = []
+            double_bullish = []
+            double_bearish = []
+
+            pattern_labels = {
+                "cdl_hammer": ("🔨 Hammer", "bullish"),
+                "cdl_inverted_hammer": ("🔨 Inverted Hammer", "bullish"),
+                "cdl_dragonfly_doji": ("🐉 Dragonfly Doji", "bullish"),
+                "cdl_hanging_man": ("🪢 Hanging Man", "bearish"),
+                "cdl_shooting_star": ("💫 Shooting Star", "bearish"),
+                "cdl_gravestone_doji": ("🪦 Gravestone Doji", "bearish"),
+                "cdl_doji": ("✚ Doji", "neutral"),
+                "cdl_marubozu": ("📊 Marubozu", "neutral"),
+                "cdl_spinning_top": ("🔄 Spinning Top", "neutral"),
+                "cdl_high_wave": ("🌊 High Wave", "neutral"),
+                "cdl_bullish_engulfing": ("🟢 Bullish Engulfing", "bullish"),
+                "cdl_bearish_engulfing": ("🔴 Bearish Engulfing", "bearish"),
+                "cdl_bullish_harami": ("🟢 Bullish Harami", "bullish"),
+                "cdl_bearish_harami": ("🔴 Bearish Harami", "bearish"),
+                "cdl_tweezer_bottom": ("🟢 Tweezer Bottom", "bullish"),
+                "cdl_tweezer_top": ("🔴 Tweezer Top", "bearish"),
+                "cdl_piercing_line": ("🟢 Piercing Line", "bullish"),
+                "cdl_dark_cloud": ("🔴 Dark Cloud Cover", "bearish"),
+            }
+
+            active = []
+            for col, (label, bias) in pattern_labels.items():
+                if latest.get(col, 0) > 0:
+                    active.append((label, bias))
+
+            net = int(latest.get("cdl_net_signal", 0))
+            bull_score = int(latest.get("cdl_bullish_score", 0))
+            bear_score = int(latest.get("cdl_bearish_score", 0))
+            indecision = int(latest.get("cdl_indecision", 0))
+
+            st.markdown(
+                f'<p style="color:{c["text_secondary"]};font-weight:600;font-size:0.85rem;'
+                f'margin-top:16px;margin-bottom:4px;">CANDLESTICK PATTERNS (Today)</p>',
+                unsafe_allow_html=True,
+            )
+
+            cp1, cp2, cp3, cp4 = st.columns(4)
+            with cp1:
+                net_color = c["green"] if net > 0 else c["red"] if net < 0 else c["yellow"]
+                net_label = "Bullish" if net > 0 else "Bearish" if net < 0 else "Neutral"
+                st.markdown(metric_card("Net Signal", f"{net_label} ({net:+d})", net_color.replace("#", "")),
+                            unsafe_allow_html=True)
+            with cp2:
+                st.markdown(metric_card("Bullish Patterns", str(bull_score), "green"),
+                            unsafe_allow_html=True)
+            with cp3:
+                st.markdown(metric_card("Bearish Patterns", str(bear_score), "red"),
+                            unsafe_allow_html=True)
+            with cp4:
+                st.markdown(metric_card("Indecision", str(indecision), "yellow"),
+                            unsafe_allow_html=True)
+
+            if active:
+                pills = []
+                for label, bias in active:
+                    bg = c["green"] if bias == "bullish" else c["red"] if bias == "bearish" else c["yellow"]
+                    txt = "#fff" if bias != "neutral" else "#000"
+                    pills.append(
+                        f'<span style="display:inline-block;background:{bg};color:{txt};'
+                        f'padding:4px 12px;border-radius:12px;font-size:0.8rem;'
+                        f'font-weight:600;margin:2px 4px;">{label}</span>'
+                    )
+                st.markdown(" ".join(pills), unsafe_allow_html=True)
+            else:
+                st.caption("No significant candlestick patterns detected today.")
+    except Exception as e:
+        logger.debug(f"Candlestick panel failed: {e}")

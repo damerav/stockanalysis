@@ -526,6 +526,27 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
     df["breakout_20d"] = (df["high"] > don_high_20).astype(int)
     df["breakdown_20d"] = (df["low"] < don_low_20).astype(int)
 
+    # --- Candlestick pattern features ---
+    try:
+        from src.data.candlestick_patterns import detect_patterns
+        cdl_df = detect_patterns(df)
+        for col in cdl_df.columns:
+            df[col] = cdl_df[col].values
+    except Exception as e:
+        logger.debug(f"Candlestick pattern detection failed: {e}")
+        cdl_cols = [
+            "cdl_hammer", "cdl_inverted_hammer", "cdl_hanging_man",
+            "cdl_shooting_star", "cdl_doji", "cdl_dragonfly_doji",
+            "cdl_gravestone_doji", "cdl_marubozu", "cdl_spinning_top",
+            "cdl_high_wave", "cdl_bullish_engulfing", "cdl_bearish_engulfing",
+            "cdl_bullish_harami", "cdl_bearish_harami", "cdl_tweezer_bottom",
+            "cdl_tweezer_top", "cdl_piercing_line", "cdl_dark_cloud",
+            "cdl_bullish_score", "cdl_bearish_score", "cdl_net_signal",
+            "cdl_indecision",
+        ]
+        for col in cdl_cols:
+            df[col] = 0
+
     # Max pain distance (if available)
     df["max_pain_distance"] = (df["close"] - df["max_pain"]) / df["close"]
     df["gex_normalized"] = df["gex"] / df["close"]
@@ -1055,6 +1076,32 @@ def build_feature_vector(conn, date: str = None, config: dict = None) -> Optiona
         for col in cot_cols:
             df[col] = 0.0
 
+    # --- NAV Premium/Discount features (SPY vs S&P 500 index) ---
+    nav_cols = [
+        "nav_premium_pct", "nav_premium_zscore", "nav_premium_ma5",
+        "nav_premium_momentum", "nav_premium_mean_rev", "nav_premium_extreme",
+        "spy_es_basis_pct", "spy_es_basis_zscore",
+        "nav_premium_vol", "nav_premium_skew",
+        "nav_premium_regime", "nav_creation_pressure",
+    ]
+    try:
+        nav_col_str = ", ".join(nav_cols)
+        nav_df = router.query(
+            f"SELECT date, {nav_col_str} FROM nav_premium ORDER BY date"
+        )
+        if not nav_df.empty:
+            df = df.merge(nav_df, on="date", how="left")
+            for col in nav_cols:
+                if col in df.columns:
+                    df[col] = df[col].ffill().fillna(0)
+        else:
+            for col in nav_cols:
+                df[col] = 0.0
+    except Exception as e:
+        logger.debug(f"NAV premium features failed: {e}")
+        for col in nav_cols:
+            df[col] = 0.0
+
     # Fill NaN for all v2.8+ features
     v28_cols = ["earnings_yield_gap", "defensive_offensive_ratio", "qqq_iwm_ratio",
                 "xlv_xle_ratio", "weekly_rsi", "weekly_momentum_5w", "weekly_macd_hist",
@@ -1272,6 +1319,15 @@ def get_feature_columns() -> list[str]:
         "put_skew_25d", "call_skew_25d", "butterfly_spread",
         "risk_reversal_25d", "vol_of_vol", "gamma_imbalance",
         "oi_put_wall", "oi_call_wall",
+        # v3.1: Candlestick composite scores (individual patterns too sparse for ML)
+        "cdl_bullish_score", "cdl_bearish_score",
+        "cdl_net_signal", "cdl_indecision",
+        # v3.2: NAV premium/discount (SPY vs S&P 500 index)
+        "nav_premium_pct", "nav_premium_zscore", "nav_premium_ma5",
+        "nav_premium_momentum", "nav_premium_mean_rev", "nav_premium_extreme",
+        "spy_es_basis_pct", "spy_es_basis_zscore",
+        "nav_premium_vol", "nav_premium_skew",
+        "nav_premium_regime", "nav_creation_pressure",
     ]
 
 

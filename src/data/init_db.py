@@ -178,6 +178,23 @@ CREATE TABLE IF NOT EXISTS etf_flows (
     flow_breadth REAL,
     safe_haven_flow REAL
 );
+
+-- NAV premium/discount features (SPY vs S&P 500 index)
+CREATE TABLE IF NOT EXISTS nav_premium (
+    date TEXT PRIMARY KEY,
+    nav_premium_pct REAL,
+    nav_premium_zscore REAL,
+    nav_premium_ma5 REAL,
+    nav_premium_momentum REAL,
+    nav_premium_mean_rev REAL,
+    nav_premium_extreme REAL,
+    spy_es_basis_pct REAL,
+    spy_es_basis_zscore REAL,
+    nav_premium_vol REAL,
+    nav_premium_skew REAL,
+    nav_premium_regime REAL,
+    nav_creation_pressure REAL
+);
 """
 
 
@@ -266,7 +283,25 @@ def init_db(config: dict = None) -> str:
                         safe_haven_flow REAL
                     )
                 """)
-                # Inverted strangle tables (PostgreSQL)
+                # NAV premium/discount table (PostgreSQL)
+                router.execute("""
+                    CREATE TABLE IF NOT EXISTS nav_premium (
+                        date TEXT PRIMARY KEY,
+                        nav_premium_pct REAL,
+                        nav_premium_zscore REAL,
+                        nav_premium_ma5 REAL,
+                        nav_premium_momentum REAL,
+                        nav_premium_mean_rev REAL,
+                        nav_premium_extreme REAL,
+                        spy_es_basis_pct REAL,
+                        spy_es_basis_zscore REAL,
+                        nav_premium_vol REAL,
+                        nav_premium_skew REAL,
+                        nav_premium_regime REAL,
+                        nav_creation_pressure REAL
+                    )
+                """)
+                # COT data table (PostgreSQL)
                 router.execute("""
                     CREATE TABLE IF NOT EXISTS cot_data (
                         date TEXT PRIMARY KEY,
