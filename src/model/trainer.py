@@ -170,6 +170,7 @@ class SPYPredictor:
             self.binary_confidence_gate = get_rule("prediction", "binary_confidence_gate", 0.05)
             self.use_binary_model = get_rule("prediction", "use_binary_model", True)
             self.bearish_extra_margin = get_rule("prediction", "bearish_extra_margin", 0.04)
+            self.bullish_extra_margin = get_rule("prediction", "bullish_extra_margin", 0.0)
         except Exception:
             self.lookback_days = xgb_cfg.get("lookback_days", 252)
             self.neutral_threshold = xgb_cfg.get("neutral_threshold", 0.004)
@@ -178,6 +179,7 @@ class SPYPredictor:
             self.binary_confidence_gate = 0.05
             self.use_binary_model = True
             self.bearish_extra_margin = 0.04
+            self.bullish_extra_margin = 0.0
         self.max_depth = xgb_cfg.get("max_depth", 6)
         self.learning_rate = xgb_cfg.get("learning_rate", 0.05)
         self.n_estimators = xgb_cfg.get("n_estimators", 500)
@@ -1221,15 +1223,28 @@ class SPYPredictor:
                 confidence = float(probs[1]) * 100
 
         # --- Bearish bias correction ---
-        # Model over-predicts DOWN days (29 bearish misses vs 15 bullish).
         # Require a higher probability margin for BEARISH calls.
         # If the margin between P(DOWN) and P(UP) is thin, flip to NEUTRAL.
-        bearish_extra_margin = getattr(self, 'bearish_extra_margin', 0.04)
+        bearish_extra_margin = getattr(self, 'bearish_extra_margin', 0.0)
         if not binary_used and pred_label == -1 and bearish_extra_margin > 0:
             margin = probs[0] - probs[2]  # P(DOWN) - P(UP)
             if margin < bearish_extra_margin:
                 logger.debug(f"Bearish bias correction: margin={margin:.3f} < {bearish_extra_margin}, "
                              f"overriding BEARISH to NEUTRAL")
+                pred_class = 1
+                pred_label = 0
+                confidence = float(probs[1]) * 100
+
+        # --- Bullish bias correction ---
+        # Model over-predicts BULLISH (57.6% predicted vs 46.8% actual).
+        # When enabled, require minimum P(UP)-P(DOWN) margin for BULLISH calls.
+        # Set to 0.0 (disabled) by default — enable via Strategy Rules dashboard.
+        bullish_extra_margin = getattr(self, 'bullish_extra_margin', 0.0)
+        if not binary_used and pred_label == 1 and bullish_extra_margin > 0:
+            margin = probs[2] - probs[0]  # P(UP) - P(DOWN)
+            if margin < bullish_extra_margin:
+                logger.debug(f"Bullish bias correction: margin={margin:.3f} < {bullish_extra_margin}, "
+                             f"overriding BULLISH to NEUTRAL")
                 pred_class = 1
                 pred_label = 0
                 confidence = float(probs[1]) * 100
@@ -1275,6 +1290,10 @@ class SPYPredictor:
             if regime == "high_vol_choppy":
                 # Stronger dampening for choppy — this is where miss streaks cluster
                 dampening_factor = self.confidence_dampening_factor * 0.9
+                dampened = True
+            elif regime == "low_vol_range":
+                # Moderate dampening — bullish bias is most pronounced here
+                dampening_factor = self.confidence_dampening_factor * 0.95
                 dampened = True
             elif regime == "bear_trend":
                 dampening_factor = self.confidence_dampening_factor
