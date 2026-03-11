@@ -483,6 +483,31 @@ def init_db(config: dict = None) -> str:
                 _pg_conn.rollback()
                 logger.debug(f"deepseek_scores setup: {e}")
 
+            # v3.1: LLM comparison results (QwQ vs Claude)
+            try:
+                _pg_conn.cursor().execute("""
+                    CREATE TABLE IF NOT EXISTS llm_comparison_results (
+                        id              SERIAL PRIMARY KEY,
+                        date            TEXT NOT NULL,
+                        prompt_hash     TEXT,
+                        qwq_direction   TEXT,
+                        qwq_confidence  INTEGER,
+                        qwq_reasoning   TEXT,
+                        qwq_latency     REAL,
+                        claude_direction TEXT,
+                        claude_confidence INTEGER,
+                        claude_reasoning TEXT,
+                        claude_latency  REAL,
+                        actual_direction TEXT,
+                        created_at      TEXT NOT NULL
+                    )
+                """)
+                _pg_conn.commit()
+                logger.info("llm_comparison_results table ready in PostgreSQL")
+            except Exception as e:
+                _pg_conn.rollback()
+                logger.debug(f"llm_comparison_results setup: {e}")
+
         router.close()
     except Exception as e:
         logger.debug(f"PostgreSQL not available (non-fatal): {e}")

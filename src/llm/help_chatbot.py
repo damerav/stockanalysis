@@ -16,7 +16,7 @@ from src.llm.web_search import search_web
 logger = logging.getLogger(__name__)
 
 FAST_MODEL = "qwen3:8b"
-DEEP_MODEL = "qwen3:8b"
+DEEP_MODEL = "qwq:32b"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 DEFAULT_BASE_URL = "http://localhost:11434"

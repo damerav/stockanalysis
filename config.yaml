@@ -15,7 +15,7 @@ analysis:
   flow_block_threshold: 100000
 
 llm:
-  model: "deepseek-r1:70b"
+  model: "qwq:32b"
   base_url: "http://localhost:11434"
   temperature: 0.3
 
