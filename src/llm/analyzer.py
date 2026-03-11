@@ -45,13 +45,6 @@ class LLMAnalyzer:
             self._router = get_router(config)
         except Exception:
             pass  # Router unavailable — will fall back to uncached scoring
-        # Cache-aware FinBERT: initialize router for cache reads/writes
-        self._router = None
-        try:
-            from src.data.db_router import get_router
-            self._router = get_router(config)
-        except Exception:
-            pass  # Router unavailable — will fall back to uncached scoring
 
     # --- P1: FinBERT fast-path ---
 
@@ -333,14 +326,28 @@ class LLMAnalyzer:
         if not self.llm_available:
             return fast_results
 
-        # --- Deep path: DeepSeek on top 5 by absolute FinBERT score ---
+        # --- Deep path: Claude (fast, high quality) → Ollama fallback ---
         abs_scores = [abs(r["score"]) for r in fast_results]
         top_indices = sorted(range(len(abs_scores)),
                              key=lambda i: abs_scores[i], reverse=True)[:5]
         top_articles = [articles[i] for i in top_indices]
 
-        logger.info(f"DeepSeek deep-path: analysing top {len(top_articles)} articles...")
-        deep_results = self._analyze_batch(top_articles)
+        # Try Claude first (6s, frontier quality), fall back to local Ollama
+        deep_results = None
+        try:
+            from src.llm.claude_client import claude_analyze_articles
+            deep_results = claude_analyze_articles(top_articles)
+            # Verify we got real results (not all zeros from error fallback)
+            if deep_results and any(r.get("confidence", 0) > 0 for r in deep_results):
+                logger.info(f"Claude deep-path: scored top {len(top_articles)} articles")
+            else:
+                deep_results = None  # Fall through to Ollama
+        except Exception as e:
+            logger.debug(f"Claude deep-path unavailable: {e}")
+
+        if deep_results is None:
+            logger.info(f"Ollama deep-path: analysing top {len(top_articles)} articles...")
+            deep_results = self._analyze_batch(top_articles)
 
         # Merge: replace fast scores with deep scores for top articles
         results = list(fast_results)

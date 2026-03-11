@@ -45,7 +45,6 @@ from src.dashboard.data_management_app import page_data_management
 from src.dashboard.system_management_app import page_system_management
 from src.dashboard.reports_app import page_reports
 from src.dashboard.chatbot_widget import render_chatbot_widget
-from src.dashboard.llm_comparison_app import page_llm_comparison
 from src.data.db_router import get_router, ANALYTICS_TABLES
 from src.data.fetcher import FallbackFetcher
 from src.dashboard.theme import (
@@ -3597,7 +3596,6 @@ if _IS_MAIN_SCRIPT:
             st.Page(page_scenario_analysis, title="Scenario Analysis", icon=":material/science:"),
             st.Page(page_tuning, title="Model Tuning", icon=":material/tune:"),
             st.Page(page_reports, title="Reports", icon=":material/download:"),
-            st.Page(page_llm_comparison, title="LLM Comparison", icon=":material/compare_arrows:"),
         ],
         "Administration": [
             st.Page(page_rules, title="Strategy Rules", icon=":material/rule:"),

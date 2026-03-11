@@ -225,3 +225,80 @@ def build_market_prompt(state: dict, macro: dict = None) -> str:
 
     parts.append("\nProvide your independent market assessment as JSON.")
     return "\n".join(parts)
+
+
+def claude_analyze_articles(articles: list[dict], temperature: float = 0.2) -> list[dict]:
+    """Analyze a batch of articles with Claude for structured sentiment.
+
+    Drop-in replacement for LLMAnalyzer._analyze_batch() deep-path.
+    Returns list of dicts with score, confidence, topics, category keys.
+    """
+    api_key = _get_api_key()
+    if not api_key:
+        return [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
+
+    try:
+        import anthropic
+    except ImportError:
+        return [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
+
+    article_text = ""
+    for idx, a in enumerate(articles):
+        article_text += f"\n[{idx+1}] {a.get('headline', '')}\n{a.get('summary', '')[:300]}\n"
+
+    prompt = (
+        "Analyze the market sentiment of these financial news articles.\n"
+        "For each article, provide a JSON object with:\n"
+        '- "score": float from -1.0 (very bearish) to 1.0 (very bullish)\n'
+        '- "confidence": integer 0-100\n'
+        '- "topics": list of key topics\n'
+        '- "category": one of "macro", "earnings", "geopolitical", "technical", "other"\n\n'
+        "Return ONLY a JSON array of objects, one per article. No other text.\n\n"
+        f"Articles:{article_text}"
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            temperature=temperature,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        return _parse_article_sentiments(raw, len(articles))
+    except Exception as e:
+        logger.error("Claude article analysis failed: %s", e)
+        return [{"score": 0.0, "confidence": 0, "topics": []} for _ in articles]
+
+
+def _parse_article_sentiments(raw: str, expected: int) -> list[dict]:
+    """Parse Claude's JSON array response for article sentiments."""
+    try:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start >= 0 and end > start:
+            data = json.loads(text[start:end])
+            if isinstance(data, list):
+                results = []
+                for item in data:
+                    results.append({
+                        "score": max(-1.0, min(1.0, float(item.get("score", 0)))),
+                        "confidence": max(0, min(100, int(item.get("confidence", 0)))),
+                        "topics": item.get("topics", []),
+                        "category": item.get("category", "other"),
+                    })
+                while len(results) < expected:
+                    results.append({"score": 0.0, "confidence": 0, "topics": []})
+                return results[:expected]
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning("Failed to parse Claude article sentiments: %s", e)
+
+    return [{"score": 0.0, "confidence": 0, "topics": []} for _ in range(expected)]

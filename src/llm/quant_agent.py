@@ -39,6 +39,14 @@ class QuantAgent:
         self.data_dir = "./data"
         self.history: list[dict] = []
 
+        # Claude for deep interpretation (faster + better than local LLM)
+        self._claude_available = False
+        try:
+            from src.llm.claude_client import _get_api_key
+            self._claude_available = bool(_get_api_key())
+        except Exception:
+            pass
+
         # Cached system prompt (static, built once)
         self._system_prompt = self._build_system_prompt()
 
@@ -157,17 +165,23 @@ RULES:
         messages.extend(self.history[-20:])
 
         # LLM call loop (max 3 tool calls per turn)
-        # Use fast model for tool routing, big model for final interpretation
+        # Use fast model for tool routing, Claude or big model for final interpretation
         chart_data = None
         tool_was_called = False
         for iteration in range(4):
             # First iterations: fast model for tool selection
-            # After tool results come back: big model for final analysis
-            use_model = self.model if tool_was_called else self.model_fast
-            response_text = self._call_llm(messages, model=use_model)
+            # After tool results come back: Claude (fast, frontier) → local LLM fallback
+            if tool_was_called and self._claude_available:
+                response_text = self._call_claude(messages)
+                if response_text is None:
+                    response_text = self._call_llm(messages, model=self.model)
+            elif tool_was_called:
+                response_text = self._call_llm(messages, model=self.model)
+            else:
+                response_text = self._call_llm(messages, model=self.model_fast)
             if response_text is None:
                 # Fast model failed? Try big model as fallback
-                if use_model == self.model_fast:
+                if not tool_was_called:
                     response_text = self._call_llm(messages, model=self.model)
                 if response_text is None:
                     err = "LLM is unavailable. Make sure Ollama is running."
@@ -257,6 +271,37 @@ RULES:
             return None
         except Exception as e:
             logger.warning(f"Ollama call failed: {e}")
+            return None
+
+    def _call_claude(self, messages: list[dict]) -> Optional[str]:
+        """Call Claude Opus 4.6 for deep interpretation. Returns None on failure."""
+        try:
+            import anthropic
+            from src.llm.claude_client import _get_api_key, CLAUDE_MODEL
+            api_key = _get_api_key()
+            if not api_key:
+                return None
+            # Convert messages: merge system into first user message for Claude
+            system_text = ""
+            user_messages = []
+            for m in messages:
+                if m["role"] == "system":
+                    system_text = m["content"]
+                else:
+                    user_messages.append(m)
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=2048,
+                temperature=0.3,
+                system=system_text,
+                messages=user_messages,
+            )
+            content = resp.content[0].text.strip()
+            logger.info("QuantAgent: Claude deep interpretation (%d chars)", len(content))
+            return content
+        except Exception as e:
+            logger.warning("QuantAgent Claude call failed: %s", e)
             return None
 
     def _start_ollama(self) -> bool:
