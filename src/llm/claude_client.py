@@ -12,7 +12,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-opus-4-6-20250626"
+CLAUDE_MODEL = "claude-opus-4-6"
 MAX_TOKENS = 1024
 
 
