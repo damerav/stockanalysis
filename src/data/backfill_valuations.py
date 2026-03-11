@@ -36,7 +36,7 @@ def backfill_valuations(years: int = 5, config: dict = None):
         "SELECT date FROM prices WHERE date >= ? ORDER BY date", (start_str,)
     )
     if dates_df.empty:
-        logger.error("No price data found. Run backfill_2y first.")
+        logger.error("No price data found. Run backfill_historical first.")
         router.close()
         return
     trading_dates = dates_df["date"].astype(str).tolist()

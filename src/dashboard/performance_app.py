@@ -184,6 +184,25 @@ def page_performance():
     c4.markdown(metric_card("Current Streak", f"{streak}✓" if streak > 0 else "0"),
                 unsafe_allow_html=True)
 
+    # ── Rolling Walk-Forward Accuracy Summary ────────────────────────
+    r63 = df.tail(63)["correct"].mean() if len(df) >= 63 else None
+    r126 = df.tail(126)["correct"].mean() if len(df) >= 126 else None
+    r252 = df.tail(252)["correct"].mean() if len(df) >= 252 else None
+
+    rc1, rc2, rc3 = st.columns(3)
+    if r63 is not None:
+        rc1.markdown(metric_card("3-Month (63d)", f"{r63:.1%}",
+                                 color="green" if r63 > 0.5 else "red"),
+                     unsafe_allow_html=True)
+    if r126 is not None:
+        rc2.markdown(metric_card("6-Month (126d)", f"{r126:.1%}",
+                                 color="green" if r126 > 0.5 else "red"),
+                     unsafe_allow_html=True)
+    if r252 is not None:
+        rc3.markdown(metric_card("1-Year (252d)", f"{r252:.1%}",
+                                 color="green" if r252 > 0.5 else "red"),
+                     unsafe_allow_html=True)
+
     st.markdown("")
 
     # ── Accuracy Over Time ───────────────────────────────────────────
@@ -192,6 +211,8 @@ def page_performance():
 
     df["rolling_20d"] = df["correct"].rolling(window=20, min_periods=5).mean()
     df["rolling_50d"] = df["correct"].rolling(window=50, min_periods=10).mean()
+    df["rolling_63d"] = df["correct"].rolling(window=63, min_periods=15).mean()
+    df["rolling_126d"] = df["correct"].rolling(window=126, min_periods=30).mean()
 
     fig1 = go.Figure()
     fig1.add_trace(go.Scatter(
@@ -203,8 +224,12 @@ def page_performance():
         name="20-Day Rolling", line=dict(color=colors["orange"], width=2, dash="dash"),
     ))
     fig1.add_trace(go.Scatter(
-        x=df["date"], y=df["rolling_50d"],
-        name="50-Day Rolling", line=dict(color=colors["cyan"], width=1.5, dash="dot"),
+        x=df["date"], y=df["rolling_63d"],
+        name="63-Day (3M) Rolling", line=dict(color=colors["cyan"], width=1.5, dash="dot"),
+    ))
+    fig1.add_trace(go.Scatter(
+        x=df["date"], y=df["rolling_126d"],
+        name="126-Day (6M) Rolling", line=dict(color=colors.get("yellow", "#F0B90B"), width=1.5, dash="dashdot"),
     ))
     fig1.add_hline(y=0.5, line_dash="dot", line_color=colors["text_muted"],
                    annotation_text="50%", annotation_position="bottom right")
@@ -482,9 +507,14 @@ def page_performance():
 
         # Rolling 20-day accuracy
         bt_df["rolling_20d"] = bt_df["correct"].rolling(window=20, min_periods=5).mean()
+        bt_df["rolling_63d"] = bt_df["correct"].rolling(window=63, min_periods=15).mean()
         fig_bt.add_trace(go.Scatter(
             x=bt_df["date"], y=bt_df["rolling_20d"],
             name="20-Day Rolling", line=dict(color=colors["orange"], width=2, dash="dash"),
+        ), secondary_y=False)
+        fig_bt.add_trace(go.Scatter(
+            x=bt_df["date"], y=bt_df["rolling_63d"],
+            name="63-Day (3M) Rolling", line=dict(color=colors["cyan"], width=1.5, dash="dot"),
         ), secondary_y=False)
 
         fig_bt.add_hline(y=0.5, line_dash="dot", line_color=colors["text_muted"],

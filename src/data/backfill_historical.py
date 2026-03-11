@@ -1,13 +1,12 @@
-"""Backfill 2+ years of historical data from Polygon.io / yfinance + FRED.
+"""Backfill historical data from Polygon.io / yfinance + FRED.
 
 Loads SPY prices, macro indicators (VIX, yields, DXY, fed funds, gold, crude),
-and recomputes technicals for all dates. This gives the model enough data
-to train properly (~500+ trading days).
+and recomputes technicals for all dates. Default is 10 years (~2500 trading days).
 
 Data source priority: Polygon.io (primary) → yfinance (fallback).
 
 Usage:
-    python -m src.data.backfill_2y [--years 10]
+    python -m src.data.backfill_historical [--years 10]
 """
 
 import argparse
@@ -97,7 +96,7 @@ def backfill_historical(years: int = 3, config: dict = None):
             return router.query(sql, params)
         return pd.read_sql_query(sql, conn, params=params)
 
-    days = int(years * 365)
+    days = int(years * 365.25)  # Account for leap years
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
