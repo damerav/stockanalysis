@@ -1000,6 +1000,7 @@ _STRATEGY_RULE_DEFAULTS = [
     ("prediction", "use_binary_model", "true", "bool", None, None, "Use binary UP/DOWN model with confidence gating instead of 3-class"),
     ("prediction", "bearish_extra_margin", "0.08", "float", "0.0", "0.20", "Extra P(DOWN)-P(UP) margin required to call BEARISH (0=disabled)"),
     ("prediction", "bullish_extra_margin", "0.0", "float", "0.0", "0.10", "Extra P(UP)-P(DOWN) margin required to call BULLISH (0=disabled)"),
+    ("prediction", "directional_confidence_floor", "35.0", "float", "20.0", "50.0", "Min confidence % for directional predictions — below this, override to NEUTRAL"),
     ("prediction", "use_focal_loss", "false", "bool", None, None, "Use focal loss to focus on hard-to-classify examples (improves bear accuracy)"),
     ("prediction", "regime_sample_boost", "1.5", "float", "1.0", "3.0", "Weight multiplier for training samples matching current market regime"),
 ]

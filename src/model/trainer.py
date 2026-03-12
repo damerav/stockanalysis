@@ -252,6 +252,7 @@ class SPYPredictor:
             self.use_binary_model = get_rule("prediction", "use_binary_model", True)
             self.bearish_extra_margin = get_rule("prediction", "bearish_extra_margin", 0.04)
             self.bullish_extra_margin = get_rule("prediction", "bullish_extra_margin", 0.0)
+            self.directional_confidence_floor = get_rule("prediction", "directional_confidence_floor", 35.0)
             self.use_focal_loss = get_rule("prediction", "use_focal_loss", False)
             self.regime_sample_boost = get_rule("prediction", "regime_sample_boost", 1.5)
         except Exception:
@@ -263,6 +264,7 @@ class SPYPredictor:
             self.use_binary_model = True
             self.bearish_extra_margin = 0.04
             self.bullish_extra_margin = 0.0
+            self.directional_confidence_floor = 35.0
             self.use_focal_loss = False
             self.regime_sample_boost = 1.5
         self.max_depth = xgb_cfg.get("max_depth", 6)
@@ -1477,6 +1479,21 @@ class SPYPredictor:
         if dampened:
             confidence *= dampening_factor
             logger.debug(f"Confidence dampened by {dampening_factor:.2f} for regime={regime}")
+
+        # --- Low-confidence directional override ---
+        # After margin scaling and regime dampening, if a directional prediction
+        # (BEARISH or BULLISH) has very low confidence, it's essentially noise.
+        # WEAK_BEARISH at 25-32% was wrong 83% of the time in recent data.
+        # Override to NEUTRAL when confidence drops below the floor.
+        low_conf_floor = getattr(self, 'directional_confidence_floor', 35.0)
+        if pred_label != 0 and confidence < low_conf_floor:
+            old_dir = direction
+            pred_class = 1
+            pred_label = 0
+            direction = "NEUTRAL"
+            scale_label = f"WEAK_NEUTRAL"
+            logger.debug(f"Low-confidence override: {old_dir} conf={confidence:.1f}% "
+                         f"< floor={low_conf_floor}% -> NEUTRAL")
 
         # --- Regime transition detection ---
         # When the HMM regime flips frequently (>3 times in 20 days), the market
