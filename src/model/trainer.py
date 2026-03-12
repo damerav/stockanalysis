@@ -53,7 +53,8 @@ def _multiclass_focal_objective(y_true: np.ndarray, predt: np.ndarray) -> tuple:
 
     Focal loss: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
     Down-weights easy examples, forces model to focus on hard ones.
-    Slightly boosts BEARISH class (alpha=1.3) to improve bear accuracy.
+    Uses symmetric class weights (no bear boost — investigation showed
+    alpha=1.3 caused bearish overcall in recent choppy markets).
 
     When _focal_sample_weights is set, multiplies grad/hess by per-sample
     weights (since XGBoost can't accept sample_weight with custom objectives).
@@ -87,8 +88,10 @@ def _multiclass_focal_objective(y_true: np.ndarray, predt: np.ndarray) -> tuple:
 
     # Focal loss parameters
     gamma = 1.5  # focusing parameter — higher = more focus on hard examples
-    # Per-class alpha: slightly boost BEARISH (class 0) to improve bear accuracy
-    alpha = np.array([1.3, 1.0, 1.0])  # [DOWN, NEUTRAL, UP]
+    # Symmetric alpha: equal weight for all classes.
+    # Previously alpha[0]=1.3 boosted BEARISH, but investigation showed this
+    # caused 77% bearish overcall in choppy/transitional markets (Jan-Mar 2026).
+    alpha = np.array([1.0, 1.0, 1.0])  # [DOWN, NEUTRAL, UP]
     alpha_t = alpha[labels]  # (n_samples,)
 
     # p_t = probability of the true class
@@ -1474,6 +1477,39 @@ class SPYPredictor:
         if dampened:
             confidence *= dampening_factor
             logger.debug(f"Confidence dampened by {dampening_factor:.2f} for regime={regime}")
+
+        # --- Regime transition detection ---
+        # When the HMM regime flips frequently (>3 times in 20 days), the market
+        # is in a transitional/choppy state that the model struggles with.
+        # In this case, dampen directional confidence and bias toward NEUTRAL.
+        regime_transition_dampened = False
+        try:
+            from src.data.db_router import get_router as _get_rt_router
+            _rt_router = _get_rt_router(self.config)
+            _recent_regimes = _rt_router.query(
+                "SELECT regime FROM backtest_results ORDER BY date DESC LIMIT 20"
+            )
+            if not _recent_regimes.empty and len(_recent_regimes) >= 10:
+                regimes = _recent_regimes["regime"].tolist()
+                # Count regime transitions (consecutive different values)
+                transitions = sum(1 for i in range(1, len(regimes))
+                                  if regimes[i] != regimes[i-1])
+                if transitions >= 3 and pred_label != 0:
+                    # High regime instability — dampen directional confidence
+                    transition_factor = max(0.7, 1.0 - (transitions - 2) * 0.05)
+                    confidence *= transition_factor
+                    regime_transition_dampened = True
+                    logger.info(f"Regime transition dampening: {transitions} flips "
+                                f"in 20 days, factor={transition_factor:.2f}")
+                    # If confidence drops below 35%, override to NEUTRAL
+                    if confidence < 35.0:
+                        pred_class = 1
+                        pred_label = 0
+                        direction = "NEUTRAL"
+                        logger.info(f"Regime instability override to NEUTRAL "
+                                    f"(conf={confidence:.1f}% after dampening)")
+        except Exception as e:
+            logger.debug(f"Regime transition detection failed (non-fatal): {e}")
 
         result = {
             "direction": direction,
