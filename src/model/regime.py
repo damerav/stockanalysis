@@ -219,6 +219,43 @@ class HMMRegimeDetector:
         regime = REGIME_NAMES.get(mapped, "low_vol_range")
         return regime
 
+    def predict_all(self, df: pd.DataFrame) -> list[str]:
+        """Predict regime for every row in df. Returns list of regime name strings.
+
+        Handles the 20-row NaN offset from _build_features by padding the
+        first 20 entries with the earliest detected regime.
+        Requires df to have 'close' column (and optionally 'vix', 'volume').
+        """
+        if self.model is None:
+            if not self.load():
+                return ["low_vol_range"] * len(df)
+
+        X = self._build_features(df)
+        if len(X) == 0:
+            return ["low_vol_range"] * len(df)
+
+        if self.scaler is not None:
+            X_scaled = self.scaler.transform(X)
+        else:
+            X_scaled = X
+
+        # _build_features returns len(df) rows but first ~20 have NaN-derived
+        # values (filled with 0). HMM predictions on those are unreliable.
+        # We predict on all rows but mark the first 20 as matching row 20's regime.
+        states = self.model.predict(X_scaled)
+        regimes = []
+        for s in states:
+            mapped = self.state_map.get(int(s), int(s))
+            regimes.append(REGIME_NAMES.get(mapped, "low_vol_range"))
+
+        # Overwrite first 20 with the first reliable regime
+        if len(regimes) > 20:
+            for i in range(20):
+                regimes[i] = regimes[20]
+
+        return regimes
+
+
     def predict_with_probs(self, df: pd.DataFrame) -> dict:
         """Predict regime with state probabilities."""
         if self.model is None:

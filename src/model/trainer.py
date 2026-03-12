@@ -41,6 +41,84 @@ def _class_to_label(cls: int) -> int:
     return {0: -1, 1: 0, 2: 1}[cls]
 
 
+
+# Module-level storage for sample weights when using custom focal objective.
+# XGBoost's sklearn API doesn't allow sample_weight with custom objectives,
+# so we bake the weights into the gradient/hessian directly.
+_focal_sample_weights = None
+
+
+def _multiclass_focal_objective(y_true: np.ndarray, predt: np.ndarray) -> tuple:
+    """Multi-class focal loss for XGBoost sklearn API (proper gradient/hessian).
+
+    Focal loss: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    Down-weights easy examples, forces model to focus on hard ones.
+    Slightly boosts BEARISH class (alpha=1.3) to improve bear accuracy.
+
+    When _focal_sample_weights is set, multiplies grad/hess by per-sample
+    weights (since XGBoost can't accept sample_weight with custom objectives).
+
+    Note: XGBClassifier passes (y_true, y_pred) — NOT (y_pred, dtrain).
+
+    Args:
+        y_true: True labels as numpy array
+        predt: Raw predictions shape (n_samples * n_classes,) — log-odds
+
+    Returns:
+        (grad, hess) each of shape (n_samples * n_classes,)
+    """
+    global _focal_sample_weights
+    n_classes = 3
+    labels = y_true.astype(int)
+    n_samples = len(labels)
+
+    # Reshape predictions to (n_samples, n_classes)
+    preds = predt.reshape(n_samples, n_classes)
+
+    # Softmax to get probabilities
+    preds_max = preds.max(axis=1, keepdims=True)
+    exp_preds = np.exp(preds - preds_max)
+    probs = exp_preds / exp_preds.sum(axis=1, keepdims=True)
+    probs = np.clip(probs, 1e-7, 1.0 - 1e-7)
+
+    # One-hot encode labels
+    y_onehot = np.zeros((n_samples, n_classes))
+    y_onehot[np.arange(n_samples), labels] = 1.0
+
+    # Focal loss parameters
+    gamma = 1.5  # focusing parameter — higher = more focus on hard examples
+    # Per-class alpha: slightly boost BEARISH (class 0) to improve bear accuracy
+    alpha = np.array([1.3, 1.0, 1.0])  # [DOWN, NEUTRAL, UP]
+    alpha_t = alpha[labels]  # (n_samples,)
+
+    # p_t = probability of the true class
+    p_t = probs[np.arange(n_samples), labels]  # (n_samples,)
+
+    # Focal weight: (1 - p_t)^gamma
+    focal_weight = (1.0 - p_t) ** gamma  # (n_samples,)
+
+    # Incorporate sample weights if available
+    sw = np.ones(n_samples)
+    if _focal_sample_weights is not None and len(_focal_sample_weights) == n_samples:
+        sw = _focal_sample_weights
+
+    # Gradient and Hessian with focal modulation + sample weights
+    grad = np.zeros((n_samples, n_classes))
+    hess = np.zeros((n_samples, n_classes))
+
+    for c in range(n_classes):
+        p_c = probs[:, c]
+        y_c = y_onehot[:, c]
+
+        # Focal-weighted softmax gradient * sample weight
+        grad[:, c] = sw * alpha_t * focal_weight * (p_c - y_c)
+
+        # Hessian: focal-weighted softmax hessian (positive definite) * sample weight
+        hess[:, c] = np.maximum(sw * alpha_t * focal_weight * p_c * (1.0 - p_c), 1e-6)
+
+    return grad.reshape(-1), hess.reshape(-1)
+
+
 def _compute_sample_quality_weights(X: np.ndarray, y: np.ndarray,
                                      feature_names: list[str] = None) -> np.ndarray:
     """P3: Sample quality weighting — down-weight noisy/anomalous samples.
@@ -171,6 +249,8 @@ class SPYPredictor:
             self.use_binary_model = get_rule("prediction", "use_binary_model", True)
             self.bearish_extra_margin = get_rule("prediction", "bearish_extra_margin", 0.04)
             self.bullish_extra_margin = get_rule("prediction", "bullish_extra_margin", 0.0)
+            self.use_focal_loss = get_rule("prediction", "use_focal_loss", False)
+            self.regime_sample_boost = get_rule("prediction", "regime_sample_boost", 1.5)
         except Exception:
             self.lookback_days = xgb_cfg.get("lookback_days", 252)
             self.neutral_threshold = xgb_cfg.get("neutral_threshold", 0.004)
@@ -180,6 +260,8 @@ class SPYPredictor:
             self.use_binary_model = True
             self.bearish_extra_margin = 0.04
             self.bullish_extra_margin = 0.0
+            self.use_focal_loss = False
+            self.regime_sample_boost = 1.5
         self.max_depth = xgb_cfg.get("max_depth", 6)
         self.learning_rate = xgb_cfg.get("learning_rate", 0.05)
         self.n_estimators = xgb_cfg.get("n_estimators", 500)
@@ -406,6 +488,61 @@ class SPYPredictor:
         except Exception as e:
             logger.warning(f"P3 quality weighting failed (non-fatal): {e}")
 
+        # --- Regime-Aware Sample Weighting ---
+        # Up-weight training samples from the current market regime so the model
+        # pays more attention to historically similar conditions.
+        # Uses price/macro data from DB (features_df doesn't have close/volume).
+        regime_weighting_applied = False
+        try:
+            from src.model.regime import HMMRegimeDetector
+            from src.data.db_router import get_router as _get_regime_router
+            detector = HMMRegimeDetector()
+            if detector.load():
+                # Fetch price/macro data for regime detection
+                _regime_router = _get_regime_router(self.config)
+                _price_macro = _regime_router.query(
+                    "SELECT p.date, p.close, p.volume, m.vix FROM prices p "
+                    "LEFT JOIN macro m ON p.date = m.date ORDER BY p.date"
+                )
+                if not _price_macro.empty and len(_price_macro) > 60:
+                    # Current regime from recent data
+                    current_regime = detector.predict(_price_macro.tail(60))
+                    # Per-day regime labels for the full history
+                    all_regimes = detector.predict_all(_price_macro)
+                    # Build date→regime map (normalize dates to string for matching)
+                    _regime_by_idx = {}
+                    for i, row in _price_macro.iterrows():
+                        if i < len(all_regimes):
+                            _regime_by_idx[str(row.get("date", ""))[:10]] = all_regimes[i]
+
+                    # Map regime labels to original training samples only.
+                    # features_df may not have a 'date' column (it's the feature matrix).
+                    # Use dates from price_macro instead — they're aligned by row order.
+                    _date_col = None
+                    if "date" in features_df.columns:
+                        _date_col = features_df.iloc[:train_end]["date"].values
+                    elif len(_price_macro) >= train_end:
+                        # price_macro dates are aligned with features_df rows
+                        _date_col = _price_macro["date"].values[:train_end]
+
+                    if _date_col is not None:
+                        regime_boost = getattr(self, 'regime_sample_boost', 1.5)
+                        regime_wts = np.ones(len(sample_weights))
+                        n_boosted = 0
+                        for i in range(min(train_end, len(_date_col))):
+                            d = str(_date_col[i])[:10]
+                            if _regime_by_idx.get(d) == current_regime:
+                                regime_wts[i] = regime_boost
+                                n_boosted += 1
+                        # Augmented/multi-horizon samples (indices >= train_end) keep weight 1.0
+                        sample_weights = sample_weights * regime_wts
+                        sample_weights /= sample_weights.mean()
+                        regime_weighting_applied = True
+                        logger.info(f"Regime-aware weighting: boosted {n_boosted}/{train_end} "
+                                    f"samples matching '{current_regime}' by {regime_boost}x")
+        except Exception as e:
+            logger.warning(f"Regime-aware sample weighting failed (non-fatal): {e}")
+
         # Determine device
         tree_method = "hist"
         device = "cpu"
@@ -473,14 +610,38 @@ class SPYPredictor:
             "verbosity": 1,
             "early_stopping_rounds": 30,
         }
+
+        # --- Focal Loss for hard-example mining ---
+        # When enabled, replaces softmax cross-entropy with focal loss that
+        # down-weights easy examples and slightly boosts BEARISH class (alpha=1.3).
+        # Toggled via strategy_rules DB: prediction.use_focal_loss
+        use_focal = getattr(self, 'use_focal_loss', False)
+        if use_focal:
+            # Custom objective replaces the built-in softmax cross-entropy.
+            # Keep eval_metric="mlogloss" for early stopping — XGBoost computes
+            # it independently of the training objective.
+            params["objective"] = _multiclass_focal_objective
+            # Do NOT set disable_default_eval_metric — we need mlogloss for early stopping
+            logger.info("Using multi-class focal loss (gamma=1.5, bear_alpha=1.3)")
+
         logger.info(f"XGBoost params: depth={eff_depth}, lr={eff_lr}, "
-                     f"n={eff_n}, samples={n_samples}")
+                     f"n={eff_n}, samples={n_samples}, focal_loss={use_focal}")
+
+        # When using focal loss, bake sample weights into the objective function
+        # (XGBoost doesn't allow sample_weight with custom objectives)
+        global _focal_sample_weights
+        if use_focal:
+            _focal_sample_weights = sample_weights
+            _fit_sw = None  # don't pass to .fit()
+        else:
+            _focal_sample_weights = None
+            _fit_sw = sample_weights
 
         self.model = xgb.XGBClassifier(**params)
         self.model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            sample_weight=sample_weights,
+            sample_weight=_fit_sw,
             verbose=False,
         )
 
@@ -577,7 +738,7 @@ class SPYPredictor:
             self.model = xgb.XGBClassifier(**params)
             self.model.fit(X_train_sel, y_train,
                            eval_set=[(X_val_sel, y_val)],
-                           sample_weight=sample_weights,
+                           sample_weight=_fit_sw,
                            verbose=False)
 
             # Update references for downstream code
@@ -625,11 +786,17 @@ class SPYPredictor:
             sample_weights_distilled /= sample_weights_distilled.mean()
 
             # Refit with entropy-weighted samples (focal-like effect)
+            # When focal loss is active, bake distilled weights into the objective
+            if use_focal:
+                _focal_sample_weights = sample_weights_distilled
+                _fit_sw_distill = None
+            else:
+                _fit_sw_distill = sample_weights_distilled
             self.model = xgb.XGBClassifier(**params)
             self.model.fit(
                 X_train, y_train,
                 eval_set=[(X_val, y_val)],
-                sample_weight=sample_weights_distilled,
+                sample_weight=_fit_sw_distill,
                 verbose=False,
             )
             distillation_used = True
@@ -934,6 +1101,8 @@ class SPYPredictor:
             "n_features_kept": X_train.shape[1],
             "n_augmented": n_augmented,
             "n_multi_horizon": n_multi_horizon,
+            "focal_loss": use_focal,
+            "regime_weighting": regime_weighting_applied,
         }
 
         # --- P2: Register model in registry ---
@@ -948,6 +1117,9 @@ class SPYPredictor:
                 )
             except Exception as e:
                 logger.warning(f"Model registry failed (non-fatal): {e}")
+
+        # Clean up module-level focal weights to avoid leaking state
+        _focal_sample_weights = None
 
         return metrics
 
