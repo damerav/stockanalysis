@@ -205,6 +205,38 @@ def page_performance():
 
     st.markdown("")
 
+    # ── Active Training Enhancements ─────────────────────────────────
+    with st.expander("🧪 Active Training Enhancements", expanded=False):
+        try:
+            from src.strategy.rules_store import get_rule
+            _focal = get_rule("prediction", "use_focal_loss", False)
+            _regime_boost = get_rule("prediction", "regime_sample_boost", 1.5)
+            _dampening = get_rule("prediction", "confidence_dampening_factor", 0.85)
+            _bullish_margin = get_rule("prediction", "bullish_extra_margin", 0.0)
+            _binary = get_rule("prediction", "use_binary_model", False)
+
+            e1, e2, e3 = st.columns(3)
+            e1.markdown(metric_card(
+                "Focal Loss", "ON" if _focal else "OFF",
+                color="green" if _focal else "red"), unsafe_allow_html=True)
+            e2.markdown(metric_card(
+                "Regime Boost", f"{_regime_boost}x",
+                color="green" if _regime_boost > 1.0 else "yellow"), unsafe_allow_html=True)
+            e3.markdown(metric_card(
+                "Confidence Dampening", f"{_dampening}",
+                color="green"), unsafe_allow_html=True)
+
+            e4, e5, e6 = st.columns(3)
+            e4.markdown(metric_card(
+                "Bullish Extra Margin", f"{_bullish_margin}",
+                color="green" if _bullish_margin > 0 else "yellow"), unsafe_allow_html=True)
+            e5.markdown(metric_card(
+                "Binary Model", "ON" if _binary else "OFF",
+                color="yellow" if _binary else "green"), unsafe_allow_html=True)
+            e6.caption("Configure these in Strategy Rules → Prediction group")
+        except Exception:
+            st.caption("Could not load training enhancement settings.")
+
     # ── Accuracy Over Time ───────────────────────────────────────────
     st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
                 f'font-size:0.95rem;">Accuracy Trend</p>', unsafe_allow_html=True)

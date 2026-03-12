@@ -86,11 +86,29 @@ def page_tuning():
             for cat, feats in categories.items():
                 enabled_cats[cat] = st.checkbox(f"{cat} ({len(feats)})", value=True)
 
-        register_candidate = st.checkbox(
-            "Register as candidate model (for promotion)", value=True,
-            help="If checked, the trained model is saved and registered as a 'candidate' "
-                 "in the model registry. You can then promote it to champion."
-        )
+        # Training enhancements row
+        st.markdown(f'<p style="color:{colors["text_heading"]};font-weight:600;'
+                    f'font-size:0.95rem;">Training Enhancements</p>',
+                    unsafe_allow_html=True)
+        enh1, enh2, enh3 = st.columns(3)
+        with enh1:
+            use_focal_loss = st.checkbox(
+                "Focal Loss (hard-example mining)",
+                value=True,
+                help="Replaces softmax CE with focal loss (γ=1.5). "
+                     "Down-weights easy examples, boosts BEARISH class (α=1.3)."
+            )
+        with enh2:
+            regime_boost = st.slider(
+                "Regime Sample Boost", 1.0, 3.0, 1.5, 0.1,
+                help="Weight multiplier for training samples matching the current "
+                     "market regime. Higher = more regime-adaptive."
+            )
+        with enh3:
+            register_candidate = st.checkbox(
+                "Register as candidate model", value=True,
+                help="Save and register as 'candidate' in the model registry."
+            )
 
         submit = st.form_submit_button("🚀 Run Backtest", type="primary")
 
