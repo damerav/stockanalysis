@@ -3,20 +3,13 @@
 Computes:
   1. Index Fundamentals: P/E ratio, earnings yield, dividend yield from SPY ETF info
   2. Market Breadth: % stocks above 50/200-day MA, advance/decline ratio, new highs/lows
+  3. Market Concentration: top-N contribution, sector participation, HHI
 
-Data sources (all free, no API keys):
-  - yfinance: SPY info for P/E, dividend yield; S&P 500 constituent prices
-  - Wikipedia: S&P 500 constituent list
+Data sources:
+  - Polygon.io (primary): Grouped daily bars for all US stocks in one API call
+  - yfinance (fallback): S&P 500 constituent prices if Polygon unavailable
+  - Wikipedia: S&P 500 constituent list + GICS sector mapping
   - Shiller dataset (datahub.io): Historical CAPE ratio (monthly, backfill)
-
-Usage:
-    from src.data.market_breadth import fetch_index_fundamentals, fetch_market_breadth
-
-    fundamentals = fetch_index_fundamentals()
-    # {'sp500_pe': 28.5, 'sp500_earnings_yield': 0.035, 'sp500_dividend_yield': 0.013, 'sp500_cape': 38.2}
-
-    breadth = fetch_market_breadth()
-    # {'pct_above_sma50': 0.65, 'pct_above_sma200': 0.72, 'advance_decline_ratio': 1.3, ...}
 """
 
 import logging
@@ -30,8 +23,22 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Cache S&P 500 tickers (refreshed once per day)
-_sp500_tickers_cache = {"tickers": None, "updated": 0}
+
+def _get_polygon_fetcher():
+    """Get a PolygonFetcher instance using the encrypted API key. Returns None if unavailable."""
+    try:
+        from src.data.secrets_manager import get_secret
+        key = get_secret("polygon_api_key")
+        if not key:
+            return None
+        from src.data.polygon_fetcher import PolygonFetcher
+        return PolygonFetcher(key)
+    except Exception as e:
+        logger.debug("Polygon fetcher unavailable: %s", e)
+        return None
+
+# Cache S&P 500 tickers + sector mapping (refreshed once per day)
+_sp500_tickers_cache = {"tickers": None, "sectors": None, "updated": 0}
 _TICKER_CACHE_TTL = 86400  # 24 hours
 
 
@@ -53,6 +60,13 @@ def _get_sp500_tickers() -> list[str]:
         tables = pd.read_html(StringIO(resp.text))
         df = tables[0]
         tickers = df["Symbol"].str.replace(".", "-", regex=False).tolist()
+        # Also cache GICS sector mapping for concentration analysis
+        if "GICS Sector" in df.columns:
+            sectors = dict(zip(
+                df["Symbol"].str.replace(".", "-", regex=False),
+                df["GICS Sector"]
+            ))
+            _sp500_tickers_cache["sectors"] = sectors
         _sp500_tickers_cache["tickers"] = tickers
         _sp500_tickers_cache["updated"] = now
         logger.info("Loaded %d S&P 500 tickers from Wikipedia", len(tickers))
@@ -206,16 +220,13 @@ def fetch_index_fundamentals() -> dict:
 def fetch_market_breadth(lookback_days: int = 250) -> dict:
     """Compute S&P 500 market breadth indicators.
 
-    Downloads recent price history for all S&P 500 constituents and computes:
-      pct_above_sma50: fraction of stocks with close > 50-day SMA
-      pct_above_sma200: fraction of stocks with close > 200-day SMA
-      advance_decline_ratio: advancing / declining stocks (today vs yesterday)
-      new_highs_52w: count of stocks at 52-week high
-      new_lows_52w: count of stocks at 52-week low
-      breadth_thrust: net advances / total stocks (McClellan-style)
+    Uses Polygon.io grouped daily bars as primary source (2 API calls for
+    today + yesterday), falling back to yfinance batch download.
 
-    This is computationally expensive (~2-3 min for 500 tickers).
-    Should be called once per day, results cached in DB.
+    For SMA-based metrics (pct_above_sma50/200), uses yfinance since those
+    need 200+ days of history which would require too many Polygon calls.
+
+    Returns dict with breadth + concentration features.
     """
     result = {
         "pct_above_sma50": None,
@@ -232,116 +243,342 @@ def fetch_market_breadth(lookback_days: int = 250) -> dict:
         logger.warning("No S&P 500 tickers available for breadth calculation")
         return result
 
+    ticker_set = set(tickers)
+    closes = None  # Will hold full lookback DataFrame for SMA calcs
+    polygon_today = None  # Single-day DataFrame from Polygon
+    polygon_prev = None
+
+    # --- Strategy 1: Polygon grouped daily for today + yesterday ---
+    # Gets advance/decline, concentration, TRIN from 2 API calls
+    pf = _get_polygon_fetcher()
+    if pf:
+        try:
+            today = datetime.now()
+            # Try last 5 business days to find 2 valid trading days
+            dates_to_try = pd.bdate_range(
+                end=today.strftime("%Y-%m-%d"),
+                periods=5
+            ).strftime("%Y-%m-%d").tolist()[::-1]  # most recent first
+
+            found_days = []
+            for d in dates_to_try:
+                if len(found_days) >= 2:
+                    break
+                df = pf.get_grouped_daily(d)
+                if not df.empty:
+                    df = df[df["ticker"].isin(ticker_set)]
+                    if len(df) >= 100:
+                        found_days.append((d, df))
+
+            if len(found_days) >= 2:
+                polygon_today = found_days[0][1].set_index("ticker")
+                polygon_prev = found_days[1][1].set_index("ticker")
+                common = polygon_today.index.intersection(polygon_prev.index)
+                logger.info("Polygon grouped daily: %d tickers for %s, %d for %s, %d common",
+                            len(polygon_today), found_days[0][0],
+                            len(polygon_prev), found_days[1][0], len(common))
+
+                latest = polygon_today.loc[common, "close"]
+                prev = polygon_prev.loc[common, "close"]
+                n_stocks = len(common)
+
+                # Advance/Decline
+                advances = (latest > prev).sum()
+                declines = (latest < prev).sum()
+                if declines > 0:
+                    result["advance_decline_ratio"] = round(advances / declines, 3)
+                elif advances > 0:
+                    result["advance_decline_ratio"] = float(advances)
+
+                # Breadth thrust
+                result["breadth_thrust"] = round((advances - declines) / max(n_stocks, 1), 4)
+
+                # TRIN
+                if "volume" in polygon_today.columns and "volume" in polygon_prev.columns:
+                    try:
+                        vol_today = polygon_today.loc[common, "volume"]
+                        adv_mask = latest > prev
+                        decl_mask = latest < prev
+                        adv_vol = vol_today[adv_mask].sum()
+                        decl_vol = vol_today[decl_mask].sum()
+                        if decl_vol > 0 and advances > 0 and declines > 0:
+                            trin = (advances / declines) / (adv_vol / decl_vol)
+                            result["trin"] = round(float(trin), 4)
+                    except Exception as e:
+                        logger.debug("TRIN from Polygon failed: %s", e)
+
+                # Concentration analysis from Polygon data
+                try:
+                    # Build a 2-row closes DataFrame for concentration calc
+                    poly_closes = pd.DataFrame({
+                        t: [polygon_prev.loc[t, "close"], polygon_today.loc[t, "close"]]
+                        for t in common
+                    }, index=[found_days[1][0], found_days[0][0]])
+                    conc = fetch_market_concentration(closes=poly_closes)
+                    result.update(conc)
+                except Exception as e:
+                    logger.warning("Concentration from Polygon failed: %s", e)
+
+                logger.info("Polygon breadth: A/D=%.2f, thrust=%.4f, TRIN=%.4f",
+                            result["advance_decline_ratio"] or 0,
+                            result["breadth_thrust"] or 0,
+                            result["trin"] or 0)
+            elif len(found_days) == 1:
+                logger.warning("Polygon: only found 1 trading day, need 2 for breadth")
+            else:
+                logger.warning("Polygon grouped daily returned no valid data")
+        except Exception as e:
+            logger.warning("Polygon breadth fetch failed: %s — falling back to yfinance", e)
+
+    # --- Strategy 2: yfinance for SMA-based metrics + fallback ---
+    # SMA calculations need 200+ days of history
     try:
         import yfinance as yf
-        # Download all tickers in one batch (much faster than individual)
         end = datetime.now()
-        start = end - timedelta(days=lookback_days + 50)  # extra buffer for SMA calc
+        start = end - timedelta(days=lookback_days + 50)
 
-        logger.info("Downloading %d S&P 500 tickers for breadth calculation...", len(tickers))
+        logger.info("Downloading %d S&P 500 tickers via yfinance for SMA breadth...", len(tickers))
         data = yf.download(tickers, start=start.strftime("%Y-%m-%d"),
                            end=end.strftime("%Y-%m-%d"),
                            progress=False, threads=True)
 
-        if data.empty:
-            logger.warning("No data returned for S&P 500 breadth")
+        if not data.empty:
+            if isinstance(data.columns, pd.MultiIndex):
+                closes = data["Close"]
+                volumes = data["Volume"] if "Volume" in data.columns.get_level_values(0) else None
+            else:
+                closes = data[["Close"]]
+                volumes = None
+
+            if closes is not None and not closes.empty and len(closes) >= 50:
+                valid_mask = closes.notna().sum() > 50
+                closes = closes.loc[:, valid_mask]
+                if volumes is not None:
+                    common_cols = closes.columns.intersection(volumes.columns)
+                    volumes = volumes[common_cols]
+                n_stocks = closes.shape[1]
+
+                latest = closes.iloc[-1]
+                prev_close = closes.iloc[-2] if len(closes) > 1 else latest
+
+                # SMA calculations
+                sma50 = closes.rolling(50).mean().iloc[-1]
+                sma200 = closes.rolling(200).mean().iloc[-1]
+
+                above_50 = (latest > sma50).sum()
+                above_200 = (latest > sma200).sum()
+                valid_50 = sma50.notna().sum()
+                valid_200 = sma200.notna().sum()
+
+                if valid_50 > 0:
+                    result["pct_above_sma50"] = round(above_50 / valid_50, 4)
+                if valid_200 > 0:
+                    result["pct_above_sma200"] = round(above_200 / valid_200, 4)
+
+                # 52-week highs/lows
+                if len(closes) >= 252:
+                    high_52w = closes.iloc[-252:].max()
+                    low_52w = closes.iloc[-252:].min()
+                    result["new_highs_52w"] = int((latest >= high_52w * 0.99).sum())
+                    result["new_lows_52w"] = int((latest <= low_52w * 1.01).sum())
+                else:
+                    high_all = closes.max()
+                    low_all = closes.min()
+                    result["new_highs_52w"] = int((latest >= high_all * 0.99).sum())
+                    result["new_lows_52w"] = int((latest <= low_all * 1.01).sum())
+
+                # If Polygon didn't provide advance/decline, compute from yfinance
+                if result["advance_decline_ratio"] is None:
+                    advances = (latest > prev_close).sum()
+                    declines = (latest < prev_close).sum()
+                    if declines > 0:
+                        result["advance_decline_ratio"] = round(advances / declines, 3)
+                    elif advances > 0:
+                        result["advance_decline_ratio"] = float(advances)
+                    result["breadth_thrust"] = round(
+                        (advances - declines) / max(n_stocks, 1), 4)
+
+                # If Polygon didn't provide TRIN, compute from yfinance
+                if result["trin"] is None and volumes is not None and len(closes) > 1:
+                    try:
+                        vol_latest = volumes.iloc[-1]
+                        adv_mask = latest > prev_close
+                        decl_mask = latest < prev_close
+                        vol_aligned = vol_latest.reindex(adv_mask.index)
+                        adv_vol = vol_aligned[adv_mask].sum()
+                        decl_vol = vol_aligned[decl_mask].sum()
+                        advances = adv_mask.sum()
+                        declines = decl_mask.sum()
+                        if decl_vol > 0 and advances > 0 and declines > 0:
+                            trin = (advances / declines) / (adv_vol / decl_vol)
+                            result["trin"] = round(float(trin), 4)
+                    except Exception as e:
+                        logger.debug("TRIN from yfinance failed: %s", e)
+
+                # If Polygon didn't provide concentration, compute from yfinance
+                if result.get("top5_contribution") is None:
+                    try:
+                        conc = fetch_market_concentration(closes=closes)
+                        result.update(conc)
+                    except Exception as e:
+                        logger.warning("Concentration from yfinance failed: %s", e)
+
+                logger.info("Market breadth: %%>50SMA=%.1f%%, %%>200SMA=%.1f%%, A/D=%.2f, "
+                            "highs=%d, lows=%d",
+                            (result["pct_above_sma50"] or 0) * 100,
+                            (result["pct_above_sma200"] or 0) * 100,
+                            result["advance_decline_ratio"] or 0,
+                            result["new_highs_52w"] or 0,
+                            result["new_lows_52w"] or 0)
+    except Exception as e:
+        logger.warning("yfinance breadth fetch failed: %s", e)
+
+    return result
+
+
+def _get_sp500_sectors() -> dict:
+    """Return ticker→GICS sector mapping. Populated by _get_sp500_tickers()."""
+    if not _sp500_tickers_cache.get("sectors"):
+        _get_sp500_tickers()  # triggers Wikipedia fetch which populates sectors
+    return _sp500_tickers_cache.get("sectors") or {}
+
+
+def fetch_market_concentration(closes: pd.DataFrame = None,
+                               lookback_days: int = 250) -> dict:
+    """Compute market concentration and sector participation features.
+
+    Measures whether SPY's move is driven by a few mega-caps (narrow leadership)
+    or broad-based participation. Narrow rallies are fragile and more likely to
+    reverse; broad moves are more durable.
+
+    Args:
+        closes: DataFrame of S&P 500 constituent close prices (tickers as columns).
+                If None, downloads fresh data via yfinance.
+        lookback_days: Days of history for download (only used if closes is None).
+
+    Returns dict with:
+        top5_contribution: % of SPY's daily return explained by top 5 stocks
+        top10_contribution: % of SPY's daily return explained by top 10 stocks
+        sector_participation: fraction of 11 GICS sectors moving same direction as SPY
+        breadth_divergence: sign(SPY return) vs sign(median stock return) — 1=aligned, -1=divergent
+        herfindahl_return: Herfindahl index of squared return contributions (concentration measure)
+        pct_stocks_same_dir: % of stocks moving in same direction as SPY
+    """
+    result = {
+        "top5_contribution": None,
+        "top10_contribution": None,
+        "sector_participation": None,
+        "breadth_divergence": None,
+        "herfindahl_return": None,
+        "pct_stocks_same_dir": None,
+    }
+
+    try:
+        if closes is None:
+            import yfinance as yf
+            tickers = _get_sp500_tickers()
+            if not tickers:
+                return result
+            end = datetime.now()
+            start = end - timedelta(days=lookback_days + 50)
+            data = yf.download(tickers, start=start.strftime("%Y-%m-%d"),
+                               end=end.strftime("%Y-%m-%d"),
+                               progress=False, threads=True)
+            if data.empty:
+                return result
+            if isinstance(data.columns, pd.MultiIndex):
+                closes = data["Close"]
+            else:
+                closes = data[["Close"]]
+
+        if closes.empty or len(closes) < 2:
             return result
 
-        # Handle MultiIndex columns from yfinance
-        if isinstance(data.columns, pd.MultiIndex):
-            closes = data["Close"]
-            volumes = data["Volume"] if "Volume" in data.columns.get_level_values(0) else None
-        else:
-            closes = data[["Close"]]
-            volumes = None
-
-        if closes.empty or len(closes) < 50:
-            logger.warning("Insufficient data for breadth calculation")
-            return result
-
-        # Drop tickers with too many NaNs
-        valid_mask = closes.notna().sum() > 50
+        # Drop tickers with too many NaNs (adaptive threshold based on DataFrame length)
+        min_valid = min(50, max(2, len(closes) - 1))
+        valid_mask = closes.notna().sum() >= min_valid
         closes = closes.loc[:, valid_mask]
-        if volumes is not None:
-            # Filter volumes to same tickers so boolean masks align for TRIN
-            common = closes.columns.intersection(volumes.columns)
-            volumes = volumes[common]
         n_stocks = closes.shape[1]
+        if n_stocks < 50:
+            logger.warning("Only %d valid tickers for concentration analysis", n_stocks)
+            return result
 
-        if n_stocks < 100:
-            logger.warning("Only %d valid tickers, breadth may be unreliable", n_stocks)
+        # Daily returns for all stocks
+        daily_rets = closes.pct_change(fill_method=None)
+        latest_rets = daily_rets.iloc[-1].dropna()
+        if len(latest_rets) < 50:
+            return result
 
-        # Latest close
-        latest = closes.iloc[-1]
-        prev = closes.iloc[-2] if len(closes) > 1 else latest
+        # SPY return approximation: equal-weight average of all constituents
+        # (cap-weighted would be better but we don't have weights)
+        spy_ret = latest_rets.mean()
 
-        # SMA calculations
-        sma50 = closes.rolling(50).mean().iloc[-1]
-        sma200 = closes.rolling(200).mean().iloc[-1]
+        # --- Top-N contribution ---
+        # Sort stocks by absolute return contribution (magnitude)
+        abs_rets = latest_rets.abs().sort_values(ascending=False)
+        total_abs = abs_rets.sum()
+        if total_abs > 0:
+            result["top5_contribution"] = round(
+                float(abs_rets.iloc[:5].sum() / total_abs), 4)
+            result["top10_contribution"] = round(
+                float(abs_rets.iloc[:10].sum() / total_abs), 4)
 
-        # % above SMA
-        above_50 = (latest > sma50).sum()
-        above_200 = (latest > sma200).sum()
-        valid_50 = sma50.notna().sum()
-        valid_200 = sma200.notna().sum()
+        # --- Herfindahl index of return concentration ---
+        # HHI of squared return shares — higher = more concentrated
+        if total_abs > 0:
+            shares = (abs_rets / total_abs) ** 2
+            result["herfindahl_return"] = round(float(shares.sum()), 6)
 
-        if valid_50 > 0:
-            result["pct_above_sma50"] = round(above_50 / valid_50, 4)
-        if valid_200 > 0:
-            result["pct_above_sma200"] = round(above_200 / valid_200, 4)
-
-        # Advance/Decline
-        advances = (latest > prev).sum()
-        declines = (latest < prev).sum()
-        unchanged = n_stocks - advances - declines
-        if declines > 0:
-            result["advance_decline_ratio"] = round(advances / declines, 3)
-        elif advances > 0:
-            result["advance_decline_ratio"] = float(advances)  # all advancing
-
-        # Breadth thrust = net advances / total
-        result["breadth_thrust"] = round((advances - declines) / max(n_stocks, 1), 4)
-
-        # TRIN (Arms Index) = (Advancing Issues / Declining Issues) / (Advancing Volume / Declining Volume)
-        # TRIN < 1.0 = buying pressure, TRIN > 1.0 = selling pressure
-        if volumes is not None and declines > 0:
-            try:
-                vol_latest = volumes.iloc[-1]
-                # Use latest day's volume, split by advancing/declining stocks
-                adv_mask = latest > prev
-                decl_mask = latest < prev
-                # Align volume to same tickers as closes
-                vol_aligned = vol_latest.reindex(adv_mask.index)
-                adv_vol = vol_aligned[adv_mask].sum()
-                decl_vol = vol_aligned[decl_mask].sum()
-                if decl_vol > 0 and advances > 0:
-                    trin = (advances / declines) / (adv_vol / decl_vol)
-                    result["trin"] = round(float(trin), 4)
-            except Exception as e:
-                logger.debug("TRIN calculation failed: %s", e)
-
-        # 52-week highs/lows
-        if len(closes) >= 252:
-            high_52w = closes.iloc[-252:].max()
-            low_52w = closes.iloc[-252:].min()
-            result["new_highs_52w"] = int((latest >= high_52w * 0.99).sum())  # within 1% of high
-            result["new_lows_52w"] = int((latest <= low_52w * 1.01).sum())    # within 1% of low
+        # --- % stocks moving same direction as SPY ---
+        if spy_ret > 0:
+            same_dir = (latest_rets > 0).sum()
+        elif spy_ret < 0:
+            same_dir = (latest_rets < 0).sum()
         else:
-            high_all = closes.max()
-            low_all = closes.min()
-            result["new_highs_52w"] = int((latest >= high_all * 0.99).sum())
-            result["new_lows_52w"] = int((latest <= low_all * 1.01).sum())
+            same_dir = len(latest_rets)
+        result["pct_stocks_same_dir"] = round(same_dir / len(latest_rets), 4)
 
-        logger.info("Market breadth: %%>50SMA=%.1f%%, %%>200SMA=%.1f%%, A/D=%.2f, "
-                     "highs=%d, lows=%d",
-                     (result["pct_above_sma50"] or 0) * 100,
-                     (result["pct_above_sma200"] or 0) * 100,
-                     result["advance_decline_ratio"] or 0,
-                     result["new_highs_52w"] or 0,
-                     result["new_lows_52w"] or 0)
+        # --- Breadth divergence ---
+        # +1 if SPY direction matches median stock direction, -1 if divergent
+        median_ret = latest_rets.median()
+        if spy_ret == 0 or median_ret == 0:
+            result["breadth_divergence"] = 0.0
+        elif np.sign(spy_ret) == np.sign(median_ret):
+            result["breadth_divergence"] = 1.0
+        else:
+            result["breadth_divergence"] = -1.0
+
+        # --- Sector participation ---
+        # What fraction of GICS sectors are moving in the same direction as SPY?
+        sectors = _get_sp500_sectors()
+        if sectors:
+            # Build sector→mean return
+            sector_rets = {}
+            for ticker, ret in latest_rets.items():
+                sec = sectors.get(ticker)
+                if sec:
+                    sector_rets.setdefault(sec, []).append(ret)
+            sector_means = {s: np.mean(rs) for s, rs in sector_rets.items() if rs}
+            if sector_means and spy_ret != 0:
+                same_dir_sectors = sum(
+                    1 for s_ret in sector_means.values()
+                    if np.sign(s_ret) == np.sign(spy_ret)
+                )
+                result["sector_participation"] = round(
+                    same_dir_sectors / len(sector_means), 4)
+            elif sector_means:
+                result["sector_participation"] = 0.5  # flat day
+
+        logger.info("Market concentration: top5=%.1f%%, top10=%.1f%%, "
+                     "sector_part=%.1f%%, same_dir=%.1f%%, HHI=%.4f",
+                     (result["top5_contribution"] or 0) * 100,
+                     (result["top10_contribution"] or 0) * 100,
+                     (result["sector_participation"] or 0) * 100,
+                     (result["pct_stocks_same_dir"] or 0) * 100,
+                     result["herfindahl_return"] or 0)
 
     except Exception as e:
-        logger.warning("fetch_market_breadth failed: %s", e)
+        logger.warning("fetch_market_concentration failed: %s", e)
 
     return result
 
@@ -360,7 +597,9 @@ def store_breadth_fundamentals(router, date: str, fundamentals: dict, breadth: d
     cols = ["sp500_pe", "sp500_forward_pe", "sp500_earnings_yield", "sp500_dividend_yield",
             "pct_above_sma50", "pct_above_sma200", "advance_decline_ratio",
             "new_highs_52w", "new_lows_52w", "breadth_thrust",
-            "sp500_cape", "buffett_indicator", "fear_greed_index", "trin"]
+            "sp500_cape", "buffett_indicator", "fear_greed_index", "trin",
+            "top5_contribution", "top10_contribution", "sector_participation",
+            "breadth_divergence", "herfindahl_return", "pct_stocks_same_dir"]
     # Cast numpy types to native Python to avoid PostgreSQL serialization errors
     def _native(v):
         if v is None:

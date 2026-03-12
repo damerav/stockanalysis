@@ -841,6 +841,17 @@ def _migrate_schema(conn: sqlite3.Connection):
     ]
     _add_columns_if_missing(conn, "market_breadth", breadth_new_cols)
 
+    # v2.10: Market concentration columns for market_breadth table
+    concentration_cols = [
+        ("top5_contribution", "REAL"),
+        ("top10_contribution", "REAL"),
+        ("sector_participation", "REAL"),
+        ("breadth_divergence", "REAL"),
+        ("herfindahl_return", "REAL"),
+        ("pct_stocks_same_dir", "REAL"),
+    ]
+    _add_columns_if_missing(conn, "market_breadth", concentration_cols)
+
     # v2.8: New columns for macro table (extended FRED series)
     macro_ext_cols = [
         ("us3m_yield", "REAL"),

@@ -74,6 +74,64 @@ class PolygonFetcher:
             params = None  # next_url includes params
         return all_results
 
+    def get_grouped_daily(self, date: str) -> pd.DataFrame:
+        """Fetch ALL US stock daily bars for a single date in one API call.
+
+        Uses Polygon's grouped daily endpoint which returns OHLCV for every
+        US-listed ticker (~12,000) in a single request. Much more efficient
+        than downloading individual tickers.
+
+        Args:
+            date: Date string in YYYY-MM-DD format.
+
+        Returns:
+            DataFrame with columns: ticker, open, high, low, close, volume
+        """
+        url = f"{BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date}"
+        data = self._get(url, {"adjusted": "true"})
+        if not data or not data.get("results"):
+            logger.warning("Polygon grouped daily returned no results for %s", date)
+            return pd.DataFrame()
+        df = pd.DataFrame(data["results"])
+        df = df.rename(columns={
+            "T": "ticker", "o": "open", "h": "high", "l": "low",
+            "c": "close", "v": "volume", "vw": "vwap"
+        })
+        cols = ["ticker", "open", "high", "low", "close", "volume"]
+        return df[[c for c in cols if c in df.columns]]
+
+    def get_grouped_daily_range(self, from_date: str, to_date: str,
+                                tickers: list[str] = None) -> pd.DataFrame:
+        """Fetch grouped daily bars for a date range, optionally filtered to specific tickers.
+
+        Makes one API call per trading day. Returns a DataFrame with columns:
+        date, ticker, close (and optionally open, high, low, volume).
+
+        Args:
+            from_date: Start date YYYY-MM-DD.
+            to_date: End date YYYY-MM-DD.
+            tickers: Optional list of tickers to filter to (e.g., S&P 500 list).
+
+        Returns:
+            DataFrame with columns: date, ticker, open, high, low, close, volume
+        """
+        import pandas as pd
+        dates = pd.bdate_range(from_date, to_date)
+        all_frames = []
+        ticker_set = set(tickers) if tickers else None
+        for dt in dates:
+            date_str = dt.strftime("%Y-%m-%d")
+            df = self.get_grouped_daily(date_str)
+            if df.empty:
+                continue
+            df["date"] = date_str
+            if ticker_set:
+                df = df[df["ticker"].isin(ticker_set)]
+            all_frames.append(df)
+        if not all_frames:
+            return pd.DataFrame()
+        return pd.concat(all_frames, ignore_index=True)
+
     def get_daily_bars(self, ticker: str, from_date: str, to_date: str) -> pd.DataFrame:
         """Fetch daily OHLCV bars (adjusted)."""
         url = f"{BASE_URL}/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}"
@@ -85,6 +143,33 @@ class PolygonFetcher:
         df = df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close",
                                 "v": "volume", "vw": "vwap"})
         return df[["date", "open", "high", "low", "close", "volume"]].drop_duplicates("date")
+    def get_grouped_daily(self, date: str) -> pd.DataFrame:
+        """Fetch ALL US stock daily bars for a single date in one API call.
+
+        Uses Polygon's grouped daily endpoint which returns OHLCV for every
+        US-listed ticker (~12,000) in a single request. Much more efficient
+        than downloading individual tickers.
+
+        Args:
+            date: Date string in YYYY-MM-DD format.
+
+        Returns:
+            DataFrame with columns: ticker, open, high, low, close, volume
+        """
+        url = f"{BASE_URL}/v2/aggs/grouped/locale/us/market/stocks/{date}"
+        data = self._get(url, {"adjusted": "true"})
+        if not data or not data.get("results"):
+            logger.warning("Polygon grouped daily returned no results for %s", date)
+            return pd.DataFrame()
+        df = pd.DataFrame(data["results"])
+        df = df.rename(columns={
+            "T": "ticker", "o": "open", "h": "high", "l": "low",
+            "c": "close", "v": "volume", "vw": "vwap"
+        })
+        cols = ["ticker", "open", "high", "low", "close", "volume"]
+        return df[[c for c in cols if c in df.columns]]
+
+
 
     def get_5s_bars(self, ticker: str, date: str) -> pd.DataFrame:
         """Fetch intraday 5-second bars for a given date."""
