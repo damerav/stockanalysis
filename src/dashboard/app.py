@@ -464,8 +464,7 @@ def page_spy():
         with p3_col3:
             opt_df = _p3_router.query(
                 "SELECT vanna_exposure, charm_exposure, zero_dte_pcr "
-                "FROM options_analytics WHERE date = ? ORDER BY date DESC LIMIT 1",
-                (_today,),
+                "FROM options_analytics ORDER BY date DESC LIMIT 1",
             )
             if not opt_df.empty and opt_df.iloc[0]["vanna_exposure"] is not None:
                 st.metric("Vanna", f"{opt_df.iloc[0]['vanna_exposure']:,.0f}")

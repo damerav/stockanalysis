@@ -165,19 +165,25 @@ def fetch_index_fundamentals() -> dict:
         logger.warning("CAPE fetch failed: %s", e)
 
     # --- Buffett Indicator: Total Market Cap / GDP ---
-    # FRED WILL5000PR/WILL5000IND series are retired (404).
-    # Use yfinance ^W5000 (Wilshire 5000 Full Cap Index) instead.
-    # 1 index point ≈ $1 billion in total US market cap.
-    # Formula: Buffett Indicator = (^W5000 value / FRED GDP in billions) × 100
+    # FRED Wilshire 5000 series (WILL5000PR/IND/INDFC) are all retired (HTTP 400).
+    # yfinance ^W5000 is also delisted.
+    # Approach: Use S&P 500 (^GSPC) as proxy. S&P 500 represents ~80% of total
+    # US equity market cap, so we scale by 1.25 to approximate total market.
+    # S&P 500 market cap ≈ index_level × $10.4B (as of 2025-2026 era).
+    # Formula: Buffett = (SP500_level × 10.4 × 1.25 / GDP_billions) × 100
     try:
         import yfinance as yf
         import requests as _req
 
-        # Fetch Wilshire 5000 via yfinance
-        w5k = yf.Ticker("^W5000")
-        w5k_hist = w5k.history(period="5d")
-        if not w5k_hist.empty:
-            w5000_val = float(w5k_hist["Close"].dropna().iloc[-1])
+        # Fetch S&P 500 index level
+        sp500 = yf.Ticker("^GSPC")
+        sp500_hist = sp500.history(period="5d")
+        if not sp500_hist.empty:
+            sp500_val = float(sp500_hist["Close"].dropna().iloc[-1])
+
+            # S&P 500 market cap multiplier: ~$10.4B per index point (2025-2026)
+            # Total US market ≈ S&P 500 × 1.25 (S&P is ~80% of total)
+            total_mkt_cap_B = sp500_val * 10.4 * 1.25  # in billions
 
             # Fetch GDP from FRED API
             gdp_val = None
@@ -202,15 +208,15 @@ def fetch_index_fundamentals() -> dict:
                             gdp_val = float(v)
                             break
 
-            if w5000_val > 0 and gdp_val and gdp_val > 0:
-                result["buffett_indicator"] = round((w5000_val / gdp_val) * 100, 2)
-                logger.info("Buffett Indicator: %.1f%% (W5000=%.0f, GDP=%.0f)",
-                            result["buffett_indicator"], w5000_val, gdp_val)
+            if total_mkt_cap_B > 0 and gdp_val and gdp_val > 0:
+                result["buffett_indicator"] = round((total_mkt_cap_B / gdp_val) * 100, 2)
+                logger.info("Buffett Indicator: %.1f%% (SP500=%.0f, est_mkt_cap=%.0fB, GDP=%.0fB)",
+                            result["buffett_indicator"], sp500_val, total_mkt_cap_B, gdp_val)
             else:
-                logger.warning("Buffett Indicator: W5000=%.0f, GDP=%s — cannot compute",
-                               w5000_val, gdp_val)
+                logger.warning("Buffett Indicator: SP500=%.0f, GDP=%s — cannot compute",
+                               sp500_val, gdp_val)
         else:
-            logger.warning("Buffett Indicator: ^W5000 returned no data")
+            logger.warning("Buffett Indicator: ^GSPC returned no data")
     except Exception as e:
         logger.warning("Buffett Indicator fetch failed: %s", e)
 
