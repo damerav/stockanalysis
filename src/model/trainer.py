@@ -458,6 +458,62 @@ class SPYPredictor:
                      f"newest_original={sample_weights[min(n_original-1, len(sample_weights)-1)]:.2f}, "
                      f"n_original={n_original}, n_extra={n_extra}")
 
+        # --- Return-magnitude weighting ---
+        # The model treats a +0.05% day the same as a +2% day, but they're
+        # fundamentally different signals. Weight samples by how far the actual
+        # return is from the neutral boundary — strong moves get higher weight,
+        # borderline noise gets lower weight. This teaches the model to nail
+        # the clear-signal days (which matter most for trading).
+        n_magnitude_weighted = 0
+        try:
+            if _close_for_multihorizon is not None and len(_close_for_multihorizon) >= train_end:
+                close_prices = _close_for_multihorizon[:train_end]
+                # Compute next-day returns for original training samples
+                next_day_returns = np.zeros(train_end)
+                for i in range(train_end - 1):
+                    if close_prices[i] > 0:
+                        next_day_returns[i] = (close_prices[i + 1] - close_prices[i]) / close_prices[i]
+                abs_returns = np.abs(next_day_returns)
+                # Weight = 0.5 + (|return| / threshold) capped at 2.0
+                # Borderline days (|ret| ≈ threshold) get weight ~1.5
+                # Strong days (|ret| >> threshold) get weight 2.0
+                # Noise days (|ret| << threshold) get weight ~0.5-0.8
+                _nt = getattr(self, 'neutral_threshold', 0.004)
+                magnitude_wts = np.clip(0.5 + abs_returns / max(_nt, 0.001), 0.5, 2.0)
+                # Apply only to original samples (first train_end)
+                mag_full = np.ones(len(sample_weights))
+                mag_full[:train_end] = magnitude_wts
+                sample_weights = sample_weights * mag_full
+                sample_weights /= sample_weights.mean()
+                n_magnitude_weighted = (magnitude_wts > 1.2).sum()
+                logger.info(f"Return-magnitude weighting: {n_magnitude_weighted}/{train_end} "
+                            f"strong-signal samples boosted (threshold={_nt})")
+        except Exception as e:
+            logger.warning(f"Return-magnitude weighting failed (non-fatal): {e}")
+
+        # --- Class balance weighting ---
+        # Model predicts NEUTRAL only 0.3% of the time despite 41% of days
+        # being NEUTRAL. Equalize effective class representation so the model
+        # learns to respect all 3 classes proportionally.
+        try:
+            class_counts_orig = np.bincount(y_train, minlength=3)
+            if class_counts_orig.min() > 0:
+                # Inverse frequency: rare classes get higher weight
+                total_samples = len(y_train)
+                class_weight_map = {}
+                for cls in range(3):
+                    # Weight = total / (n_classes * count_cls)
+                    class_weight_map[cls] = total_samples / (3.0 * class_counts_orig[cls])
+                # Apply per-sample class weight
+                class_wts = np.array([class_weight_map[c] for c in y_train])
+                sample_weights = sample_weights * class_wts
+                sample_weights /= sample_weights.mean()
+                logger.info(f"Class balance weights: DOWN={class_weight_map[0]:.2f}, "
+                            f"NEUTRAL={class_weight_map[1]:.2f}, UP={class_weight_map[2]:.2f} "
+                            f"(counts: {class_counts_orig})")
+        except Exception as e:
+            logger.warning(f"Class balance weighting failed (non-fatal): {e}")
+
         # --- P3: Sample quality weighting (curriculum learning) ---
         # Down-weight samples from anomalous market periods where labels are noisy
         # Uses feature-space outlier detection: samples far from the training mean
