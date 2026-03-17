@@ -458,38 +458,11 @@ class SPYPredictor:
                      f"newest_original={sample_weights[min(n_original-1, len(sample_weights)-1)]:.2f}, "
                      f"n_original={n_original}, n_extra={n_extra}")
 
-        # --- Return-magnitude weighting ---
-        # The model treats a +0.05% day the same as a +2% day, but they're
-        # fundamentally different signals. Weight samples by how far the actual
-        # return is from the neutral boundary — strong moves get higher weight,
-        # borderline noise gets lower weight. This teaches the model to nail
-        # the clear-signal days (which matter most for trading).
-        n_magnitude_weighted = 0
-        try:
-            if _close_for_multihorizon is not None and len(_close_for_multihorizon) >= train_end:
-                close_prices = _close_for_multihorizon[:train_end]
-                # Compute next-day returns for original training samples
-                next_day_returns = np.zeros(train_end)
-                for i in range(train_end - 1):
-                    if close_prices[i] > 0:
-                        next_day_returns[i] = (close_prices[i + 1] - close_prices[i]) / close_prices[i]
-                abs_returns = np.abs(next_day_returns)
-                # Weight = 0.5 + (|return| / threshold) capped at 2.0
-                # Borderline days (|ret| ≈ threshold) get weight ~1.5
-                # Strong days (|ret| >> threshold) get weight 2.0
-                # Noise days (|ret| << threshold) get weight ~0.5-0.8
-                _nt = getattr(self, 'neutral_threshold', 0.004)
-                magnitude_wts = np.clip(0.5 + abs_returns / max(_nt, 0.001), 0.5, 1.5)
-                # Apply only to original samples (first train_end)
-                mag_full = np.ones(len(sample_weights))
-                mag_full[:train_end] = magnitude_wts
-                sample_weights = sample_weights * mag_full
-                sample_weights /= sample_weights.mean()
-                n_magnitude_weighted = (magnitude_wts > 1.2).sum()
-                logger.info(f"Return-magnitude weighting: {n_magnitude_weighted}/{train_end} "
-                            f"strong-signal samples boosted (threshold={_nt})")
-        except Exception as e:
-            logger.warning(f"Return-magnitude weighting failed (non-fatal): {e}")
+        # --- Return-magnitude weighting: DISABLED ---
+        # Tested v2.9.3: reduced overall backtest accuracy from 76.1% to 66.7%.
+        # High-confidence misses improved (14.1% → 9.0%) but the accuracy tradeoff
+        # is not worth it. The margin-based confidence scaling in predict() already
+        # handles high-confidence misses effectively.
 
         # --- Class balance weighting: DISABLED ---
         # Tested v2.9.2→v2.9.3: full inverse-frequency weighting destroyed accuracy
