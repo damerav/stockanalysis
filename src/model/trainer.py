@@ -479,7 +479,7 @@ class SPYPredictor:
                 # Strong days (|ret| >> threshold) get weight 2.0
                 # Noise days (|ret| << threshold) get weight ~0.5-0.8
                 _nt = getattr(self, 'neutral_threshold', 0.004)
-                magnitude_wts = np.clip(0.5 + abs_returns / max(_nt, 0.001), 0.5, 2.0)
+                magnitude_wts = np.clip(0.5 + abs_returns / max(_nt, 0.001), 0.5, 1.5)
                 # Apply only to original samples (first train_end)
                 mag_full = np.ones(len(sample_weights))
                 mag_full[:train_end] = magnitude_wts
@@ -491,28 +491,11 @@ class SPYPredictor:
         except Exception as e:
             logger.warning(f"Return-magnitude weighting failed (non-fatal): {e}")
 
-        # --- Class balance weighting ---
-        # Model predicts NEUTRAL only 0.3% of the time despite 41% of days
-        # being NEUTRAL. Equalize effective class representation so the model
-        # learns to respect all 3 classes proportionally.
-        try:
-            class_counts_orig = np.bincount(y_train, minlength=3)
-            if class_counts_orig.min() > 0:
-                # Inverse frequency: rare classes get higher weight
-                total_samples = len(y_train)
-                class_weight_map = {}
-                for cls in range(3):
-                    # Weight = total / (n_classes * count_cls)
-                    class_weight_map[cls] = total_samples / (3.0 * class_counts_orig[cls])
-                # Apply per-sample class weight
-                class_wts = np.array([class_weight_map[c] for c in y_train])
-                sample_weights = sample_weights * class_wts
-                sample_weights /= sample_weights.mean()
-                logger.info(f"Class balance weights: DOWN={class_weight_map[0]:.2f}, "
-                            f"NEUTRAL={class_weight_map[1]:.2f}, UP={class_weight_map[2]:.2f} "
-                            f"(counts: {class_counts_orig})")
-        except Exception as e:
-            logger.warning(f"Class balance weighting failed (non-fatal): {e}")
+        # --- Class balance weighting: DISABLED ---
+        # Tested v2.9.2→v2.9.3: full inverse-frequency weighting destroyed accuracy
+        # (76.1% → 49.8%) because data augmentation already handles class imbalance
+        # and the natural class distribution (more UP days in bull markets) is real
+        # signal, not bias. Kept as comment for reference.
 
         # --- P3: Sample quality weighting (curriculum learning) ---
         # Down-weight samples from anomalous market periods where labels are noisy
